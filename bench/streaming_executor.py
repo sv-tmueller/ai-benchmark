@@ -88,8 +88,17 @@ class StreamedResult:
     response_text: str = ""
     finish_reason: str = ""
 
+    # --- thinking/reasoning trace (reasoning models like GLM 5.2) ---
+    reasoning_text: str = ""
+    # True when the model returned NO content but spent tokens reasoning.
+    reasoning_only: bool = False
+
     # --- error handling ---
     error: str | None = None
+
+    # Proposal 1: grading (mirror SingleResult fields; run.py sets via setattr)
+    grade: float | None = None
+    grade_details: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -215,6 +224,11 @@ def execute_streaming(
                     .get("finish_reason", "")
                     or ""
                 )
+                reasoning = msg_obj.get("reasoning") or ""
+                details = msg_obj.get("reasoning_details")
+                if reasoning and details:
+                    reasoning = f"{reasoning}\n{details}"
+                result.reasoning_text = reasoning or ""
                 usage = data.get("usage", {}) or {}
                 result.prompt_tokens = usage.get("prompt_tokens", 0) or 0
                 result.completion_tokens = (
@@ -233,6 +247,7 @@ def execute_streaming(
         # ---- Read SSE stream line by line -------------------------------
 
         accumulated_parts: list[str] = []
+        reasoning_parts: list[str] = []
         ttft_recorded = False
         finish_reason = ""
         usage_data: dict[str, Any] = {}
@@ -294,6 +309,9 @@ def execute_streaming(
                         result.ttft = time.perf_counter() - start
                         ttft_recorded = True
                     accumulated_parts.append(content_delta)
+                reasoning_delta = delta.get("reasoning")
+                if reasoning_delta:
+                    reasoning_parts.append(reasoning_delta)
 
             fr = choice0.get("finish_reason")
             if fr:
@@ -307,6 +325,7 @@ def execute_streaming(
         # ---- Assemble results -------------------------------------------
         result.total_time = time.perf_counter() - start
         result.response_text = "".join(accumulated_parts)
+        result.reasoning_text = "".join(reasoning_parts)
         result.finish_reason = finish_reason or ""
 
         if usage_data:
@@ -379,3 +398,13 @@ def _finalize_metrics(result: StreamedResult, start: float) -> None:
         )
     else:
         result.tokens_per_second = 0.0
+
+    # Honest diagnostics: reasoning model burned its budget on thinking and
+    # returned no content → treat as a real failure, not an empty success.
+    if result.error is None and not result.response_text and result.reasoning_text:
+        result.reasoning_only = True
+        result.error = (
+            f"Empty response: model produced no content "
+            f"(finish_reason={result.finish_reason!r}); "
+            f"{result.completion_tokens} completion tokens were reasoning."
+        )

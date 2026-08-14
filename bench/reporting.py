@@ -115,12 +115,21 @@ def write_markdown(results: list[SingleResult], out_path: Path,
             meta_parts.append(f"cost=${r.cost_usd:.4f}")
         if r.grade is not None:
             meta_parts.append(f"grade={r.grade:.2f}")
+        if r.reasoning_text:
+            meta_parts.append(f"reasoning={len(r.reasoning_text)} chars")
         lines.append(f"> {' | '.join(meta_parts)}")
         if r.grade_details:
             lines.append(f">\n> Grading: {r.grade_details}")
         if r.error:
             lines.append(f"\n**Error:** `{r.error}`\n")
-        else:
+        if r.reasoning_only:
+            lines.append(
+                f"\n⚠️ **No content produced** — the model spent its entire "
+                f"token budget on reasoning and returned nothing. "
+                f"Captured reasoning trace:\n"
+            )
+            lines.append(f"```\n{r.reasoning_text}\n```\n")
+        elif r.error is None:
             lines.append(f"\n```\n{r.response_text}\n```\n")
 
     out_path.write_text("\n".join(lines))
@@ -147,9 +156,16 @@ def print_console_summary(results: list[SingleResult],
         print()
 
     for r in results:
-        tag = "OK " if r.error is None else "ERR"
+        if r.reasoning_only:
+            tag = "EMP"  # empty output: reasoning consumed the whole budget
+        elif r.error is None:
+            tag = "OK "
+        else:
+            tag = "ERR"
         tps = _fmt_tps(r.tokens_per_second)
         lat = _fmt_ms(r.total_time)
         grade_str = _fmt_grade(r.grade)
         print(f"  [{tag}] {r.model_key:24s} {r.prompt_id:28s} {lat:>8s}  {tps:>6s} tok/s  g={grade_str}")
+        if r.reasoning_only:
+            print(f"         ⚠ empty output — {r.completion_tokens} tokens spent reasoning, no content")
     print()

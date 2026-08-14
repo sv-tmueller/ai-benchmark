@@ -49,6 +49,12 @@ class SingleResult:
     response_text: str = ""
     finish_reason: str = ""
 
+    # Thinking/reasoning trace (populated for reasoning models like GLM 5.2)
+    reasoning_text: str = ""
+    # True when the model returned NO content but spent tokens reasoning
+    # (typically finish_reason="length" with the whole budget eaten by thinking).
+    reasoning_only: bool = False
+
     # Error handling
     error: str | None = None
 
@@ -141,14 +147,18 @@ def execute_once(
         elapsed = time.perf_counter() - start
 
         data = json.loads(raw)
-        result.response_text = (
-            data.get("choices", [{}])[0]
-            .get("message", {})
-            .get("content", "")
-        )
+        message = data.get("choices", [{}])[0].get("message", {})
+        result.response_text = message.get("content", "") or ""
         result.finish_reason = (
             data.get("choices", [{}])[0].get("finish_reason", "")
         )
+        # Reasoning models (e.g. GLM 5.2) return their thinking trace in
+        # `reasoning` (sometimes with a `reasoning_details` companion).
+        reasoning = message.get("reasoning") or ""
+        details = message.get("reasoning_details")
+        if reasoning and details:
+            reasoning = f"{reasoning}\n{details}"
+        result.reasoning_text = reasoning or ""
 
         usage = data.get("usage", {})
         result.prompt_tokens = usage.get("prompt_tokens", 0)
@@ -168,5 +178,15 @@ def execute_once(
         result.error = f"HTTP {exc.code}: {err_body}"
     except Exception as exc:  # noqa: BLE001
         result.error = f"{type(exc).__name__}: {exc}"
+
+    # Honest diagnostics: a reasoning model that burns its whole budget on
+    # thinking and returns no content is a real failure, not an empty success.
+    if result.error is None and not result.response_text and result.reasoning_text:
+        result.reasoning_only = True
+        result.error = (
+            f"Empty response: model produced no content "
+            f"(finish_reason={result.finish_reason!r}); "
+            f"{result.completion_tokens} completion tokens were reasoning."
+        )
 
     return result

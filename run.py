@@ -25,6 +25,7 @@ Usage examples
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -43,6 +44,28 @@ from bench.reporting import (
 
 
 REPO_ROOT = Path(__file__).resolve().parent
+
+
+def load_dotenv(path: Path | None = None) -> None:
+    """Load KEY=VALUE pairs from a .env file into os.environ.
+
+    Existing environment variables always win (we never override them), and a
+    missing file is a no-op. Keys are taken verbatim; values have surrounding
+    quotes stripped. This keeps API keys out of the shell and out of git —
+    .env is gitignored.
+    """
+    env_path = path or (REPO_ROOT / ".env")
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip("\"'")
+        if key and key not in os.environ:
+            os.environ[key] = value
 
 
 def parse_args() -> argparse.Namespace:
@@ -91,6 +114,10 @@ def _parse_weights(s: str | None) -> dict[str, float] | None:
 
 def main() -> int:
     args = parse_args()
+
+    # Load API keys from a gitignored .env file (if present) before anything
+    # reads them. Real env vars take precedence.
+    load_dotenv()
 
     # ---- Load configs --------------------------------------------------------
     models_path = REPO_ROOT / "models.toml"
