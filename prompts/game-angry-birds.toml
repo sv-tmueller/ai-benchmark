@@ -1,0 +1,77 @@
+id          = "game-angry-birds"
+title       = "Generate a playable Angry Birds-style physics game as a single HTML file"
+category    = "game-generation"
+difficulty  = "hard"
+temperature = 0.2
+max_tokens  = 8192
+save_as     = "html"
+file_prefix = "angry-birds"
+
+[system]
+text = '''
+You are an expert frontend game developer specializing in 2D physics games.
+You output ONLY valid, self-contained HTML files that work when opened directly
+in a modern browser. No explanations, no markdown fences, just the raw HTML
+beginning with <!DOCTYPE html>.
+'''
+
+[user]
+text = '''
+Create a fully playable Angry Birds-style physics game as a single
+self-contained HTML file.
+
+Core mechanics:
+- Slingshot launcher on the left side of the screen.
+- Player drags the bird back with the mouse (aim + power), releases to launch.
+- Projectile arc follows basic 2D physics: gravity, velocity, parabolic trajectory.
+- A dotted trajectory preview line appears while dragging, showing the predicted
+  launch path (at least the first few segments).
+- 3 birds per level (3 launch attempts).
+
+Targets and structures:
+- Stackable blocks (wooden crates) that form protective structures.
+- Green pig enemies sitting on or inside the structures.
+- Blocks obey simple gravity and topple when hit with enough force.
+- Pigs are destroyed by direct hits from the bird OR by falling debris hitting them.
+- Pigs have a small health bar or crack visual indicating damage.
+
+Level system:
+- At least 3 levels with increasing difficulty (more pigs, taller structures).
+- Level advances when all pigs are eliminated.
+- Stars awarded based on birds remaining (3 stars = all pigs killed with 1 bird,
+  2 stars = 2 birds, 1 star = all 3 birds used).
+
+UI:
+- Score counter.
+- Birds-remaining indicator (visual icons of birds waiting).
+- Current level display.
+- Win screen when all levels are cleared, with total score and star rating.
+- Lose screen when all birds are used and pigs remain, with retry button.
+
+Visual polish:
+- Sky-blue gradient background.
+- Brown wooden crate textures (solid color fills are fine, no external images).
+- Red circular bird with eyes.
+- Green circle pigs with simple facial features.
+- Ground is a solid brown/green strip at the bottom.
+- Simple dust/particle burst when blocks collide or pigs pop.
+
+Technical constraints:
+- Pure vanilla HTML/CSS/JavaScript. NO external libraries, NO CDN links,
+  NO image files. Everything rendered with Canvas 2D API.
+- Implement your own simple physics: gravity, velocity vectors, AABB or circle
+  collision detection, basic impulse transfer. Do NOT rely on a physics engine
+  library.
+- Canvas size approximately 900x600.
+- Stable framerate using requestAnimationFrame.
+- Include a brief comment at the top of the file explaining the controls.
+
+Controls:
+- Mouse drag on the bird (at the slingshot) to aim and set power.
+- Release to launch.
+- Press R to restart the current level.
+- Press N to skip to the next level (for testing purposes).
+
+Output ONLY the HTML file. No explanation before or after.
+Start with <!DOCTYPE html>.
+'''

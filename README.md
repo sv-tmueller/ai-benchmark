@@ -54,7 +54,8 @@ ai-benchmark/
 │   ├── sql-country-analytics.toml
 │   ├── instruction-decline-meeting.toml
 │   ├── game-snake.toml
-│   └── game-breakout.toml
+│   ├── game-breakout.toml
+│   └── game-angry-birds.toml
 ├── bench/                  # Python package (the engine)
 │   ├── __init__.py
 │   ├── config.py           # Loads TOML files into dataclasses
@@ -147,6 +148,7 @@ Two game prompts ship with the repo:
 |-------------|------|------------|
 | `game-snake.toml` | Classic Snake with wrap-around walls | medium |
 | `game-breakout.toml` | Brick breaker with levels, lives, particles | hard |
+| `game-angry-birds.toml` | Physics-based slingshot with destructible structures | hard |
 
 Running them:
 
