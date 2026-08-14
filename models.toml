@@ -5,76 +5,69 @@
 #
 # Fields:
 #   provider      – arbitrary label, groups models in reports
-#   base_url      – OpenAI-compatible base URL (without /v1 suffix,
-#                   unless your server expects it — some do, some don't)
+#   base_url      – OpenAI-compatible base URL
 #   api_key_env   – environment variable holding the API key
 #   model         – the model name the API expects
-#   price_in      – USD per 1 M input tokens (optional, for cost reporting)
+#   price_in      – USD per 1 M input tokens (optional)
 #   price_out     – USD per 1 M output tokens (optional)
-#   max_tokens    – default max completion tokens (override per-prompt if needed)
-#
-# Add as many as you like. Keys ("openai-gpt4o" etc.) are just identifiers
-# you pass to the runner with --model.
+#   max_tokens    – default max completion tokens
 
-[models.openai_gpt4o]
-provider        = "openai"
-base_url        = "https://api.openai.com/v1"
-api_key_env     = "OPENAI_API_KEY"
-model           = "gpt-4o"
-price_in        = 2.50
-price_out       = 10.00
-max_tokens      = 1024
-
-[models.openai_gpt4o_mini]
-provider        = "openai"
-base_url        = "https://api.openai.com/v1"
-api_key_env     = "OPENAI_API_KEY"
-model           = "gpt-4o-mini"
-price_in        = 0.15
-price_out       = 0.60
-max_tokens      = 1024
-
-[models.claude_sonnet55]
-provider        = "anthropic"
-base_url        = "https://api.anthropic.com/v1"
-api_key_env     = "ANTHROPIC_API_KEY"
-model           = "claude-sonnet-5-5-20250929"
-price_in        = 3.00
-price_out       = 15.00
-max_tokens      = 1024
-
-[models.vllm_local]
-provider        = "vllm-local"
-base_url        = "http://localhost:8000/v1"
-api_key_env     = "VLLM_API_KEY"
-model           = "meta-llama/Llama-3.1-8B-Instruct"
+# ── Kimi K3 (Moonshot AI) ──
+[models.kimi_k3]
+provider        = "moonshot"
+base_url        = "https://api.moonshot.cn/v1"
+api_key_env     = "MOONSHOT_API_KEY"
+model           = "kimi-k3"
 price_in        = 0.0
 price_out       = 0.0
-max_tokens      = 1024
+max_tokens      = 4096
 
-[models.ai_noris_de]
-provider        = "ai-noris-de"
+# ── GLM 5.2 (Zhipu / Z.ai) ──
+[models.glm_5_2]
+provider        = "zhipu"
 base_url        = "https://ai.noris.de/v1"
-api_key_env     = "AI_NORRIS_API_KEY"
+api_key_env     = "AI_NORIS_API_KEY"
 model           = "release/glm-5-2"
 price_in        = 0.0
 price_out       = 0.0
-max_tokens      = 1024
+max_tokens      = 4096
 
-[models.deepseek_chat]
-provider        = "deepseek"
-base_url        = "https://api.deepseek.com/v1"
-api_key_env     = "DEEPSEEK_API_KEY"
-model           = "deepseek-chat"
-price_in        = 0.27
-price_out       = 1.10
-max_tokens      = 1024
+# ── ChatGPT 5.6 (OpenAI) ──
+[models.chatgpt_5_6]
+provider        = "openai"
+base_url        = "https://api.openai.com/v1"
+api_key_env     = "OPENAI_API_KEY"
+model           = "gpt-5.6"
+price_in        = 0.0
+price_out       = 0.0
+max_tokens      = 4096
 
-[models.groq_llama70b]
-provider        = "groq"
-base_url        = "https://api.groq.com/openai/v1"
-api_key_env     = "GROQ_API_KEY"
-model           = "llama-3.3-70b-versatile"
-price_in        = 0.59
-price_out       = 0.79
-max_tokens      = 1024
+# ── Claude Opus 5 (Anthropic) ──
+[models.claude_opus_5]
+provider        = "anthropic"
+base_url        = "https://api.anthropic.com/v1"
+api_key_env     = "ANTHROPIC_API_KEY"
+model           = "claude-opus-5"
+price_in        = 0.0
+price_out       = 0.0
+max_tokens      = 4096
+
+# ── Claude Fable (Anthropic) ──
+[models.claude_fable]
+provider        = "anthropic"
+base_url        = "https://api.anthropic.com/v1"
+api_key_env     = "ANTHROPIC_API_KEY"
+model           = "claude-fable"
+price_in        = 0.0
+price_out       = 0.0
+max_tokens      = 4096
+
+# ── Claude Sonnet 5 (Anthropic) ──
+[models.claude_sonnet_5]
+provider        = "anthropic"
+base_url        = "https://api.anthropic.com/v1"
+api_key_env     = "ANTHROPIC_API_KEY"
+model           = "claude-sonnet-5"
+price_in        = 0.0
+price_out       = 0.0
+max_tokens      = 4096
