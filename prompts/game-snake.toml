@@ -1,0 +1,36 @@
+id          = "game-snake"
+title       = "Generate a playable Snake game as a single HTML file"
+category    = "game-generation"
+difficulty  = "medium"
+temperature = 0.2
+max_tokens  = 4096
+save_as     = "html"
+file_prefix = "snake"
+
+[system]
+text = '''
+You are an expert frontend game developer. You output ONLY valid, self-contained
+HTML files that work when opened directly in a modern browser. No explanations,
+no markdown fences, just the raw HTML beginning with <!DOCTYPE html>.
+'''
+
+[user]
+text = '''
+Create a fully playable Snake game as a single self-contained HTML file.
+
+Requirements:
+- Pure vanilla HTML/CSS/JavaScript. No external libraries, no CDN links.
+- Canvas-based rendering with smooth movement.
+- Arrow keys and WASD for control.
+- Score counter displayed on screen.
+- Game over screen with restart functionality (press R or click a button).
+- Food spawns randomly on the grid; eating it grows the snake and increases score.
+- Snake wraps around walls (no death on wall collision — wrapping is intentional
+  to make the game more forgiving).
+- Death occurs only when the snake collides with itself.
+- Clean visual styling: dark background, bright snake, contrasting food.
+- Responsive canvas that fits typical laptop screens (640x480 or similar).
+- Include a brief comment at the top of the file explaining the controls.
+
+Output ONLY the HTML file. No explanation before or after. Start with <!DOCTYPE html>.
+'''

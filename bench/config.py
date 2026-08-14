@@ -52,6 +52,8 @@ class PromptSpec:
     max_tokens: int | None = None
     temperature: float | None = None
     file_path: Path = field(default_factory=lambda: Path(""))
+    save_as: str | None = None          # e.g. "html", "txt" — save response as a file
+    file_prefix: str | None = None      # filename prefix (defaults to prompt id)
 
 
 @dataclass
@@ -110,6 +112,8 @@ def load_prompt(path: Path) -> PromptSpec:
         max_tokens=data.get("max_tokens"),
         temperature=data.get("temperature"),
         file_path=path,
+        save_as=data.get("save_as"),
+        file_prefix=data.get("file_prefix"),
     )
 
 

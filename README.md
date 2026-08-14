@@ -52,7 +52,9 @@ ai-benchmark/
 │   ├── creative-water-bottle.toml
 │   ├── math-second-derivative.toml
 │   ├── sql-country-analytics.toml
-│   └── instruction-decline-meeting.toml
+│   ├── instruction-decline-meeting.toml
+│   ├── game-snake.toml
+│   └── game-breakout.toml
 ├── bench/                  # Python package (the engine)
 │   ├── __init__.py
 │   ├── config.py           # Loads TOML files into dataclasses
@@ -123,10 +125,58 @@ Fields:
 | `difficulty`  | no       | `easy`, `medium`, or `hard`                           |
 | `temperature` | no       | Sampling temp (default 0.0 for deterministic output) |
 | `max_tokens`  | no       | Override the model's default max completion tokens    |
+| `save_as`     | no       | File extension to save response as (e.g. `"html"`)   |
+| `file_prefix` | no       | Filename prefix for saved artifacts (defaults to id) |
 | `system.text` | no       | System prompt                                         |
 | `user.text`   | yes      | The user message                                      |
 
 That's it. The runner discovers all `.toml` files in `prompts/` automatically.
+
+---
+
+## Game and browser-testable prompts
+
+Prompts with `save_as = "html"` are special: the runner saves each model's
+response as a standalone `.html` file in `results/artifacts/`. You can open
+these directly in a browser to play, test, and visually compare the output
+of different models.
+
+Two game prompts ship with the repo:
+
+| Prompt file | Game | Difficulty |
+|-------------|------|------------|
+| `game-snake.toml` | Classic Snake with wrap-around walls | medium |
+| `game-breakout.toml` | Brick breaker with levels, lives, particles | hard |
+
+Running them:
+
+```bash
+python run.py --model openai_gpt4o_mini --category game-generation
+
+# Or specifically:
+python run.py --model openai_gpt4o_mini --prompt-id game-snake
+python run.py --model groq_llama70b --prompt-id game-breakout
+```
+
+Artifacts land in `results/artifacts/`:
+
+```
+results/artifacts/snake_openai_gpt4o_mini.html
+results/artifacts/snake_groq_llama70b.html
+results/artifacts/breakout_openai_gpt4o_mini.html
+...
+```
+
+Open any of them in a browser to play the game the model generated. This is
+a powerful qualitative benchmark: you instantly see whether the model produced
+working, polished code or something that barely runs.
+
+Tips for game prompts:
+- Set `max_tokens` high enough (4096+) so the model doesn't truncate mid-file.
+- Use `temperature = 0.2` for consistent-but-varied results.
+- The system prompt instructs the model to output raw HTML only (no markdown
+  fences). Some models may still wrap output in ```html fences; the saved
+  file would need manual cleanup in that case.
 
 ---
 

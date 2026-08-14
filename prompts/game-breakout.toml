@@ -1,0 +1,38 @@
+id          = "game-breakout"
+title       = "Generate a playable Breakout game as a single HTML file"
+category    = "game-generation"
+difficulty  = "hard"
+temperature = 0.2
+max_tokens  = 4096
+save_as     = "html"
+file_prefix = "breakout"
+
+[system]
+text = '''
+You are an expert frontend game developer. You output ONLY valid, self-contained
+HTML files that work when opened directly in a modern browser. No explanations,
+no markdown fences, just the raw HTML beginning with <!DOCTYPE html>.
+'''
+
+[user]
+text = '''
+Create a fully playable Breakout (brick breaker) game as a single self-contained
+HTML file.
+
+Requirements:
+- Pure vanilla HTML/CSS/JavaScript. No external libraries, no CDN links.
+- Canvas-based rendering at 800x600 or similar.
+- Mouse movement and arrow keys both control the paddle.
+- Multiple rows of colorful bricks at the top (at least 5 rows, 10 columns).
+- Ball bounces off walls, paddle, and bricks. Bricks disappear when hit.
+- Score counter and lives counter (start with 3 lives).
+- Ball resets on paddle miss; losing all lives triggers a game over screen.
+- Restart button on the game over screen.
+- Increasing ball speed slightly each level (when all bricks cleared, regenerate
+  with faster ball).
+- Particle or flash effect when a brick is destroyed (simple is fine).
+- Clean visual styling: dark background, neon-colored bricks and ball.
+- Include a brief comment at the top of the file explaining the controls.
+
+Output ONLY the HTML file. No explanation before or after. Start with <!DOCTYPE html>.
+'''

@@ -172,9 +172,36 @@ def main() -> int:
                                           and rep == repeats - 1):
                     time.sleep(cooldown)
 
+    # ---- Save artifacts (HTML, txt, etc.) -----------------------------------
+    results_dir = REPO_ROOT / rcfg.results_dir
+    artifacts_dir = results_dir / "artifacts"
+    saved_paths: list[Path] = []
+
+    for r in results:
+        prompt_spec = next((p for p in selected_prompts if p.id == r.prompt_id), None)
+        if not prompt_spec or not prompt_spec.save_as or r.error:
+            continue
+
+        ext = prompt_spec.save_as.lstrip(".")
+        prefix = prompt_spec.file_prefix or r.prompt_id
+        safe_model = r.model_key.replace("/", "_")
+        fname = f"{prefix}_{safe_model}"
+        if repeats > 1:
+            fname += f"_r{r.repeat_index + 1}"
+        fname += f".{ext}"
+
+        artifact_path = artifacts_dir / fname
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_text(r.response_text)
+        saved_paths.append(artifact_path)
+
+    if saved_paths:
+        print(f"\nSaved {len(saved_paths)} artifact(s) to {artifacts_dir}/:")
+        for p in saved_paths:
+            print(f"  {p.name}")
+
     # ---- Reports ------------------------------------------------------------
     ts = time.strftime("%Y%m%d_%H%M%S")
-    results_dir = REPO_ROOT / rcfg.results_dir
     json_path = results_dir / f"benchmark_{ts}.json"
     md_path = results_dir / f"benchmark_{ts}.md"
 
