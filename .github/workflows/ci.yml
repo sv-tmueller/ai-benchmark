@@ -1,0 +1,151 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Verify Python version
+        run: python --version
+
+      - name: Validate all TOML files parse correctly
+        run: |
+          python - <<'PY'
+          import tomllib, sys, glob
+
+          errors = []
+          for f in sorted(glob.glob("*.toml") + glob.glob("prompts/*.toml")):
+              try:
+                  with open(f, "rb") as fh:
+                      tomllib.load(fh)
+                  print(f"  OK  {f}")
+              except Exception as e:
+                  errors.append(f"{f}: {e}")
+                  print(f"  ERR {f}: {e}")
+
+          if errors:
+              print(f"\n{len(errors)} TOML file(s) failed to parse!")
+              sys.exit(1)
+          else:
+              print(f"\nAll TOML files parsed successfully.")
+          PY
+
+      - name: Validate models.toml has required fields
+        run: |
+          python - <<'PY'
+          import tomllib, sys
+
+          with open("models.toml", "rb") as fh:
+              data = tomllib.load(fh)
+
+          models = data.get("models", {})
+          if not models:
+              print("WARNING: models.toml has no model entries")
+              sys.exit(0)
+
+          required = ["provider", "base_url", "api_key_env", "model"]
+          errors = []
+          for key, val in models.items():
+              for field in required:
+                  if field not in val:
+                      errors.append(f"models.{key} missing required field '{field}'")
+              print(f"  OK  {key} -> {val.get('model', '?')}")
+
+          if errors:
+              print(f"\n{len(errors)} validation error(s):")
+              for e in errors:
+                  print(f"  {e}")
+              sys.exit(1)
+          else:
+              print(f"\nAll {len(models)} model(s) validated.")
+          PY
+
+      - name: Validate all prompt TOMLs have required fields
+        run: |
+          python - <<'PY'
+          import tomllib, sys, glob
+
+          required_top = ["id", "user"]
+          errors = []
+          count = 0
+
+          for f in sorted(glob.glob("prompts/*.toml")):
+              count += 1
+              with open(f, "rb") as fh:
+                  data = tomllib.load(fh)
+
+              for field in required_top:
+                  if field not in data:
+                      errors.append(f"{f}: missing required field '{field}'")
+
+              # user.text must exist and be non-empty
+              user_block = data.get("user", {})
+              if isinstance(user_block, dict):
+                  if not user_block.get("text", "").strip():
+                      errors.append(f"{f}: user.text is empty or missing")
+              elif isinstance(user_block, str):
+                  if not user_block.strip():
+                      errors.append(f"{f}: user text is empty")
+
+              # Check id uniqueness will be done after all loaded
+              prompt_id = data.get("id", "<missing>")
+              print(f"  OK  {f} -> id='{prompt_id}'")
+
+          # Check for duplicate IDs
+          ids = []
+          for f in sorted(glob.glob("prompts/*.toml")):
+              with open(f, "rb") as fh:
+                  data = tomllib.load(fh)
+              ids.append((data.get("id"), f))
+
+          seen = {}
+          for pid, fpath in ids:
+              if pid in seen:
+                  errors.append(f"Duplicate id '{pid}' in {fpath} (also in {seen[pid]})")
+              else:
+                  seen[pid] = fpath
+
+          if errors:
+              print(f"\n{len(errors)} validation error(s):")
+              for e in errors:
+                  print(f"  {e}")
+              sys.exit(1)
+          else:
+              print(f"\nAll {count} prompt(s) validated. IDs are unique.")
+          PY
+
+      - name: Run benchmark dry-run
+        run: |
+          echo "::group::Dry run with all prompts and all models"
+          python run.py --dry-run
+          echo "::endgroup::"
+
+          echo "::group::Dry run filtered by category"
+          python run.py --dry-run --category game-generation
+          echo "::endgroup::"
+
+          echo "::group::Dry run filtered by difficulty"
+          python run.py --dry-run --difficulty hard
+          echo "::endgroup::"
+
+      - name: Verify runner imports cleanly
+        run: |
+          python -c "from bench.config import load_models, load_prompts, load_runner_config; print('imports OK')"
+          python -c "from bench.executor import execute_once; print('executor OK')"
+          python -c "from bench.reporting import write_json, write_markdown; print('reporting OK')"
