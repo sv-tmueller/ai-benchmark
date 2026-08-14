@@ -1,0 +1,80 @@
+# ──────────────────────────────────────────────
+# Model Registry
+# ──────────────────────────────────────────────
+# Every entry describes one endpoint you can benchmark.
+#
+# Fields:
+#   provider      – arbitrary label, groups models in reports
+#   base_url      – OpenAI-compatible base URL (without /v1 suffix,
+#                   unless your server expects it — some do, some don't)
+#   api_key_env   – environment variable holding the API key
+#   model         – the model name the API expects
+#   price_in      – USD per 1 M input tokens (optional, for cost reporting)
+#   price_out     – USD per 1 M output tokens (optional)
+#   max_tokens    – default max completion tokens (override per-prompt if needed)
+#
+# Add as many as you like. Keys ("openai-gpt4o" etc.) are just identifiers
+# you pass to the runner with --model.
+
+[models.openai_gpt4o]
+provider        = "openai"
+base_url        = "https://api.openai.com/v1"
+api_key_env     = "OPENAI_API_KEY"
+model           = "gpt-4o"
+price_in        = 2.50
+price_out       = 10.00
+max_tokens      = 1024
+
+[models.openai_gpt4o_mini]
+provider        = "openai"
+base_url        = "https://api.openai.com/v1"
+api_key_env     = "OPENAI_API_KEY"
+model           = "gpt-4o-mini"
+price_in        = 0.15
+price_out       = 0.60
+max_tokens      = 1024
+
+[models.claude_sonnet55]
+provider        = "anthropic"
+base_url        = "https://api.anthropic.com/v1"
+api_key_env     = "ANTHROPIC_API_KEY"
+model           = "claude-sonnet-5-5-20250929"
+price_in        = 3.00
+price_out       = 15.00
+max_tokens      = 1024
+
+[models.vllm_local]
+provider        = "vllm-local"
+base_url        = "http://localhost:8000/v1"
+api_key_env     = "VLLM_API_KEY"
+model           = "meta-llama/Llama-3.1-8B-Instruct"
+price_in        = 0.0
+price_out       = 0.0
+max_tokens      = 1024
+
+[models.ai_noris_de]
+provider        = "ai-noris-de"
+base_url        = "https://ai.noris.de/v1"
+api_key_env     = "AI_NORRIS_API_KEY"
+model           = "release/glm-5-2"
+price_in        = 0.0
+price_out       = 0.0
+max_tokens      = 1024
+
+[models.deepseek_chat]
+provider        = "deepseek"
+base_url        = "https://api.deepseek.com/v1"
+api_key_env     = "DEEPSEEK_API_KEY"
+model           = "deepseek-chat"
+price_in        = 0.27
+price_out       = 1.10
+max_tokens      = 1024
+
+[models.groq_llama70b]
+provider        = "groq"
+base_url        = "https://api.groq.com/openai/v1"
+api_key_env     = "GROQ_API_KEY"
+model           = "llama-3.3-70b-versatile"
+price_in        = 0.59
+price_out       = 0.79
+max_tokens      = 1024

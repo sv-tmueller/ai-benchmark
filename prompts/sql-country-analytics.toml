@@ -1,0 +1,27 @@
+id          = "sql-write-query"
+title       = "Write a SQL query joining 3 tables with aggregation"
+category    = "coding"
+difficulty  = "medium"
+temperature = 0.0
+
+[system]
+text = "You are a senior data engineer. Write portable ANSI-SQL."
+
+[user]
+text = '''
+Given these tables:
+
+  customers(id, name, country, signup_date)
+  orders(id, customer_id, order_date, total_amount)
+  order_items(id, order_id, product_name, quantity, unit_price)
+
+Write a SQL query that returns, for each country:
+  - total_revenue (sum of orders.total_amount)
+  - num_orders
+  - avg_order_value
+  - top_product (product_name with highest total revenue across all orders in that country)
+
+Include only countries with at least 10 orders.
+Sort by total_revenue descending.
+Explain any assumptions you make about ties or NULL handling.
+'''

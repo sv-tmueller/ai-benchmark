@@ -1,0 +1,19 @@
+id          = "instruction-email-reply"
+title       = "Draft a professional email declining a meeting politely"
+category    = "instruction-following"
+difficulty  = "easy"
+temperature = 0.3
+
+[system]
+text = "You are a professional communications assistant."
+
+[user]
+text = '''
+Draft an email reply with the following requirements:
+- Tone: polite and warm, but firm
+- Decline a meeting invitation for next Tuesday 2pm
+- Reason: scheduling conflict (already committed to a client presentation)
+- Propose two alternative time slots: Wednesday morning or Thursday afternoon
+- Keep it under 120 words
+- Sign off as "Alex Morgan, Product Lead"
+'''

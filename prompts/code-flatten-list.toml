@@ -1,0 +1,23 @@
+id          = "code-python-function"
+title       = "Write a Python function to flatten nested lists"
+category    = "coding"
+difficulty  = "medium"
+temperature = 0.0
+
+[system]
+text = "You are an expert Python developer. Write clean, production-quality code."
+
+[user]
+text = '''
+Write a Python function called `flatten` that takes an arbitrarily nested list
+of integers and returns a flat list of all integers in depth-first order.
+
+Example:
+  flatten([1, [2, [3, 4]], 5]) == [1, 2, 3, 4, 5]
+
+Requirements:
+- Handle empty lists and deeply nested structures.
+- Include type hints and a docstring.
+- Include at least 3 test cases using assert statements.
+- Do not use recursion; solve iteratively with an explicit stack.
+'''

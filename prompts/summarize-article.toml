@@ -1,0 +1,24 @@
+id          = "summarize-article"
+title       = "Summarize a technical article in 3 sentences"
+category    = "summarization"
+difficulty  = "easy"
+temperature = 0.0
+
+[system]
+text = "You are a precise summarizer. Capture only essential points."
+
+[user]
+text = '''
+Summarize the following text in exactly three sentences:
+
+In machine learning, gradient descent is an iterative optimization algorithm
+used to minimize the loss function of a model. It adjusts model parameters
+(weights) by computing the gradient of the loss with respect to each parameter
+and moving in the opposite direction of the gradient. Variants like stochastic
+gradient descent (SGD), mini-batch SGD, and Adam optimize the trade-off between
+convergence speed and stability. Proper tuning of the learning rate is critical:
+too small leads to slow convergence, too large causes divergence. Modern
+frameworks such as PyTorch and TensorFlow automate gradient computation via
+automatic differentiation, making gradient descent practical for deep networks
+with millions of parameters.
+'''

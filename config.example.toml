@@ -1,0 +1,21 @@
+# ──────────────────────────────────────────────
+# Runner Configuration
+# ──────────────────────────────────────────────
+# Copy this file to `config.toml` and adjust values.
+# config.toml is gitignored so you can keep private settings local.
+
+[runner]
+# How many times to run each prompt-model combination.
+repeats          = 1
+# Seconds to wait between repeats (avoid rate-limit bursts).
+cooldown_seconds = 0
+# HTTP timeout per request.
+request_timeout  = 120
+# Directory for result files (relative to repo root or absolute).
+results_dir      = "results"
+
+[reporting]
+# Generate a markdown summary table alongside raw JSON.
+generate_markdown = true
+# Print a quick console summary after the run.
+print_summary     = true

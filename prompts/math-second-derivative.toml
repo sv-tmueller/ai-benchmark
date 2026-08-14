@@ -1,0 +1,19 @@
+id          = "math-calculus-derivative"
+title       = "Compute the derivative of a polynomial and explain each step"
+category    = "math"
+difficulty  = "medium"
+temperature = 0.0
+
+[system]
+text = "You are a mathematics tutor. Show every algebraic step clearly."
+
+[user]
+text = '''
+Find the second derivative of the function:
+
+  f(x) = 3x^4 - 5x^3 + 2x^2 - 7x + 11
+
+Show your work for the first derivative, then differentiate again.
+State the final simplified expression for f''(x).
+Then evaluate f''(2).
+'''

@@ -1,0 +1,22 @@
+# Secrets – never commit real API keys
+config.toml
+.env
+
+# Results are generated locally; keep them out of the repo by default.
+# Override with `git add -f results/...` if you want to share a run.
+results/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+.python-version
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

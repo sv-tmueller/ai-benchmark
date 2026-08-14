@@ -1,0 +1,23 @@
+id          = "reasoning-logic-puzzle"
+title       = "Solve a deductive logic puzzle step-by-step"
+category    = "reasoning"
+difficulty  = "hard"
+temperature = 0.0
+
+[system]
+text = "You are a careful logical reasoner. Think step by step before giving the final answer."
+
+[user]
+text = '''
+Five people (Alice, Bob, Carol, Dave, Eve) sit in a row of five seats numbered
+1 through 5 from left to right. Use these clues to determine who sits where:
+
+1. Alice is not next to Bob.
+2. Carol sits immediately to the right of Dave.
+3. Eve sits at one of the ends.
+4. Bob sits somewhere to the left of Carol.
+5. There is exactly one person between Alice and Dave.
+
+Determine the seating arrangement (who is in seat 1, 2, 3, 4, 5).
+Show your reasoning step by step, then give the final arrangement.
+'''

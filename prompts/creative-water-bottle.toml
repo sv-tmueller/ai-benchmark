@@ -1,0 +1,23 @@
+id          = "creative-product-description"
+title       = "Write a creative product description for a smart water bottle"
+category    = "creative-writing"
+difficulty  = "easy"
+temperature = 0.7
+
+[system]
+text = "You are a creative copywriter for premium lifestyle brands."
+
+[user]
+text = '''
+Write a compelling product description (120-150 words) for a smart water bottle
+called "HydraSense". Key features:
+- Tracks hydration throughout the day via built-in sensor
+- Glows gently to remind you to drink
+- Syncs with iOS and Android health apps
+- 750ml capacity, vacuum-insulated stainless steel
+- USB-C rechargeable, 30-day battery life
+- Available in matte black, sage green, and coral
+
+Make it engaging but not gimmicky. Target audience: health-conscious
+professionals aged 25-45.
+'''
