@@ -18,7 +18,7 @@ from .config import ModelConfig, PromptSpec
 
 @dataclass
 class SingleResult:
-    """Metrics for one prompt × model × repetition."""
+    """Metrics for one prompt x model x repetition."""
     model_key: str
     model_name: str
     provider: str
@@ -30,7 +30,9 @@ class SingleResult:
 
     # Timing (seconds)
     ttfb: float = 0.0          # time to first byte / first chunk
+    ttft: float = 0.0          # time to first token (streaming mode)
     total_time: float = 0.0    # wall-clock for the full response
+    generation_time: float = 0.0  # total_time minus ttft (streaming mode)
 
     # Token accounting
     prompt_tokens: int = 0
@@ -50,6 +52,10 @@ class SingleResult:
     # Error handling
     error: str | None = None
 
+    # Proposal 1: grading
+    grade: float | None = None
+    grade_details: str = ""
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
@@ -58,11 +64,20 @@ class SingleResult:
 # Executor
 # ---------------------------------------------------------------------------
 
-def _build_messages(prompt: PromptSpec) -> list[dict[str, str]]:
-    msgs: list[dict[str, str]] = []
+def _build_messages(prompt: PromptSpec, image_data_uris: list[str] | None = None) -> list[dict[str, Any]]:
+    """Build messages list. If image_data_uris provided, uses vision format."""
+    msgs: list[dict[str, Any]] = []
     if prompt.system:
         msgs.append({"role": "system", "content": prompt.system})
-    msgs.append({"role": "user", "content": prompt.user})
+
+    if image_data_uris:
+        # Vision format: content is an array of text + image_url parts
+        content: list[dict[str, Any]] = [{"type": "text", "text": prompt.user}]
+        for uri in image_data_uris:
+            content.append({"type": "image_url", "image_url": {"url": uri}})
+        msgs.append({"role": "user", "content": content})
+    else:
+        msgs.append({"role": "user", "content": prompt.user})
     return msgs
 
 
@@ -75,8 +90,12 @@ def execute_once(
     model: ModelConfig,
     prompt: PromptSpec,
     timeout: float = 120.0,
+    image_data_uris: list[str] | None = None,
 ) -> SingleResult:
-    """Send one request to the model endpoint and return a SingleResult."""
+    """Send one request to the model endpoint and return a SingleResult.
+
+    If image_data_uris is provided, sends vision-format messages.
+    """
 
     result = SingleResult(
         model_key=model.key,
@@ -95,7 +114,7 @@ def execute_once(
 
     payload: dict[str, Any] = {
         "model": model.model,
-        "messages": _build_messages(prompt),
+        "messages": _build_messages(prompt, image_data_uris),
         "max_tokens": max_tok,
         "temperature": temp,
         "stream": False,

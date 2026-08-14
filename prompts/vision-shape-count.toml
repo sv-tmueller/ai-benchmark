@@ -1,0 +1,18 @@
+id          = "vision-shape-count"
+title       = "Count geometric shapes in an image"
+category    = "vision"
+difficulty  = "medium"
+temperature = 0.0
+
+[images]
+files = ["assets/shapes.png"]
+
+[grading]
+mode     = "contains"
+expected = "5"
+
+[system]
+text = "You are a visual analysis assistant. Answer precisely."
+
+[user]
+text = "How many geometric shapes are in this image? Reply with just the number."

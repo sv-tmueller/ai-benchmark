@@ -10,13 +10,16 @@ from typing import Any
 from .executor import SingleResult
 
 
-def write_json(results: list[SingleResult], out_path: Path) -> Path:
+def write_json(results: list[SingleResult], out_path: Path,
+               leaderboard: list[dict] | None = None) -> Path:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     data: dict[str, Any] = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "num_results": len(results),
         "results": [r.to_dict() for r in results],
     }
+    if leaderboard is not None:
+        data["leaderboard"] = leaderboard
     with open(out_path, "w") as fh:
         json.dump(data, fh, indent=2, ensure_ascii=False)
     return out_path
@@ -30,26 +33,40 @@ def _fmt_tps(tps: float) -> str:
     return f"{tps:.1f}" if tps > 0 else "-"
 
 
-def write_markdown(results: list[SingleResult], out_path: Path) -> Path:
+def _fmt_grade(grade: float | None) -> str:
+    if grade is None:
+        return "-"
+    return f"{grade:.2f}"
+
+
+def write_markdown(results: list[SingleResult], out_path: Path,
+                    leaderboard_entries=None) -> Path:
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     lines: list[str] = []
     lines.append("# Benchmark Report\n")
     lines.append(f"_Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}_\n")
 
+    # --- Leaderboard (Proposal 7) -------------------------------------------
+    if leaderboard_entries:
+        from .scoring import format_leaderboard
+        lines.append("\n## Leaderboard\n")
+        lines.append(f"```\n{format_leaderboard(leaderboard_entries)}\n```\n")
+
     # --- Summary table -------------------------------------------------------
     lines.append("\n## Summary Table\n")
-    lines.append("| Model | Prompt | Category | Tokens (in/out) | Total Time | Tok/s | Cost ($) | Status |")
-    lines.append("|-------|--------|----------|-----------------|-------------|-------|----------|--------|")
+    lines.append("| Model | Prompt | Category | Tokens (in/out) | Total Time | Tok/s | Cost ($) | Grade | Status |")
+    lines.append("|-------|--------|----------|-----------------|-------------|-------|----------|-------|--------|")
 
     for r in results:
         status = "OK" if r.error is None else f"ERR: {r.error[:40]}"
         tok_io = f"{r.prompt_tokens}/{r.completion_tokens}"
         cost_str = f"{r.cost_usd:.4f}" if r.cost_usd > 0 else "-"
+        grade_str = _fmt_grade(r.grade)
         lines.append(
             f"| {r.model_key} | {r.prompt_id} | {r.category} "
             f"| {tok_io} | {_fmt_ms(r.total_time)} | {_fmt_tps(r.tokens_per_second)} "
-            f"| {cost_str} | {status} |"
+            f"| {cost_str} | {grade_str} | {status} |"
         )
 
     # --- Per-model aggregate -------------------------------------------------
@@ -60,23 +77,26 @@ def write_markdown(results: list[SingleResult], out_path: Path) -> Path:
             continue
         bucket = agg.setdefault(r.model_key, {
             "calls": 0, "total_time": 0.0, "tokens_out": 0,
-            "tokens_in": 0, "cost": 0.0,
+            "tokens_in": 0, "cost": 0.0, "grades": [],
         })
         bucket["calls"] += 1
         bucket["total_time"] += r.total_time
         bucket["tokens_out"] += r.completion_tokens
         bucket["tokens_in"] += r.prompt_tokens
         bucket["cost"] += r.cost_usd
+        if r.grade is not None:
+            bucket["grades"].append(r.grade)
 
-    lines.append("| Model | Calls | Avg Latency | Total Out Tokens | Avg Tok/s | Total Cost ($) |")
-    lines.append("|-------|-------|-------------|------------------|-----------|-----------------|")
+    lines.append("| Model | Calls | Avg Latency | Total Out Tokens | Avg Tok/s | Total Cost ($) | Avg Grade |")
+    lines.append("|-------|-------|-------------|------------------|-----------|-----------------|-----------|")
     for key, b in sorted(agg.items()):
         avg_lat = b["total_time"] / b["calls"] if b["calls"] else 0
         avg_tps = b["tokens_out"] / b["total_time"] if b["total_time"] > 0 else 0
         cost_s = f"{b['cost']:.4f}" if b["cost"] > 0 else "-"
+        avg_grade = f"{sum(b['grades'])/len(b['grades']):.2f}" if b["grades"] else "-"
         lines.append(
             f"| {key} | {b['calls']} | {_fmt_ms(avg_lat)} "
-            f"| {b['tokens_out']} | {avg_tps:.1f} | {cost_s} |"
+            f"| {b['tokens_out']} | {avg_tps:.1f} | {cost_s} | {avg_grade} |"
         )
 
     # --- Full responses ------------------------------------------------------
@@ -89,9 +109,15 @@ def write_markdown(results: list[SingleResult], out_path: Path) -> Path:
             f"tokens={r.prompt_tokens}+{r.completion_tokens}",
             f"tps={_fmt_tps(r.tokens_per_second)}",
         ]
+        if r.ttft > 0:
+            meta_parts.append(f"ttft={_fmt_ms(r.ttft)}")
         if r.cost_usd > 0:
             meta_parts.append(f"cost=${r.cost_usd:.4f}")
-        lines.append(f"> {' · '.join(meta_parts)}")
+        if r.grade is not None:
+            meta_parts.append(f"grade={r.grade:.2f}")
+        lines.append(f"> {' | '.join(meta_parts)}")
+        if r.grade_details:
+            lines.append(f">\n> Grading: {r.grade_details}")
         if r.error:
             lines.append(f"\n**Error:** `{r.error}`\n")
         else:
@@ -101,7 +127,8 @@ def write_markdown(results: list[SingleResult], out_path: Path) -> Path:
     return out_path
 
 
-def print_console_summary(results: list[SingleResult]) -> None:
+def print_console_summary(results: list[SingleResult],
+                           leaderboard_entries=None) -> None:
     ok = sum(1 for r in results if r.error is None)
     fail = len(results) - ok
     total_time = sum(r.total_time for r in results)
@@ -111,9 +138,18 @@ def print_console_summary(results: list[SingleResult]) -> None:
     print(f"  Benchmarks complete: {ok} OK, {fail} failed")
     print(f"  Wall time: {total_time:.2f}s   Output tokens: {total_out}")
     print("=" * 60)
+
+    # Leaderboard
+    if leaderboard_entries:
+        from .scoring import format_leaderboard
+        print()
+        print(format_leaderboard(leaderboard_entries))
+        print()
+
     for r in results:
         tag = "OK " if r.error is None else "ERR"
         tps = _fmt_tps(r.tokens_per_second)
         lat = _fmt_ms(r.total_time)
-        print(f"  [{tag}] {r.model_key:24s} {r.prompt_id:28s} {lat:>8s}  {tps:>6s} tok/s")
+        grade_str = _fmt_grade(r.grade)
+        print(f"  [{tag}] {r.model_key:24s} {r.prompt_id:28s} {lat:>8s}  {tps:>6s} tok/s  g={grade_str}")
     print()

@@ -1,0 +1,17 @@
+id          = "param-translate"
+title       = "Translate text to various languages"
+category    = "instruction-following"
+difficulty  = "easy"
+temperature = 0.0
+
+[system]
+text = "You are a professional translator. Translate accurately and naturally."
+
+[user]
+text = '''
+Translate the following English text to TARGET_LANG.
+
+TEXT_TO_TRANSLATE
+
+Provide only the translation, no commentary.
+'''

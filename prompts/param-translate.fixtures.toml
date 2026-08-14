@@ -1,0 +1,22 @@
+# Fixtures for param-translate.toml
+# Each [[cases]] entry substitutes {{variables}} in the prompt template.
+
+[[cases]]
+description = "English to German"
+vars.TARGET_LANG = "German"
+vars.TEXT_TO_TRANSLATE = "The quick brown fox jumps over the lazy dog."
+
+[[cases]]
+description = "English to Japanese"
+vars.TARGET_LANG = "Japanese"
+vars.TEXT_TO_TRANSLATE = "The quick brown fox jumps over the lazy dog."
+
+[[cases]]
+description = "English to Spanish"
+vars.TARGET_LANG = "Spanish"
+vars.TEXT_TO_TRANSLATE = "Pack my box with five dozen liquor jugs."
+
+[[cases]]
+description = "English to French"
+vars.TARGET_LANG = "French"
+vars.TEXT_TO_TRANSLATE = "Programming is the art of telling another human what one wants the computer to do."

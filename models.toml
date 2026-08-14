@@ -41,6 +41,7 @@ model           = "gpt-5.6"
 price_in        = 0.0
 price_out       = 0.0
 max_tokens      = 4096
+supports_vision = true
 
 # ── Claude Opus 5 (Anthropic) ──
 [models.claude_opus_5]
@@ -51,6 +52,7 @@ model           = "claude-opus-5"
 price_in        = 0.0
 price_out       = 0.0
 max_tokens      = 4096
+supports_vision = true
 
 # ── Claude Fable (Anthropic) ──
 [models.claude_fable]
@@ -61,6 +63,7 @@ model           = "claude-fable"
 price_in        = 0.0
 price_out       = 0.0
 max_tokens      = 4096
+supports_vision = true
 
 # ── Claude Sonnet 5 (Anthropic) ──
 [models.claude_sonnet_5]
@@ -71,3 +74,4 @@ model           = "claude-sonnet-5"
 price_in        = 0.0
 price_out       = 0.0
 max_tokens      = 4096
+supports_vision = true

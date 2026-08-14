@@ -32,6 +32,7 @@ class ModelConfig:
     price_in: float = 0.0   # USD per 1M input tokens
     price_out: float = 0.0  # USD per 1M output tokens
     max_tokens: int = 1024
+    supports_vision: bool = False   # Proposal 5: vision-capable flag
 
     @property
     def api_key(self) -> str | None:
@@ -54,17 +55,29 @@ class PromptSpec:
     file_path: Path = field(default_factory=lambda: Path(""))
     save_as: str | None = None          # e.g. "html", "txt" — save response as a file
     file_prefix: str | None = None      # filename prefix (defaults to prompt id)
+    # Proposal 1: grading
+    grading: dict[str, Any] | None = None
+    # Proposal 5: vision
+    images: dict[str, Any] | None = None
+    # Proposal 6: parameterization (populated at load time)
+    fixtures_cases: list[dict] | None = None
 
 
 @dataclass
 class RunnerConfig:
-    """Parsed config.toml [runner] + [reporting] sections."""
+    """Parsed config.toml [runner] + [reporting] + [scoring] sections."""
     repeats: int = 1
     cooldown_seconds: float = 0.0
     request_timeout: float = 120.0
     results_dir: str = "results"
     generate_markdown: bool = True
     print_summary: bool = True
+    # Proposal 2: streaming
+    stream: bool = False
+    # Proposal 7: scoring weights
+    w_speed: float = 0.3
+    w_cost: float = 0.3
+    w_quality: float = 0.4
 
 
 # ---------------------------------------------------------------------------
@@ -87,6 +100,7 @@ def load_models(path: Path) -> dict[str, ModelConfig]:
             price_in=float(val.get("price_in", 0)),
             price_out=float(val.get("price_out", 0)),
             max_tokens=int(val.get("max_tokens", 1024)),
+            supports_vision=bool(val.get("supports_vision", False)),
         )
     return result
 
@@ -102,6 +116,14 @@ def load_prompt(path: Path) -> PromptSpec:
     user_block = data["user"]
     user_text = user_block["text"] if isinstance(user_block, dict) else user_block
 
+    # Proposal 6: load fixtures if they exist
+    fixtures_cases = None
+    fixtures_path = path.parent / f"{path.stem}.fixtures.toml"
+    if fixtures_path.exists():
+        with open(fixtures_path, "rb") as ff:
+            fixtures_data = tomllib.load(ff)
+        fixtures_cases = fixtures_data.get("cases", [])
+
     return PromptSpec(
         id=data["id"],
         title=data.get("title", data["id"]),
@@ -114,14 +136,31 @@ def load_prompt(path: Path) -> PromptSpec:
         file_path=path,
         save_as=data.get("save_as"),
         file_prefix=data.get("file_prefix"),
+        grading=data.get("grading"),
+        images=data.get("images"),
+        fixtures_cases=fixtures_cases,
     )
 
 
 def load_prompts(directory: Path) -> list[PromptSpec]:
-    """Load every *.toml file from the prompts/ directory."""
+    """Load every *.toml file from the prompts/ directory.
+
+    Skips *.fixtures.toml files (those are loaded by their parent prompt).
+    Expands parameterized prompts (Proposal 6) into individual PromptSpec instances.
+    """
     prompts: list[PromptSpec] = []
     for path in sorted(directory.glob("*.toml")):
-        prompts.append(load_prompt(path))
+        if path.suffix == ".toml" and path.name.endswith(".fixtures.toml"):
+            continue
+        spec = load_prompt(path)
+        if spec.fixtures_cases:
+            # Proposal 6: expand parameterized prompt
+            from .parameterize import expand_prompt
+            expanded = expand_prompt(spec, spec.fixtures_cases)
+            for exp in expanded:
+                prompts.append(PromptSpec(**exp))
+        else:
+            prompts.append(spec)
     return prompts
 
 
@@ -134,10 +173,15 @@ def load_runner_config(path: Path) -> RunnerConfig:
         data = tomllib.load(fh)
     runner = data.get("runner", {})
     reporting = data.get("reporting", {})
+    scoring = data.get("scoring", {})
     cfg.repeats = int(runner.get("repeats", cfg.repeats))
     cfg.cooldown_seconds = float(runner.get("cooldown_seconds", cfg.cooldown_seconds))
     cfg.request_timeout = float(runner.get("request_timeout", cfg.request_timeout))
     cfg.results_dir = str(runner.get("results_dir", cfg.results_dir))
+    cfg.stream = bool(runner.get("stream", cfg.stream))
     cfg.generate_markdown = bool(reporting.get("generate_markdown", cfg.generate_markdown))
     cfg.print_summary = bool(reporting.get("print_summary", cfg.print_summary))
+    cfg.w_speed = float(scoring.get("w_speed", cfg.w_speed))
+    cfg.w_cost = float(scoring.get("w_cost", cfg.w_cost))
+    cfg.w_quality = float(scoring.get("w_quality", cfg.w_quality))
     return cfg

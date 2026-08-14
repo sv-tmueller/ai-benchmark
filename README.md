@@ -4,10 +4,24 @@
 
 A lightweight framework for benchmarking AI models against curated prompts.
 Send the same prompt to multiple models, measure latency / throughput /
-token usage / estimated cost, and eyeball the responses side by side.
+token usage / estimated cost, grade responses, and rank models with a
+weighted composite score.
 
 Designed for anyone who wants to cut through marketing claims and see how
 models actually behave on tasks that matter to them.
+
+## Features
+
+- **6 models** preconfigured: Kimi K3, GLM 5.2, ChatGPT 5.6, Claude Opus 5, Claude Fable, Claude Sonnet 5
+- **16 prompts** across 8 categories: coding, reasoning, math, summarization, creative-writing, instruction-following, game-generation, vision
+- **Automated grading** (Proposal 1): exact, regex, contains, or judge-model modes
+- **SSE streaming** (Proposal 2): true time-to-first-token (TTFB) measurement
+- **Side-by-side comparison** (Proposal 3): Markdown diff view + HTML game artifact tab viewer
+- **Historical trend tracking** (Proposal 4): `analyze.py` generates SVG dashboards from accumulated results
+- **Vision prompts** (Proposal 5): image inputs for multi-modal models, with `supports_vision` flag
+- **Prompt parameterization** (Proposal 6): `{{variable}}` placeholders filled from `.fixtures.toml` files
+- **Weighted scoring leaderboard** (Proposal 7): composite score blending speed, cost, and quality
+- Zero external dependencies (Python 3.11+ stdlib only)
 
 ---
 
@@ -45,24 +59,37 @@ Results appear in `results/` as both JSON (machine-parseable) and Markdown
 ```
 ai-benchmark/
 ├── run.py                  # CLI entry point — run this
+├── analyze.py              # Historical trend tracking dashboard (Proposal 4)
 ├── config.example.toml     # Copy to config.toml for local overrides
-├── models.toml             # Model registry: endpoints, pricing, limits
+├── models.toml             # Model registry: endpoints, pricing, vision flags
 ├── prompts/                # One TOML file per benchmark prompt
 │   ├── summarize-article.toml
 │   ├── code-flatten-list.toml
 │   ├── reasoning-seating-puzzle.toml
 │   ├── creative-water-bottle.toml
 │   ├── math-second-derivative.toml
+│   ├── math-addition.toml           # graded prompt (Proposal 1)
 │   ├── sql-country-analytics.toml
 │   ├── instruction-decline-meeting.toml
 │   ├── game-snake.toml
 │   ├── game-breakout.toml
-│   └── game-angry-birds.toml
+│   ├── game-angry-birds.toml
+│   ├── vision-shape-count.toml      # vision prompt (Proposal 5)
+│   ├── param-translate.toml         # parameterized (Proposal 6)
+│   ├── param-translate.fixtures.toml
+│   └── assets/                      # image assets for vision prompts
+│       └── shapes.png
 ├── bench/                  # Python package (the engine)
 │   ├── __init__.py
 │   ├── config.py           # Loads TOML files into dataclasses
-│   ├── executor.py         # Sends requests, collects metrics
-│   └── reporting.py        # Generates JSON + Markdown reports
+│   ├── executor.py         # Sends requests, collects metrics (+ vision support)
+│   ├── streaming_executor.py  # SSE streaming with TTFB (Proposal 2)
+│   ├── reporting.py        # Generates JSON + Markdown reports (+ grades + leaderboard)
+│   ├── grader.py            # Automated response grading (Proposal 1)
+│   ├── comparison.py        # Side-by-side diff + HTML game viewer (Proposal 3)
+│   ├── vision.py            # Image encoding for multi-modal prompts (Proposal 5)
+│   ├── parameterize.py      # Fixture-based prompt expansion (Proposal 6)
+│   └── scoring.py           # Weighted composite scoring leaderboard (Proposal 7)
 ├── results/                # Generated output (gitignored)
 └── README.md               # You are here
 ```
@@ -243,6 +270,108 @@ After a run, check `results/`:
 
 The Markdown report is designed for quick scanning: skim the summary table
 for outliers, then jump to individual responses to assess answer quality.
+
+---
+
+## Advanced Features
+
+### Automated Response Grading (Proposal 1)
+
+Add a `[grading]` block to any prompt TOML to auto-score responses:
+
+    [grading]
+    mode     = "contains"       # exact | regex | contains | judge
+    expected = "42"             # for exact/contains modes
+    pattern  = "\\d+"           # for regex mode
+    judge_model = "glm_5_2"     # for judge mode
+    judge_criteria = "Accuracy, clarity (1-10)"
+
+Grades appear in JSON, Markdown, and console output. Judge mode calls the
+specified model to evaluate the response.
+
+### SSE Streaming with TTFB (Proposal 2)
+
+Pass `--stream` to use SSE streaming mode. This measures true time-to-first-token
+(TTFB) -- how long before the model starts generating -- alongside total time
+and generation-only throughput:
+
+    python run.py --model glm_5_2 --stream
+
+Or enable permanently in `config.toml`:
+
+    [runner]
+    stream = true
+
+### Side-by-Side Comparison (Proposal 3)
+
+Generate comparison reports placing model responses adjacent to each other:
+
+    python run.py --model glm_5_2 --model chatgpt_5_6 --compare
+
+For game artifacts, generate an HTML tab viewer:
+
+    python run.py --model glm_5_2 --model chatgpt_5_6 --compare-game-html
+
+### Historical Trend Tracking (Proposal 4)
+
+Analyze accumulated results over time:
+
+    python analyze.py                          # full dashboard
+    python analyze.py --metric latency         # one metric
+    python analyze.py --model glm_5_2          # one model
+    python analyze.py --since 2026-01-01       # date filter
+    python analyze.py --output custom.html     # custom output path
+
+Generates a self-contained HTML dashboard with SVG charts (no external deps).
+If matplotlib is installed, also exports PNG charts.
+
+### Vision Prompts (Proposal 5)
+
+Prompts with an `[images]` block send image inputs to vision-capable models:
+
+    [images]
+    files = ["assets/photo.png"]
+    urls  = ["https://example.com/img.jpg"]
+
+Models without `supports_vision = true` in `models.toml` are automatically
+skipped for vision prompts.
+
+### Prompt Parameterization (Proposal 6)
+
+Use `{{variable}}` placeholders in prompts, filled from a `.fixtures.toml`
+sibling file:
+
+    # prompts/translate.toml
+    [user]
+    text = "Translate to {{TARGET_LANG}}: {{TEXT}}"
+
+    # prompts/translate.fixtures.toml
+    [[cases]]
+    description = "English to German"
+    vars.TARGET_LANG = "German"
+    vars.TEXT = "Hello world"
+
+Each fixture case expands into a separate prompt instance with a unique ID
+(`translate__english-to-german`). One template, many test cases.
+
+### Weighted Scoring Leaderboard (Proposal 7)
+
+After each run, a composite score ranks models by speed, cost, and quality:
+
+    score = w_speed * norm(throughput) + w_cost * norm(inverse_cost) + w_quality * norm(grade)
+
+Configure weights in `config.toml`:
+
+    [scoring]
+    w_speed   = 0.3
+    w_cost    = 0.3
+    w_quality = 0.4
+
+Or override per-run:
+
+    python run.py --weights speed=0.2,cost=0.1,quality=0.7
+
+The leaderboard appears in console output, Markdown report, and JSON.
 
 ---
 

@@ -1,0 +1,15 @@
+id          = "math-addition"
+title       = "Simple arithmetic: 17 + 25"
+category    = "math"
+difficulty  = "easy"
+temperature = 0.0
+
+[grading]
+mode     = "contains"
+expected = "42"
+
+[system]
+text = "You are a calculator. Give only the numerical answer."
+
+[user]
+text = "What is 17 + 25? Reply with just the number."

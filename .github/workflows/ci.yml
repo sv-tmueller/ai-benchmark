@@ -31,6 +31,8 @@ jobs:
 
           errors = []
           for f in sorted(glob.glob("*.toml") + glob.glob("prompts/*.toml")):
+              if f.endswith(".fixtures.toml"):
+                  continue
               try:
                   with open(f, "rb") as fh:
                       tomllib.load(fh)
@@ -86,6 +88,8 @@ jobs:
           count = 0
 
           for f in sorted(glob.glob("prompts/*.toml")):
+              if f.endswith(".fixtures.toml"):
+                  continue
               count += 1
               with open(f, "rb") as fh:
                   data = tomllib.load(fh)
@@ -94,7 +98,6 @@ jobs:
                   if field not in data:
                       errors.append(f"{f}: missing required field '{field}'")
 
-              # user.text must exist and be non-empty
               user_block = data.get("user", {})
               if isinstance(user_block, dict):
                   if not user_block.get("text", "").strip():
@@ -103,23 +106,20 @@ jobs:
                   if not user_block.strip():
                       errors.append(f"{f}: user text is empty")
 
-              # Check id uniqueness will be done after all loaded
               prompt_id = data.get("id", "<missing>")
               print(f"  OK  {f} -> id='{prompt_id}'")
 
-          # Check for duplicate IDs
-          ids = []
-          for f in sorted(glob.glob("prompts/*.toml")):
-              with open(f, "rb") as fh:
-                  data = tomllib.load(fh)
-              ids.append((data.get("id"), f))
-
+          # Check for duplicate IDs (after fixture expansion)
+          from bench.config import load_prompts
+          from pathlib import Path
+          prompts = load_prompts(Path("prompts"))
+          ids = [p.id for p in prompts]
           seen = {}
-          for pid, fpath in ids:
+          for pid in ids:
               if pid in seen:
-                  errors.append(f"Duplicate id '{pid}' in {fpath} (also in {seen[pid]})")
+                  errors.append(f"Duplicate id '{pid}' (appears more than once)")
               else:
-                  seen[pid] = fpath
+                  seen[pid] = True
 
           if errors:
               print(f"\n{len(errors)} validation error(s):")
@@ -127,8 +127,21 @@ jobs:
                   print(f"  {e}")
               sys.exit(1)
           else:
-              print(f"\nAll {count} prompt(s) validated. IDs are unique.")
+              print(f"\nAll {count} prompt(s) validated. {len(ids)} unique IDs after expansion.")
           PY
+
+      - name: Verify all modules import cleanly
+        run: |
+          python -c "from bench.config import load_models, load_prompts, load_runner_config; print('config OK')"
+          python -c "from bench.executor import execute_once, SingleResult; print('executor OK')"
+          python -c "from bench.reporting import write_json, write_markdown, print_console_summary; print('reporting OK')"
+          python -c "from bench.grader import grade_result, has_grading; print('grader OK')"
+          python -c "from bench.streaming_executor import execute_streaming, StreamedResult; print('streaming OK')"
+          python -c "from bench.comparison import write_comparison_markdown, write_game_comparison_html; print('comparison OK')"
+          python -c "from bench.vision import encode_image_file, load_images_from_prompt; print('vision OK')"
+          python -c "from bench.parameterize import expand_prompt, load_fixtures, find_placeholders; print('parameterize OK')"
+          python -c "from bench.scoring import compute_scores, format_leaderboard, leaderboard_to_dict; print('scoring OK')"
+          python -c "import ast; ast.parse(open('analyze.py').read()); print('analyze.py syntax OK')"
 
       - name: Run benchmark dry-run
         run: |
@@ -144,8 +157,45 @@ jobs:
           python run.py --dry-run --difficulty hard
           echo "::endgroup::"
 
-      - name: Verify runner imports cleanly
+          echo "::group::Dry run with streaming flag"
+          python run.py --dry-run --stream --model glm_5_2 --prompt-id math-addition
+          echo "::endgroup::"
+
+          echo "::group::Dry run with compare flag"
+          python run.py --dry-run --compare --model glm_5_2 --model chatgpt_5_6
+          echo "::endgroup::"
+
+      - name: Smoke test individual modules
         run: |
-          python -c "from bench.config import load_models, load_prompts, load_runner_config; print('imports OK')"
-          python -c "from bench.executor import execute_once; print('executor OK')"
-          python -c "from bench.reporting import write_json, write_markdown; print('reporting OK')"
+          python - <<'PY'
+          # Grader
+          from bench.grader import grade_result
+          g, d = grade_result("42", {"mode": "contains", "expected": "42"})
+          assert g == 1.0, f"grader failed: {g}"
+          print("grader smoke test OK")
+
+          # Scoring
+          from bench.scoring import compute_scores, format_leaderboard
+          from bench.executor import SingleResult
+          mock = [SingleResult(model_key="m1", model_name="m1", provider="p",
+              prompt_id="p", prompt_title="t", category="c", difficulty="e",
+              repeat_index=0, tokens_per_second=100, cost_usd=0.01, grade=0.8)]
+          lb = compute_scores(mock)
+          assert len(lb) == 1
+          print("scoring smoke test OK")
+
+          # Parameterize
+          from bench.parameterize import find_placeholders, slugify
+          ph = find_placeholders("Hello {{name}}, {{lang}}")
+          assert set(ph) == {"name", "lang"}
+          assert slugify("English to German") == "english-to-german"
+          print("parameterize smoke test OK")
+
+          # Vision
+          from bench.vision import encode_image_file
+          uri = encode_image_file("prompts/assets/shapes.png")
+          assert uri.startswith("data:image/png;base64,"), f"bad URI: {uri[:30]}"
+          print("vision smoke test OK")
+
+          print("\nAll smoke tests passed!")
+          PY

@@ -13,9 +13,25 @@ cooldown_seconds = 0
 request_timeout  = 120
 # Directory for result files (relative to repo root or absolute).
 results_dir      = "results"
+# Use SSE streaming mode for TTFB measurement (Proposal 2).
+stream           = false
 
 [reporting]
 # Generate a markdown summary table alongside raw JSON.
 generate_markdown = true
 # Print a quick console summary after the run.
 print_summary     = true
+
+# ──────────────────────────────────────────────
+# Scoring Weights (Proposal 7)
+# ──────────────────────────────────────────────
+# Composite score = w_speed * norm(throughput)
+#                 + w_cost  * norm(inverse_cost)
+#                 + w_quality * norm(grade)
+# Components with no data (e.g. no grades) are excluded and weights
+# are renormalized automatically.
+
+[scoring]
+w_speed   = 0.3
+w_cost    = 0.3
+w_quality = 0.4
