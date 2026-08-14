@@ -1,5 +1,7 @@
 # AI Benchmark
 
+![CI](https://github.com/sv-tmueller/ai-benchmark/actions/workflows/ci.yml/badge.svg)
+
 A lightweight framework for benchmarking AI models against curated prompts.
 Send the same prompt to multiple models, measure latency / throughput /
 token usage / estimated cost, and eyeball the responses side by side.
