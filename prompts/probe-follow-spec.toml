@@ -1,0 +1,21 @@
+id          = "probe-follow-spec"
+title       = "Write a Node.js CLI script matching an exact specification"
+category    = "domain-probe"
+difficulty  = "medium"
+temperature = 0.2
+max_tokens  = 4096
+save_as     = "txt"
+file_prefix = "follow-spec"
+
+[user]
+text = '''
+Write a Node.js CLI script `count-lines.js` that meets this spec exactly:
+
+1. Takes one or more file paths as arguments.
+2. Prints one line per file to stdout in the form `<count>\t<path>`.
+3. If a file cannot be read, print `error: <path>` to stderr, continue with the rest, and exit with code 1 at the end.
+4. With no arguments, print `usage: count-lines <file...>` to stderr and exit with code 2.
+5. No dependencies outside the Node standard library. No additional flags or options.
+
+Return only the script.
+'''

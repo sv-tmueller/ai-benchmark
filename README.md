@@ -13,7 +13,7 @@ models actually behave on tasks that matter to them.
 ## Features
 
 - **6 models** preconfigured: Kimi K3, GLM 5.2, ChatGPT 5.6, Claude Opus 5, Claude Fable, Claude Sonnet 5
-- **16 prompts** across 8 categories: coding, reasoning, math, summarization, creative-writing, instruction-following, game-generation, vision
+- **27 prompts** across 10 categories: coding, reasoning, math, summarization, creative-writing, instruction-following, game-generation, app-generation, domain-probe, vision
 - **Automated grading** (Proposal 1): exact, regex, contains, or judge-model modes
 - **SSE streaming** (Proposal 2): true time-to-first-token (TTFB) measurement
 - **Side-by-side comparison** (Proposal 3): Markdown diff view + HTML game artifact tab viewer
@@ -71,9 +71,20 @@ ai-benchmark/
 │   ├── math-addition.toml           # graded prompt (Proposal 1)
 │   ├── sql-country-analytics.toml
 │   ├── instruction-decline-meeting.toml
-│   ├── game-snake.toml
-│   ├── game-breakout.toml
-│   ├── game-angry-birds.toml
+│   ├── game-minecraft.toml           # Minecraft clone (single HTML)
+│   ├── game-sunset-ocean.toml        # Photoreal ocean at sunset (single HTML)
+│   ├── game-meridian-launch.toml     # Rocket launch scene (single HTML)
+│   ├── game-horror-house.toml        # Haunted-house escape game (Vite+Three.js)
+│   ├── game-last-flight.toml         # Superhero flight & rescue (TS+Vite+Three.js)
+│   ├── game-mario-kart.toml          # Mario Kart clone (sub-agent brief)
+│   ├── app-stillwater.toml           # Voice-first AI therapy app (monorepo)
+│   ├── probe-constrained-scheduling.toml
+│   ├── probe-nonexistent-api.toml
+│   ├── probe-timing-safe-token.toml
+│   ├── probe-push-back.toml
+│   ├── probe-callback-pyramid.toml
+│   ├── probe-find-the-bug.toml
+│   ├── probe-follow-spec.toml
 │   ├── vision-shape-count.toml      # vision prompt (Proposal 5)
 │   ├── param-translate.toml         # parameterized (Proposal 6)
 │   ├── param-translate.fixtures.toml
@@ -171,30 +182,46 @@ response as a standalone `.html` file in `results/artifacts/`. You can open
 these directly in a browser to play, test, and visually compare the output
 of different models.
 
-Two game prompts ship with the repo:
+Seven frontier-build prompts ship with the repo (source: [BridgeBench](https://www.bridgebench.ai/prompts)):
 
-| Prompt file | Game | Difficulty |
-|-------------|------|------------|
-| `game-snake.toml` | Classic Snake with wrap-around walls | medium |
-| `game-breakout.toml` | Brick breaker with levels, lives, particles | hard |
-| `game-angry-birds.toml` | Physics-based slingshot with destructible structures | hard |
+| Prompt file | Build | Format | Difficulty |
+|-------------|-------|--------|------------|
+| `game-minecraft.toml` | Minecraft clone with chunk meshing, resource packs, survival | HTML | hard |
+| `game-sunset-ocean.toml` | Photoreal Gerstner-wave ocean at sunset | HTML | hard |
+| `game-meridian-launch.toml` | Cinematic orbital rocket launch sequence | HTML | hard |
+| `game-horror-house.toml` | First-person haunted-house escape game | Vite + Three.js (markdown) | hard |
+| `game-last-flight.toml` | Cinematic superhero flight & airliner rescue | TS + Vite + Three.js (markdown) | hard |
+| `game-mario-kart.toml` | AAA Mario Kart clone via sub-agents (one-sentence brief) | Three.js (markdown) | hard |
+| `app-stillwater.toml` | Voice-first AI therapy companion app | RN + NestJS + Postgres (markdown) | hard |
+
+Eight domain-probe prompts (short, targeted tests of specific capabilities):
+
+| Prompt file | Probe type | Difficulty |
+|-------------|-----------|------------|
+| `probe-constrained-scheduling.toml` | Constraint satisfaction reasoning | medium |
+| `probe-nonexistent-api.toml` | Hallucination trap (Array.prototype.groupBy) | easy |
+| `probe-timing-safe-token.toml` | Security review (timing-safe comparison) | medium |
+| `probe-push-back.toml` | Push back on a false premise (SQLite FKs) | medium |
+| `probe-callback-pyramid.toml` | Refactoring (callbacks → async/await) | medium |
+| `probe-find-the-bug.toml` | Debugging (pagination off-by-one) | medium |
+| `probe-follow-spec.toml` | Spec conformance (Node.js CLI script) | medium |
 
 Running them:
 
 ```bash
-python run.py --model openai_gpt4o_mini --category game-generation
+python run.py --model glm_5_2 --category game-generation
 
 # Or specifically:
-python run.py --model openai_gpt4o_mini --prompt-id game-snake
-python run.py --model groq_llama70b --prompt-id game-breakout
+python run.py --model glm_5_2 --prompt-id game-minecraft
+python run.py --model glm_5_2 --category domain-probe
 ```
 
 Artifacts land in `results/artifacts/`:
 
 ```
-results/artifacts/snake_openai_gpt4o_mini.html
-results/artifacts/snake_groq_llama70b.html
-results/artifacts/breakout_openai_gpt4o_mini.html
+results/artifacts/minecraft_glm_5_2.html
+results/artifacts/sunset-ocean_glm_5_2.html
+results/artifacts/meridian-launch_glm_5_2.html
 ...
 ```
 

@@ -1,0 +1,22 @@
+id          = "probe-find-the-bug"
+title       = "Find the pagination bug and give the minimal fix"
+category    = "domain-probe"
+difficulty  = "medium"
+temperature = 0.2
+max_tokens  = 4096
+save_as     = "txt"
+file_prefix = "find-the-bug"
+
+[user]
+text = '''
+This pagination helper sometimes drops the final page of results. Find the bug, explain the exact input that triggers it, and give the minimal fix.
+
+function pageRanges(total, pageSize) {
+  const pages = [];
+  for (let start = 0; start + pageSize < total; start += pageSize) {
+    pages.push([start, Math.min(start + pageSize, total)]);
+  }
+  return pages;
+}
+
+'''

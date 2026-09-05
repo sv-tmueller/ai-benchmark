@@ -1,0 +1,88 @@
+id          = "game-minecraft"
+title       = "Build a Minecraft clone as a single self-contained HTML file"
+category    = "game-generation"
+difficulty  = "hard"
+temperature = 0.2
+max_tokens  = 65536
+save_as     = "html"
+file_prefix = "minecraft"
+
+[system]
+text = '''
+You are an expert frontend game developer specializing in 3D voxel games and Three.js.
+You output ONLY valid, self-contained HTML files that work when opened directly
+in a modern browser. No explanations, no markdown fences, just the raw HTML
+beginning with <!DOCTYPE html>.
+'''
+
+[user]
+text = '''
+Build a Minecraft clone that runs in the browser. Deliver it as a SINGLE self-contained HTML file using Three.js and JSZip loaded from CDNs (cdnjs/unpkg). No build tools. It must run by opening the file. Comment the code thoroughly and structure systems modularly so they can be extended.
+
+Implement the CORE section fully and robustly. Then implement as much of the STRETCH section as you can WITHOUT breaking the build; for anything you stub or omit, leave a clearly labeled comment (// STUB: ...) so it can be iterated on later.
+
+════════ RESOURCE-PACK LOADER (build this first — it's how textures work) ════════
+- Provide a file input (<input type="file" accept=".zip">) and a drag-drop zone to load a standard Minecraft Java resource pack (.zip). Use JSZip to read it.
+- Pull block textures from `assets/minecraft/textures/block/` and item textures from `assets/minecraft/textures/item/`, matching by standard vanilla filenames (e.g. grass_block_top.png, grass_block_side.png, dirt.png, oak_log.png, oak_log_top.png, cobblestone.png, coal_ore.png, ...). Build a texture atlas from them with NearestFilter/no mipmaps for crisp pixels.
+- Map textures to block faces by name (top/side/bottom conventions). If a pack is 16x, 32x, or 64x, handle it generically off the PNG dimensions.
+- Gracefully IGNORE OptiFine/MCPatcher-only assets (optifine/ folder, CTM, CIT, emissive, random variants, .properties files) and any animated .mcmeta — just use the base still frame. Don't crash on unknown files.
+- If NO pack is loaded, fall back to procedurally-generated 16x16 pixel-art textures for every block (mottled-noise style matching the vanilla palette) so the game is fully playable with zero external files.
+- (The user will supply a vanilla-style pack such as "New Default+", downloaded separately.)
+
+════════ CORE (implement fully) ════════
+WORLD & RENDERING
+- Chunk-based voxel world, 16x16 columns per chunk, world height 128. Load chunks around the player, unload distant ones. Render distance ~6 chunks, configurable.
+- Per-face culling AND greedy meshing so only exposed faces render. This is critical for performance.
+- Procedural terrain from inline noise (write a simplex/perlin impl — no npm): rolling hills, oceans, and multiple biomes (at least plains, forest, desert, mountains, snowy, ocean) that affect surface blocks, tree density, and terrain height.
+- 3D-noise caves and ravines. Ore veins distributed by depth (coal, iron, gold, redstone, lapis, diamond, emerald). Bedrock floor. Dirt+grass surface, stone below, sand/gravel patches, water at sea level, lava pools deep down.
+- Trees (oak/birch/spruce variants), tall grass, flowers.
+
+BLOCKS (aim for a broad vanilla set)
+- grass, dirt, stone, cobblestone, granite/diorite/andesite, sand, gravel, sandstone, logs (oak/birch/spruce), planks, leaves (transparent), glass, bedrock, water, lava, all listed ores + their mined blocks (coal/iron/gold/diamond blocks), crafting table, furnace, chest, torch (emits light), ladder, wool in 16 colors, glowstone, obsidian, TNT, bookshelf, farmland, dirt path. Support per-face textures and transparency where relevant.
+
+PLAYER & CONTROLS
+- PointerLock. WASD move, mouse look, Space jump, Shift sneak. AABB collision + gravity. Player ~1.8 tall, 0.6 wide. Step up 1-block ledges.
+- Swimming (slower, buoyant) in water; lava damages + sets you on fire.
+- Creative-fly toggle (double-tap Space). Survival mode with health, hunger (depletes over time/sprinting, regen when fed), fall damage, drowning, fire/lava damage. Respawn on death.
+- Raycast from screen center: left-click breaks the target block with a break-progress crack overlay scaled to block hardness and tool tier; right-click places the selected block against the target face (or uses/opens interactable blocks). Highlight targeted block with a thin wireframe.
+- Hotbar (slots 1–9, scroll or number keys). Crosshair.
+
+ITEMS, INVENTORY, CRAFTING
+- Broken blocks drop item entities that bob/spin and are picked up on contact, stacking in inventory.
+- Full inventory screen (open with E): 9-slot hotbar + main grid + 2x2 crafting. Drag/click to move stacks.
+- Crafting table (3x3) with a real recipe set (planks, sticks, tools, torches, chest, furnace, crafting table, TNT, etc.). Tool tiers (wood/stone/iron/gold/diamond) with durability that decreases on use and correct mining-speed/eligibility per block.
+- Furnace: fuel slot + input → smelted output over time (ore→ingot, sand→glass, food cooking). Chest: place/open/store 27 slots.
+
+LIGHTING & ENVIRONMENT
+- Sky-light + block-light propagation (torches/glowstone/lava emit light; light falls off with distance and is blocked by solids). Per-face shading (top brightest, sides medium, bottom darkest) plus smooth lighting where feasible.
+- Day/night cycle with a moving sun/moon, changing sky-gradient color and ambient/directional light. Darkness at night.
+
+MOBS & COMBAT
+- Passive mobs (pig, cow, sheep, chicken) that wander with simple AI, take damage, and drop items (meat, leather, wool). Sheep can be sheared.
+- Hostile mobs (zombie, skeleton) spawn in darkness/at night, pathfind toward the player (simple A* or greedy stepping with jumping), and deal contact/ranged damage. They burn in daylight.
+- Melee combat with weapon damage + cooldown; mob and player health bars; knockback; mob drops.
+
+SURVIVAL SYSTEMS
+- Farming: hoe tills dirt→farmland, plant seeds/crops, growth stages over time, harvest for food/seeds.
+- Simplified fluid flow for water and lava (cellular spread from source blocks). Water can create/destroy farmland; lava ignites flammable blocks.
+- Simple particle effects (block-break puffs, splashes) and, if practical, minimal procedural/no-audio sound hooks.
+
+UI/HUD
+- Hotbar with item icons + counts, health bar, hunger bar, selected-item name, crosshair, FPS counter, XYZ coordinates, current biome/time.
+- Pause/help overlay listing controls. Mode indicator (creative/survival).
+
+PERSISTENCE
+- Save/load the world + inventory to localStorage (and/or export to a JSON file), with a seed field so worlds are reproducible.
+
+════════ STRETCH (attempt if it doesn't jeopardize CORE; otherwise STUB) ════════
+- Redstone: power sources, dust/wire with signal propagation + falloff, redstone torches, levers/buttons, repeaters, pistons, doors, redstone lamps.
+- More generated structures: villages, dungeons with spawners/chests, mineshafts, ruined portals.
+- Extra dimensions: Nether (portal via obsidian+flint, netherrack/lava/glowstone terrain) and The End (portal, obsidian pillars, Ender Dragon boss fight).
+- Villagers with basic trading UI.
+- Enchanting table + brewing stand + potions with effects.
+- Weather (rain/snow by biome) and mob variety expansion.
+
+════════ DELIVERABLE ════════
+One .html file. Prioritize, in order: (1) correct chunk meshing + collision + performance, (2) the resource-pack loader with procedural fallback, (3) mining/placing/inventory/crafting, (4) lighting/day-night, (5) mobs/survival, (6) stretch systems. It must run smoothly, let me walk a generated biome world, load an external resource pack, break/place blocks, craft, and fight/survive. Comment every major system and mark all stubs.
+
+'''

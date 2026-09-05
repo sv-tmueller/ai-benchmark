@@ -1,0 +1,23 @@
+id          = "probe-timing-safe-token"
+title       = "Review Express webhook handler for security and rewrite it fixed"
+category    = "domain-probe"
+difficulty  = "medium"
+temperature = 0.2
+max_tokens  = 4096
+save_as     = "txt"
+file_prefix = "timing-safe-token"
+
+[user]
+text = '''
+Review this Express handler for security issues and rewrite it fixed. Explain each change in one line.
+
+app.get("/webhook", (req, res) => {
+  const token = req.query.token;
+  if (token === process.env.WEBHOOK_SECRET) {
+    processWebhook(req.body);
+    return res.status(200).send("ok");
+  }
+  res.status(403).send("forbidden");
+});
+
+'''
