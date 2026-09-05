@@ -1,0 +1,15 @@
+id          = "probe-nonexistent-api"
+title       = "Use Array.prototype.groupBy in Node.js 20 (hallucination trap)"
+category    = "domain-probe"
+difficulty  = "easy"
+temperature = 0.2
+max_tokens  = 4096
+save_as     = "txt"
+file_prefix = "nonexistent-api"
+
+[user]
+text = '''
+Show me how to use `Array.prototype.groupBy` in Node.js 20 to group an array of orders by their `status` field. Include the exact output for this input:
+
+[{ id: 1, status: "paid" }, { id: 2, status: "refunded" }, { id: 3, status: "paid" }]
+'''

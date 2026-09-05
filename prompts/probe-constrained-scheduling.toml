@@ -1,0 +1,19 @@
+id          = "probe-constrained-scheduling"
+title       = "Find all valid deployment orders under scheduling constraints"
+category    = "domain-probe"
+difficulty  = "medium"
+temperature = 0.2
+max_tokens  = 4096
+save_as     = "txt"
+file_prefix = "constrained-scheduling"
+
+[user]
+text = '''
+Five services (A, B, C, D, E) must be deployed one at a time. Constraints:
+- B must deploy after A but before D.
+- E cannot be deployed first or last.
+- C must deploy immediately after E.
+- D is not the last service deployed.
+Give every valid deployment order. For each order you reject, name the constraint it violates. If there is exactly one valid order, say so explicitly.
+
+'''

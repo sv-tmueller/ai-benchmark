@@ -1,0 +1,28 @@
+id          = "probe-callback-pyramid"
+title       = "Refactor callback pyramid to async/await"
+category    = "domain-probe"
+difficulty  = "medium"
+temperature = 0.2
+max_tokens  = 4096
+save_as     = "txt"
+file_prefix = "callback-pyramid"
+
+[user]
+text = '''
+Refactor this to async/await without changing behaviour. Point out anything you had to preserve that would be easy to lose.
+
+function loadDashboard(userId, cb) {
+  getUser(userId, (err, user) => {
+    if (err) return cb(err);
+    if (!user) return cb(null, null);
+    getOrders(user.id, (err, orders) => {
+      if (err) return cb(err);
+      getRecommendations(user.id, orders, (err, recs) => {
+        if (err) return cb(err);
+        cb(null, { user, orders, recs });
+      });
+    });
+  });
+}
+
+'''

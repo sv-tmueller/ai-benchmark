@@ -1,0 +1,399 @@
+id          = "game-last-flight"
+title       = "Cinematic 3D superhero flight and rescue game (Three.js + TypeScript + Vite)"
+category    = "game-generation"
+difficulty  = "hard"
+temperature = 0.2
+max_tokens  = 65536
+save_as     = "md"
+file_prefix = "last-flight"
+
+[system]
+text = '''
+# MASTER PROMPT — "LAST FLIGHT" (one-shot Three.js + TypeScript + Vite project)
+
+You are a principal gameplay engineer and technical artist who has shipped AAA third-person flight
+and combat games. Build **LAST FLIGHT**: a complete, cinematic, immediately playable 3D superhero
+game as a real Three.js project: TypeScript, Vite, modular source, tests, a clean build. The bar
+is "this looks like a real game trailer, not a tech demo". Feel and image quality are the product.
+Sections are in priority order. If you must cut, cut from the bottom, never from the flight feel,
+the laser, or the rescue.
+
+## Premise
+Golden hour over a dense city. Flight 227, an airliner with a burning engine, is 9 km east, doing
+110 m/s and sinking toward downtown. Hostile fighter jets are trying to finish it. You are the
+city's superhero. Fly out, cut the jets down with laser vision, get under the nose, plant your
+hands on its underside, kill its speed without crushing it, and set it down on the field of Metro
+Stadium the way Superman did. 218 souls on board.
+
+## Stack (exact, nothing else)
+- Node 20+, npm. `vite ^8`, `typescript ^5.9` (strict), `three 0.185.1`, `@types/three 0.185.4`,
+`postprocessing 6.39.4`, `vitest ^5`. No React, no React Three Fiber, no physics engine, no UI
+framework, no asset files, no other dependencies.
+- `WebGLRenderer`, not WebGPU. Addons from `three/addons/` are expected: `Sky`, `Lensflare`,
+`lil-gui` (from `three/addons/libs/lil-gui.module.min.js`).
+- Post-processing through the `postprocessing` package (`EffectComposer`, `RenderPass`,
+`EffectPass`, `Effect`), not three's own composer.
+- Scripts: `dev`, `build`, `preview`, `typecheck` (`tsc --noEmit`), `test` (`vitest run`).
+- Layout (create every file listed; add more if needed, never fewer):
+```
+last-flight/
+  package.json  vite.config.ts  tsconfig.json  index.html  README.md
+  src/
+    main.ts            bootstrap: create systems, start the loop
+    config.ts          every tunable, typed, commented, with units
+    core/    renderer.ts  loop.ts  input.ts  audio.ts  pool.ts  math.ts  events.ts
+    world/   sky.ts  city.ts  river.ts  clouds.ts  stadium.ts  ground.ts  collision.ts
+    entities/  hero.ts  flight.ts  laser.ts  airliner.ts  holding.ts  jet.ts  missile.ts  wreck.ts
+    vfx/     particles.ts  explosions.ts  trails.ts  speedlines.ts
+    vfx/shaders/  radialBlur.ts  grade.ts  fire.ts  water.ts  windows.ts  cloud.ts
+    game/    mission.ts  camera.ts  hud.ts  cinematics.ts  scoring.ts  debug.ts
+  tests/   flight.test.ts  collision.test.ts  holding.test.ts  mission.test.ts
+```
+- Architecture rules: simulation modules (`flight`, `holding`, `collision`, `jet` AI, `missile`,
+`mission`, `scoring`) are pure TypeScript that import only three's math classes (`Vector3`,
+`Quaternion`, `MathUtils`) so they run in Node under Vitest. Rendering modules read their state.
+One `CONFIG` object, imported everywhere, mutated only by the debug panel. A tiny typed event bus
+(`events.ts`) for game events: `jetKilled`, `caught`, `tailTorn`, `touchdown`, `phaseChanged`,
+`heroHit`, `hullHit`, `boom`. Every system exports `create*(ctx)` returning `{ update(dt,
+timeScale), dispose() }`. No circular imports. `debug.ts` binds `lil-gui` to `CONFIG` and toggles
+with the backquote key.
+
+## Hard constraints
+1. `npm install && npm run typecheck && npm test && npm run build` completes with zero errors and
+zero warnings you introduced. `npm run dev` opens and plays with zero console errors.
+2. Zero asset files and zero network requests at runtime. Every mesh is procedural geometry, every
+texture is a canvas or a shader, every sound is Web Audio synthesis.
+3. No physics engine. The flight model, holding physics, AI, and collisions are hand-written per
+the spec below.
+4. 60 fps at 1080p on a laptop integrated GPU. Under 150 draw calls and 1.5M triangles: instance
+everything repeated, pool everything spawned.
+5. Every file complete. No placeholders, no `// ...rest of code`, no "left as an exercise". If it
+is not in the files, it does not exist.
+6. Modern Three.js only: `renderer.outputColorSpace`, `texture.colorSpace`, `BufferGeometry`,
+`three/addons/` imports. Never `Geometry`, `.encoding`, `examples/js`, or OrbitControls.
+
+## The feel
+Superman leaving a city at sunset: heavy momentum, wide banking turns, a violent boost that pulls
+the camera back and widens the lens, a sonic boom when you break the threshold, eye beams that
+feel like a cutting torch, not a toy, and an airliner that feels like two hundred tonnes in your
+hands. Not a plane, not a drone. You fly where you look, you carry your speed, and you cannot turn
+on a dime at full boost. References: Superman Returns (2006) flight and the airliner set-down in
+the stadium, Anthem javelin flight, the Unreal 5 Matrix City Superman demo, Ace Combat 7 for the
+jets and missiles.
+
+## Hero flight model (`flight.ts`)
+State: `position`, `velocity` (Vector3), `bodyQuat`, `aimYaw`, `aimPitch`, `boostCharge`, `heat`,
+`hp`, `mode` in {hover, flight, holding, landed, stunned}. Mode changes blend camera and pose
+parameters over 0.4 s.
+
+Steering: mouse drives `aimYaw` / `aimPitch` (pitch clamped to ±85°). Aim is the desired heading.
+Velocity direction rotates toward aim with a max turn rate that shrinks with speed: turnRate =
+lerp(2.5 rad/s at 0 m/s, 0.7 rad/s at max boost speed, smoothstep). Never snap velocity to aim.
+This is what makes momentum matter.
+
+Forces per fixed step (dt = 1/120):
+- Thrust: W applies 60 m/s² along aim. Shift boosts: thrust ×2.2 and a higher speed cap. Boost
+meter drains in 4 s, refills in 3 s, locks out for 1 s at empty.
+- Drag: `drag = -v * |v| * DRAG_K`, with `DRAG_K = THRUST / vMax²` per mode so terminal speed is
+65 m/s cruise and 190 m/s boost. Lerp `DRAG_K` between modes over 0.4 s so boost is a surge, not a
+step.
+- Air brake: S multiplies drag ×6 and pitches the body nose-up 30°.
+- Vertical: Space +25 m/s² world-up, Ctrl −25. A/D: ±20 m/s² strafe in hover, a 0.6 rad/s yaw
+assist at speed.
+- Gravity: 0 while hovering or thrusting, 2.5 m/s² when coasting, 9.8 in `stunned`.
+- Holding (hands on the airliner's nose): the hero and the plane move as one body with the plane's
+velocity; `holding.ts` owns the forces. No boost.
+
+Speed tiers drive visuals and audio: hover < 6, cruise 6–65, fast 65–140, supersonic ≥ 140 m/s.
+Entering supersonic fires the sonic boom once; it re-arms below 120.
+
+Body: hover = upright facing aimYaw with a 0.15 m, 0.8 Hz bob. Flight = forward axis slerps toward
+velocity at 6/s (10/s boosting), prone pose. Bank = clamp(−yawRate × speedFactor × 1.4, ±70°)
+smoothed with a 0.15 s time constant, visible in every turn. Pitch follows velocity pitch, +15° on
+air brake. Holding = flying backward under the nose, hands flat on the underside of the nose
+cone, body angled 30° back like a man bracing against a wall, cape blown forward past the head by
+the airflow.
+
+Landing and takeoff: altitude above the surface under the player (ground or the rooftop directly
+below) < 2.2 m and speed < 8 m/s → `landed`, upright, velocity zero. Space from landed: charge
+0–0.6 s, release to launch at 15–45 m/s with a dust ring and camera kick. Rooftop landings work.
+
+Hero HP 100. Tracer hit −8, missile −35. Regenerates 10/s after 4 s without damage. Hit feedback:
+red edge flash, camera jolt, sparks on the body, damage-direction arc on the HUD. At 0: 2 s
+slow-motion fall, "YOU FELL", retry from the phase checkpoint.
+
+Collisions (`collision.ts`): buildings sit on a grid, so collision is an O(1) cell lookup of the
+player sphere (r 0.9) against that cell's AABB plus the 8 neighbours when within 2 m of a cell
+edge. On hit: push out along the nearest face, reflect with restitution 0.25, speed ×0.4,
+`stunned` 0.5 s (tumble, no control, full gravity), red flash, shake ∝ impact speed. The player
+never ends a frame inside geometry. Ground: y ≥ surface + 1.8; landing above 30 m/s is a hard
+landing with bounce, shake, 0.4 s stun. Beyond 4,500 m from the city centre apply a soft push back
+and show TURN BACK.
+
+## Laser vision (`laser.ts`)
+- Hold LMB. Two beams from the eyes (±0.08 m at the head) converge on the aim point: a raycast
+from the camera through the crosshair against jets, missiles, buildings, and ground out to 1,500
+m; if nothing is hit the beams end 1,500 m out. The airliner is excluded from the hit test while
+you hold it. Head aim is independent of the body, so you can fire while holding the plane.
+- Rendering: inner core (white cylinder, 0.06 m radius) plus outer glow (red cylinder, 0.25 m,
+additive, alpha falling off from the core), emissive intensity 4 so bloom catches it, 5% flicker
+at 30 Hz. Eyes are two small emissive spheres whose intensity rises with heat and flares when
+firing. Beam end: a spark burst (40 particles/s), a red PointLight (intensity 30, range 20 m) at
+the hit point, and a molten glow sprite on the surface that fades over 1.5 s. On buildings the
+beam scores a glowing line as you drag it.
+- Damage: jets 35 HP/s (jet HP 100), missiles 60 HP/s (missile HP 20). On-target time is tracked
+for the accuracy stat.
+- Heat: firing raises heat 0 → 100 in 4 s. At 100: overheat, eyes go dark, no fire for 2 s, then
+re-ignite with a pulse. Heat decays 100 → 0 in 3 s while not firing. HUD heat bar turns red above
+75 and the beams thin slightly.
+- Aim assist: within 3° of a jet, the aim point magnetises softly to its position. RMB toggles
+lock-on to the nearest jet within 15°: reticle box, BANDIT n label, distance, HP bar, and the
+camera biases 20% toward the target. Lock breaks beyond 30° or when the target dies.
+
+## The airliner (`airliner.ts`, `holding.ts`)
+- Procedural: fuselage capsule 62 m long, radius 3 m; swept wings with dihedral, 60 m span; two
+engine nacelles under the wings; horizontal and vertical stabilisers; dark cockpit window band; a
+dotted warm emissive passenger window strip; white body, blue belly, red cheatline.
+`MeshStandardMaterial` metalness 0.7, roughness 0.3 with the sky environment map so the sunset
+streaks along it. Nav lights: red left wingtip, green right, white tail strobe at 1 Hz. Landing
+gear extends automatically below 200 m when speed < 20 m/s.
+- Left engine burning: fire particles (additive, orange → black over life) and a grey smoke ribbon
+trail of 200 segments that lingers behind it across the sky.
+- Trajectory: spawns 9 km east of downtown at 2,400 m, heading west at 110 m/s, sinking 18 m/s
+rising to 30 m/s over 60 s, nose pitching down 0° → −12° over 90 s. Uncaught, it hits the downtown
+towers: enormous explosion, MISSION FAILED. The HUD shows IMPACT IN mm:ss from its altitude above
+the terrain ahead and its sink rate. It keeps ticking while held if the plane is still sinking,
+and turns green once the projected path clears the terrain.
+- Two grab points glow when you are within 60 m: TAIL (under the tail cone, the nearest when you
+approach from behind, labelled TAIL — UNSTABLE) and NOSE (under the nose cone, labelled NOSE).
+Within 6 m of either with speed matched within 25 m/s, press E: 0.8 s catch animation, timeScale
+0.3 for 1 s, metal groan, the camera pulls wide. Grabbing the TAIL: after 1.5 s the tail section
+tears off with a metal scream and a shower of debris, hull −30, the plane pitches down 8° and
+sinks 6 m/s faster, the hero is thrown clear (stunned 0.5 s) and must re-catch at the NOSE.
+Grabbing the NOSE enters `holding`.
+- Holding physics (`holding.ts`, hero and plane as one body, the plane's velocity is the state):
+  - Gravity on the body −8 m/s² unless Space lifts (+25 m/s²). Ctrl −10 m/s².
+  - Push back: hold S to decelerate, the force ramping 0 → 12 m/s² over 1 s, relaxing on release.
+W pushes forward +6 m/s².
+  - Aim sets the plane's attitude with lag: pitch clamped ±35°, roll ±20°, yaw rate max 0.4 rad/s.
+Nose-up beyond 15° adds 4 m/s² of aerodynamic braking and a little lift; nose-down beyond 15°
+adds 3 m/s² and sink.
+  - Stress (0–100): rises at 12/s × max(0, brake − 7 m/s²), and at 15/s while yaw rate > 0.3
+rad/s, speed > 130, or descent faster than 20 m/s. Decays 20/s when gentle. Above 70: NOSE
+BUCKLING warning, the nose skin visibly crumples (vertex displacement on the nose cone), metal
+crunch. At 100: hull −8/s.
+  - Tuned so a clean run needs about 8 m/s² of braking held for 10 to 12 s, with the sink arrested
+before the downtown towers.
+- Hull HP 100: tracer −4, missile −25, tail tear −30, stress at 100 −8/s, hard touchdown −20. Hull
+0: a wing snaps, the plane spirals down trailing fire, MISSION FAILED.
+
+## Metro Stadium (`stadium.ts`)
+At the western edge of the city, 1.4 km west of downtown, in a cleared 6×6-cell block: an
+elliptical bowl 280 m × 220 m, three tiers of seating rings (instanced step boxes), a crowd of
+8,000 instanced tiny coloured quads on the seats, a green field with a painted baseball diamond
+(canvas texture), four floodlight masts with emissive heads and additive light cones, a scoreboard
+with canvas-drawn text that switches to 218 SAVED on touchdown, and a SET-DOWN ZONE 120 m × 80 m
+outlined on the field. Crowd camera flashes are particles: a sparse flicker during the approach, a
+storm on touchdown.
+
+## Enemy jets (`jet.ts`, `missile.ts`, `wreck.ts`)
+- Procedural fighter: 15 m capsule fuselage, delta wings, twin canted tail fins, dark glass
+canopy, an afterburner cone (emissive orange, brighter with throttle), wingtip contrail ribbons
+during hard turns, an exhaust heat sprite. Dark grey with red markings, metalness 0.8, env-mapped.
+- Speed 180 m/s. Turn limit 1.6 rad/s with visible banking. Altitude floor 250 m above the city;
+they never fly into buildings.
+- AI state machine: approach (toward the target from 1.5 km), attack run (straight at the target,
+cannon in 0.6 s bursts: additive elongated tracer quads, 600 m/s, 8 per second, 1.5° spread,
+muzzle flash sprite), break (4 G banked turn at 150 m), reposition (800 m out with an altitude
+change), evade (when lasered for > 0.5 s: barrel roll and break, at most once per 4 s), dead.
+Target = hero in INTERCEPT, the airliner from CATCH onward, switching to the hero when the hero
+has been within 200 m for 3 s.
+- Missiles: every 12 s from beyond 600 m. Small cylinder with fins, 250 m/s, homing with a 1.2
+rad/s turn limit, smoke trail, HP 20. HUD MISSILE warning and a tone with a rising rate. A hard
+turn under 200 m makes it overshoot; a miss beyond 8 m detonates harmlessly. Lasering it detonates
+it with a full explosion.
+- Waves: INTERCEPT 2 jets on the hero. CATCH 3 on the airliner. ARREST 4, then 3 more at 40 s or
+when hull < 50%. 12 total. Kill → layered explosion, a tumbling flaming wreck with a smoke trail
+that falls and explodes again where it lands. Wave count on the HUD.
+
+## Game flow (`mission.ts`, `cinematics.ts`)
+0. TITLE: LAST FLIGHT in large spaced type over the live city, the sun low, camera drifting
+slowly; one line of premise; the control list; Click to fly.
+1. CINEMATIC (4 s, letterboxed, any key skips): the camera orbits the hero hovering over downtown.
+Radio text types in: "MAYDAY MAYDAY, Flight 227, engine fire, we're going down." A marker appears
+9 km east. Control snaps in with a camera whip.
+2. INTERCEPT: objective line "INTERCEPT FLIGHT 227 — 8.9 KM", arrow and distance, 2 jets attack
+you. Must be reachable within about 60 s using boost.
+3. CATCH: inside 1.5 km, 3 jets attack the airliner, the hull bar appears, the grab points glow,
+the catch prompt appears in range.
+4. ARREST: objective "KILL ITS SPEED — 112 M/S — STADIUM 3.1 KM". You are holding a sinking
+airliner by the nose, flying backward over the skyline. Push back without buckling it, lift to
+stop the sink, steer it west to Metro Stadium. Waves 3 and 4 attack while you hold it. The plane
+must be under 30 m/s by the stadium.
+5. SET DOWN: over the zone at speed < 8 m/s, lower it. Sink rate < 4 m/s at touchdown is perfect,
+4–10 is hard (hull −20, bounce, dust), above 10 is a crash. If the nose is pitched up, the tail
+touches first with sparks, then the nose lowers as the hero descends until the hero stands on the
+grass under the nose. Press E to release: the hero steps back, the plane settles on its gear, the
+crowd roars, ten thousand camera flashes, the scoreboard reads 218 SAVED. timeScale 0.3, a slow
+orbit, "218 SOULS SAVED".
+6. RESULTS (`scoring.ts`): time, jets destroyed, hull remaining, hero HP, touchdown sink rate,
+laser accuracy (on-target time / fire time), score, grade S/A/B/C, best score from `localStorage`,
+R to play again.
+Fail states: airliner impact, hull 0, hero death, crash touchdown. "MISSION FAILED — reason". R
+retries from the start of the current phase (checkpoint), Shift+R fully restarts. F toggles
+free-fly with no mission.
+
+## Camera (`camera.ts`)
+Third-person chase driven by AIM, not by velocity, so the hero swings across the frame on hard
+turns. Position target = player − aimDir × dist + up × height, dist 5 m hover → 13 m supersonic,
+height 2 → 3.5 m. Critically damped spring, about 0.12 s lag at cruise and 0.2 s on boost so the
+camera visibly falls behind a boost press and catches up. Look-at = player + aimDir × lookAhead (3
+→ 25 m with speed), plus a 20% bias toward the lock target. Camera roll = 35% of body bank. FOV =
+72 + 30 × smoothstep(speed / vMaxBoost), lerped at 8/s, plus a 4-frame +6° kick on boost press.
+Shake: sum-of-sines, 0 below 100 m/s → 0.12 m at supersonic, spikes on hits, booms, and nearby
+explosions ∝ 1/distance. Raycast from look-at to camera and pull in on buildings. While holding:
+dist 22 m at a three-quarter front-low angle so the hero bracing against the nose fills the frame
+with the skyline behind; aim still steers. Cinematic cameras for the catch, the tail tear, the
+final kill of each wave, and the set-down.
+
+## Graphics bar (this is what INSANE means; every item ships)
+1. Sky (`sky.ts`): the `Sky` addon with the sun 4° above the horizon, turbidity 8, rayleigh 2.5,
+mieCoefficient 0.02, mieDirectionalG 0.85. Fog colour sampled from the sky at the horizon so the
+skyline dissolves. A sun disc mesh (emissive, far away, also the god-rays source) plus a
+`Lensflare` built from canvas textures: a main glow and four ghost rings.
+2. Environment: `PMREMGenerator.fromScene` on a scene containing only the Sky, assigned to
+`scene.environment`, so the airliner, jets, and glass towers reflect the sunset.
+3. Post (`renderer.ts`, via `postprocessing`): `EffectComposer` with `frameBufferType:
+HalfFloatType` and `multisampling: 4`. `RenderPass` → `EffectPass`(`GodRaysEffect` on the sun mesh
+(density 0.96, decay 0.92, weight 0.3, 60 samples, blur), `BloomEffect` (mipmapBlur,
+luminanceThreshold 0.8, intensity 0.9, radius 0.6), a custom `RadialBlurEffect` extending `Effect`
+(12 samples toward screen centre, strength 0 at cruise → strong at supersonic and during
+explosions near the camera), `ChromaticAberrationEffect` (offset ∝ speed), a custom `GradeEffect`
+(gentle S-curve, warm shadows), `VignetteEffect`, `NoiseEffect` (0.03), `ToneMappingEffect`
+ACES_FILMIC, `SMAAEffect` HIGH). Renderer tone mapping off so it is not applied twice. If composer
+creation throws, fall back to `renderer.render` without error.
+4. Shadows: one shadow-casting DirectionalLight, 2048 PCFSoft map, shadow camera a 400 m box
+following the hero and snapped to shadow texels to prevent shimmer. Hero, airliner, jets, and
+buildings cast; buildings, ground, and the stadium receive.
+5. City (`city.ts`, `windows.ts`): 64×64 grid, cell 48 m, streets 14 m, a sinuous river 5 cells
+wide, 3 plazas, the stadium block, heights 70% 18–70 m, 22% 70–160 m, 8% 160–420 m clustered
+downtown. One `InstancedMesh` for concrete towers (metalness 0.15, roughness 0.6) and one for
+glass towers (metalness 0.9, roughness 0.15) that mirror the sky. Windows via `onBeforeCompile`:
+UVs from world position on vertical faces so one tileable canvas texture gives 3 m windows on
+every building regardless of scale, with an emissive window map (30% lit, warm, per-building
+seed). Rooftop mechanical boxes, antennas with red blinkers, a warm ground-haze quad at 30 m
+across the city bowl. Streetlights every 24 m on main streets, instanced, emissive tips.
+6. Clouds (`clouds.ts`, `cloud.ts`): two instanced billboard layers (150 + 150) at 500–900 m with
+per-instance rotation and a sprite shader that brightens the sun-facing half, plus a thin cirrus
+layer on a low dome from a canvas noise texture. Flying through a cloud whitens the fog for a
+beat.
+7. Water (`river.ts`, `water.ts`): a custom shader with two scrolling sum-of-sines normal layers,
+Fresnel reflection of the sky colour, a sun specular streak.
+8. Particles (`particles.ts`): one instanced particle system with a 20k budget and per-instance
+life, velocity, size, colour, and soft radial alpha, used by everything: sparks, fire, smoke,
+debris, tracers, speed streaks, dust, crowd flashes. Smoke is tinted by the sun direction.
+9. Explosions (`explosions.ts`, `fire.ts`), layered: PointLight flash (intensity 200, 0.1 s),
+fireball billboard with a procedural noise fire shader (0.8 s, expands and darkens), additive
+shockwave ring (0.4 s), 40 spinning debris boxes with flaming trails and gravity, 30 lingering lit
+smoke puffs (6 s), shake ∝ 1/distance, and a scorch glow where wrecks land.
+10. Speed (`speedlines.ts`, `trails.ts`): 400 speed streaks fading in above 40 m/s, FOV, radial
+blur, vignette, chromatic aberration, the hero's additive ribbon trail on boost, the sonic boom
+ring and flash.
+11. Hero (`hero.ts`): capsule torso, sphere head, box limbs, deep red and gold, dark boots,
+glowing eyes, a 7-segment Verlet cape (0.6 m wide quads, gravity, relative-wind drag, flutter)
+that streams at speed, hangs at hover, and blows forward while holding. Poses blend by mode:
+upright, prone arms forward, arms swept back on boost, braced arms-up under the nose while
+holding.
+12. Time dilation (`loop.ts`): a global `timeScale` respected by physics, AI, particles, and audio
+pitch, used at 0.3 for the catch, the tail tear, the last kill of each wave (0.5 s), and the
+set-down.
+13. Cinematic presentation: letterbox bars, typed radio text, phase title cards with a fade, and a
+title screen that is the live scene.
+## Audio (`audio.ts`, all synthesised, one master gain at 0.6, created on first click)
+Wind: bandpassed noise, centre 300 → 1,200 Hz with speed, gain 0 → 0.5. Boost roar: 55 Hz sawtooth
+through a lowpass. Sonic boom: sine sweep 120 → 30 Hz over 0.4 s plus a noise burst. Laser: a
+sustained saw-plus-noise hum whose pitch rides heat, a sizzle at the hit point. Cannon: short
+noise bursts; incoming tracers whiz with a pitch drop. Missile: warning tone with a rising rate, a
+rocket hiss. Jet flyby: filtered noise with pitch from relative velocity, a Doppler drop as they
+pass. Explosions: noise burst through a lowpass sweep plus a sub thump, quieter with distance.
+Airliner: an engine-fire roar that grows as you approach, a metal groan on catch, a nose-skin
+crunch under stress, the tail-tear scream, gear clunk, touchdown thud. Crowd: a roar that rises as
+you approach the stadium and peaks on touchdown. Radio: chirp beeps before text lines. Music: a
+procedural drone (two detuned saws, slow-LFO lowpass) that adds a 100 bpm kick pulse in combat and
+resolves to a held chord on touchdown.
+## HUD and UI (`hud.ts`, DOM, not canvas text)
+
+Thin geometric style, cyan-white on dark translucent panels, red for danger, system-ui font with
+wide letter-spacing, everything sized in `vmin`. Top-left: speed in km/h (large) with tier,
+altitude, hero HP bar. Top-centre: objective line and distance, IMPACT IN countdown (red under 30
+s), wave count. Top-right: timer, score, jets destroyed. Centre: a crosshair that spreads with
+speed, the lock-on box, the off-screen target arrow, the grab prompt. Bottom-centre: boost meter
+and laser heat bar. Bottom-right while holding: hull HP, stress bar with a NOSE BUCKLING flash,
+plane speed, and the SET-DOWN gauge (sink rate: green < 4, amber < 10, red) with the zone outline
+projected on screen within 500 m. Bottom-left: radio text lines that type in and fade. Edges:
+damage-direction arcs, missile warning. Popups: NEAR MISS +150 (within 9 m of a building above 50
+m/s, +4 m/s, whoosh, 0.6 s cooldown), SUPERSONIC, SPLASH ONE, OVERHEAT, NOSE BUCKLING.
+## Controls (`input.ts`)
+Mouse aim. LMB laser (hold). RMB lock-on. W thrust / push forward, S brake / push back, Shift
+boost, Space up / lift / takeoff, Ctrl down, A/D strafe, E grab / release, R retry phase, Shift+R
+restart, F free-fly, Esc release mouse, backquote debug panel, `[` `]` sensitivity (default 0.0022
+rad/px), any key skips cinematics. Click → `requestPointerLock`. If pointer lock is denied or
+lost, keep running with arrow-key steering at 1.8 rad/s and show a "click to capture mouse" hint.
+Handle `resize`.
+## Engineering rules
+- Fixed timestep 1/120 with an accumulator in `loop.ts`; clamp frame dt to 0.05 s so a tab switch
+never launches the player.
+- Zero allocations in the per-frame path: reuse temporaries from `math.ts`, pool tracers,
+missiles, debris, and particles through `pool.ts`.
+- Guard every `normalize()` on possibly-zero vectors. No NaN may reach any position; if one does,
+reset that entity.
+- `renderer.setPixelRatio(Math.min(devicePixelRatio, 2))`.
+- `config.ts` holds every tunable with a comment and a unit. Nothing else hard-codes a number that
+changes the feel.
+- Target 4,000 to 6,000 lines across the files listed. Clear over clever.
+## Tests (`vitest`, Node environment, no DOM, no renderer)
+- `flight.test.ts`: turn rate at 190 m/s is below turn rate at 0 m/s; terminal speeds land within
+5% of CONFIG for cruise and boost; 10,000 steps of random input never produce NaN.
+- `collision.test.ts`: a sphere overlapping any AABB is pushed fully outside; the grid lookup
+agrees with brute force on 1,000 random points.
+- `holding.test.ts`: 8 m/s² of brake from 110 m/s reaches under 30 m/s within 12 s; 10 m/s²
+sustained crosses stress 70; a tail grab tears at 1.5 s and drops hull by 30.
+- `mission.test.ts`: every phase transition in order; every fail state produces its reason; retry
+restores the phase checkpoint.
+## Self-check before you finish (fix whatever fails)
+- `npm install && npm run typecheck && npm test && npm run build` clean. `npm run dev` with zero
+console errors and no network requests.
+- Click → title → cinematic → flying. Hero, city, sun, god rays, lens flare, and shadows all
+visible.
+- Holding W and moving the mouse produces a visible banked turn. Shift produces camera pull-back,
+FOV, radial blur, roar, and streaks. Crossing 140 m/s fires exactly one boom.
+- LMB draws two converging beams that bloom, spark on impact, kill a jet in about 3 s, and
+overheat at 4 s.
+- Jets bank, strafe, break, evade, and fire missiles. Missiles can be lasered or dodged. Kills
+produce layered explosions and falling wrecks.
+- The airliner can be intercepted within about 60 s. Grabbing the tail tears it off after 1.5 s
+and throws the hero clear. Grabbing the nose enters holding.
+- Holding S slows the plane; above about 8 m/s² NOSE BUCKLING fires and the nose visibly crumples;
+Space arrests the sink; the plane can be steered to the stadium.
+- The plane can be set down in the zone with a touchdown reading, E releases it, the crowd
+flashes, the scoreboard changes, the results card shows, best score persists across reload.
+- Every fail state shows its reason and R retries the phase.
+- Flying into a building never traps the player. Rooftop landing and takeoff work.
+- Switching tabs for 10 s and returning does nothing strange. Resize works. 60 fps on integrated
+graphics.
+## Deliverable
+If you can write files: create the project, run install, typecheck, test, and build, fix
+everything until all four are clean, then run dev and confirm zero console errors. Finish with the
+file tree with line counts, the three commands to run it, and three tuning tips naming the CONFIG
+constants that most change the feel.
+If you cannot write files: output `package.json` first, then every file as its own fenced block
+preceded by a `### path/to/file` heading, in dependency order, no file omitted, then the same
+closing section. If you hit an output limit, stop at a file boundary, write `// CONTINUE`, and
+resume exactly there when asked.
+
+'''
+
+[user]
+text = '''
+Build the game described in the system prompt above. Scaffold the full Three.js + TypeScript + Vite project as specified. No explanations.
+'''
