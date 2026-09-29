@@ -13,7 +13,7 @@ models actually behave on tasks that matter to them.
 ## Features
 
 - **6 models** preconfigured: Kimi K3, GLM 5.2, ChatGPT 5.6, Claude Opus 5, Claude Fable, Claude Sonnet 5
-- **27 prompts** across 10 categories: coding, reasoning, math, summarization, creative-writing, instruction-following, game-generation, app-generation, domain-probe, vision
+- **29 prompts** across 10 categories: coding, reasoning, math, summarization, creative-writing, instruction-following, game-generation, app-generation, domain-probe, vision
 - **Automated grading** (Proposal 1): exact, regex, contains, or judge-model modes
 - **SSE streaming** (Proposal 2): true time-to-first-token (TTFB) measurement
 - **Side-by-side comparison** (Proposal 3): Markdown diff view + HTML game artifact tab viewer
@@ -77,6 +77,8 @@ ai-benchmark/
 │   ├── game-horror-house.toml        # Haunted-house escape game (Vite+Three.js)
 │   ├── game-last-flight.toml         # Superhero flight & rescue (TS+Vite+Three.js)
 │   ├── game-mario-kart.toml          # Mario Kart clone (sub-agent brief)
+│   ├── game-cities-skylines.toml     # Cities: Skylines II-class city builder (agentic brief)
+│   ├── game-lava-lamp.toml           # Photoreal ray-marched lava lamp (single HTML)
 │   ├── app-stillwater.toml           # Voice-first AI therapy app (monorepo)
 │   ├── probe-constrained-scheduling.toml
 │   ├── probe-nonexistent-api.toml
@@ -182,7 +184,7 @@ response as a standalone `.html` file in `results/artifacts/`. You can open
 these directly in a browser to play, test, and visually compare the output
 of different models.
 
-Seven frontier-build prompts ship with the repo (source: [BridgeBench](https://www.bridgebench.ai/prompts)):
+Nine frontier-build prompts ship with the repo (source: [BridgeBench](https://www.bridgebench.ai/prompts)):
 
 | Prompt file | Build | Format | Difficulty |
 |-------------|-------|--------|------------|
@@ -192,6 +194,8 @@ Seven frontier-build prompts ship with the repo (source: [BridgeBench](https://w
 | `game-horror-house.toml` | First-person haunted-house escape game | Vite + Three.js (markdown) | hard |
 | `game-last-flight.toml` | Cinematic superhero flight & airliner rescue | TS + Vite + Three.js (markdown) | hard |
 | `game-mario-kart.toml` | AAA Mario Kart clone via sub-agents (one-sentence brief) | Three.js (markdown) | hard |
+| `game-cities-skylines.toml` | AAA Cities: Skylines II-class city builder via multi-agent critique loop | Three.js + Vite (markdown) | hard |
+| `game-lava-lamp.toml` | Photoreal ray-marched lava lamp studio shot | HTML | hard |
 | `app-stillwater.toml` | Voice-first AI therapy companion app | RN + NestJS + Postgres (markdown) | hard |
 
 Eight domain-probe prompts (short, targeted tests of specific capabilities):

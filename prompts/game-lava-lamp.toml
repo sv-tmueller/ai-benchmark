@@ -1,0 +1,57 @@
+# Source: #16. The prompt intentionally references a "shared BridgeBench
+# manifest and API contract", a "benchmark replay API" and a "shared exposure
+# contract" that are not defined anywhere in this repo. That is deliberate:
+# models must infer a reasonable manifest/state/lifecycle shape on their own
+# rather than being handed one.
+id          = "game-lava-lamp"
+title       = "Photoreal ray-marched lava lamp studio shot"
+category    = "game-generation"
+difficulty  = "hard"
+temperature = 0.2
+max_tokens  = 65536
+save_as     = "html"
+file_prefix = "lava-lamp"
+
+[user]
+text = '''
+Create a tactile, photoreal lava lamp in a quiet warm-charcoal studio.
+A tall clear tapered bottle sits in a sculpted brushed-silver base beneath
+a small matching cap. Thin vertical softbox reflections reveal the glass.
+Inside, deep orange-red wax rises from a bright amber pool, stretches into
+teardrops and connected necks, merges, cools, and sinks. Clear liquid remains
+visible between the masses. A soft lamp reflection and heater glow ground
+the object on a dark tabletop.
+
+Make the wax and glass the reason to look closer. Thick wax cores retain
+rich colour, thin edges transmit warm light, and the curved bottle subtly
+refracts the shapes inside it. The silver hardware picks up both cool
+studio strips and warm heater bounce. Use a smooth implicit wax surface;
+a custom ray-marched shader is welcome. Choose the technique that makes
+glass, wax, and reflected light read together as one physical object.
+
+Keep the complete lamp centred horizontally and vertically, fully in frame
+with breathing room above the cap and below the foot through every resize.
+Fit its entire bounds inside the central 80% of both viewport dimensions.
+No cropped cap or base, camera drift, zoom, controls, text, or overlays.
+The first frame is already warm and in motion, with several
+differently sized forms and at least one bridge or neck. The later capture
+shows evolved wax shapes without losing the product-shot composition.
+Keep the studio readable under the shared exposure contract.
+
+Show just the lamp in its studio. It runs automatically at heat 0.65 in the
+Ember palette; there are no visible or hidden interactive controls. Declare
+an empty controls array in the manifest. Keep the benchmark replay API.
+
+Reflect exactly these fixed configuration keys in getState(): `heat` (0.65)
+and `paletteIndex` (0 for Ember). Do not include clocks, frame counters,
+temperatures, camera poses, or moving blob coordinates.
+
+reset(seed) restores heat 0.65 and paletteIndex 0,
+recreates the same prewarmed arrangement from that seed, and restarts the
+simulation epoch and any accumulated substeps. Repeated resets with the same
+seed must reproduce the same scene at the same elapsed time. Follow the
+shared BridgeBench manifest and API contract. destroy() stops rendering,
+removes event listeners, and releases renderer and render-target resources.
+
+Output a single self-contained HTML file that runs by opening it. No explanations.
+'''
