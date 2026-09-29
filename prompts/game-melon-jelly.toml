@@ -1,0 +1,60 @@
+# Source: #19. One substitution from the original prompt: the sentence
+# "Output only the complete file in one code block." was replaced with
+# "Output only the raw HTML, starting with <!DOCTYPE html>, no markdown
+# fences." The runner writes the raw response straight to the .html
+# artifact, so a fenced code-block answer would produce a file that does
+# not open in a browser.
+id          = "game-melon-jelly"
+title       = "Melon Jelly: XPBD soft-body watermelon slice"
+category    = "game-generation"
+difficulty  = "hard"
+temperature = 0.2
+max_tokens  = 65536
+save_as     = "html"
+file_prefix = "melon-jelly"
+
+[user]
+text = '''
+Build "Melon Jelly": a single, self-contained HTML file (no CDN, no external assets, no build step). Use plain JavaScript with JSDoc types; do not use TypeScript unless it runs without a compiler. Output only the raw HTML, starting with <!DOCTYPE html>, no markdown fences.
+
+GOAL
+A physically convincing, jelly-like watermelon slice that the user can squish, pinch, drag, drop, cut and recolor in real time. Physical realism and interaction feel are the primary quality criteria.
+
+PHYSICS (required)
+- Soft-body simulation in 2D (side view) using XPBD, or an equivalent stable method (FEM or MPM). Plain naive spring-mass that explodes or collapses is not acceptable.
+- Body: a triangulated or particle-based melon half-disc (about 400 to 1500 particles) with an outer rind layer that is stiffer than the flesh.
+- Constraints: distance/shear stiffness, area or volume preservation (jelly should bulge sideways when compressed), damping, gravity, and friction on the floor and walls.
+- Collisions: floor, side walls, and the knife. No tunneling at fast drag speeds (use substeps and a fixed timestep with accumulator, at least 8 substeps per frame).
+- Behavior targets: wobbles and settles within about 1 to 2 seconds after a drop, squashes on impact and rebounds, sags under its own weight, never jitters at rest.
+- Expose tunable parameters (stiffness, damping, gravity, wobble) in a small collapsible panel.
+
+INTERACTION (mouse and touch, via Pointer Events)
+- Drag: grab the nearest particle(s) with a soft radius and pull with a compliant spring (no teleporting).
+- Pinch: a second mode or modifier (right click, Shift, or two-finger touch) pinches two regions together and deforms the body locally.
+- Drop: releasing mid-air lets the melon fall and bounce realistically.
+- Squash by pressing on it from above while it rests on the floor.
+
+CUTTING
+- Knife tool toggle. Dragging a line across the melon cuts all constraints and triangles crossing the path.
+- The result must split into physically independent pieces that keep simulating (each piece keeps its own behavior, pieces can be dragged separately).
+- Cut edges show the pink/red flesh interior; the outer edge shows the green rind and white pith.
+- Visual feedback: the knife trail is visible while cutting.
+
+COLOR
+- Color picker and 6 to 8 preset swatches that recolor the flesh (rind and seeds stay recognizable). Recoloring applies to all pieces and stays smooth (no flicker).
+
+RENDERING
+- Canvas 2D or WebGL. Smooth filled mesh (not visible dots), glossy jelly look with a subtle highlight and slight translucency, dark seeds moving with the mesh, soft drop shadow on the floor.
+- Responsive full-window canvas, devicePixelRatio aware.
+
+UI
+- Minimal toolbar: Grab, Knife, Color, Reset. Reset restores the initial melon and clears all pieces instantly, with no page reload.
+- Show FPS in a corner (toggleable).
+
+PERFORMANCE AND QUALITY
+- Stable 60 FPS on a mid-range laptop. No NaN explosions: clamp velocities, guard degenerate triangles, and recover gracefully.
+- Clean structure: separate sections for physics, input, cutting, rendering, UI. Comment only non-obvious logic.
+
+SELF-CHECK BEFORE ANSWERING
+Verify mentally: (1) drop, bounce, and settle work, (2) cutting yields independent pieces, (3) reset fully restores state, (4) no external dependencies, (5) nothing explodes with fast mouse drags.
+'''

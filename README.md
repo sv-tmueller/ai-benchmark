@@ -13,7 +13,7 @@ models actually behave on tasks that matter to them.
 ## Features
 
 - **6 models** preconfigured: Kimi K3, GLM 5.2, ChatGPT 5.6, Claude Opus 5, Claude Fable, Claude Sonnet 5
-- **29 prompts** across 10 categories: coding, reasoning, math, summarization, creative-writing, instruction-following, game-generation, app-generation, domain-probe, vision
+- **30 prompts** across 10 categories: coding, reasoning, math, summarization, creative-writing, instruction-following, game-generation, app-generation, domain-probe, vision
 - **Automated grading** (Proposal 1): exact, regex, contains, or judge-model modes
 - **SSE streaming** (Proposal 2): true time-to-first-token (TTFB) measurement
 - **Side-by-side comparison** (Proposal 3): Markdown diff view + HTML game artifact tab viewer
@@ -79,6 +79,7 @@ ai-benchmark/
 │   ├── game-mario-kart.toml          # Mario Kart clone (sub-agent brief)
 │   ├── game-cities-skylines.toml     # Cities: Skylines II-class city builder (agentic brief)
 │   ├── game-lava-lamp.toml           # Photoreal ray-marched lava lamp (single HTML)
+│   ├── game-melon-jelly.toml         # XPBD soft-body watermelon slice (single HTML)
 │   ├── app-stillwater.toml           # Voice-first AI therapy app (monorepo)
 │   ├── probe-constrained-scheduling.toml
 │   ├── probe-nonexistent-api.toml
@@ -184,7 +185,7 @@ response as a standalone `.html` file in `results/artifacts/`. You can open
 these directly in a browser to play, test, and visually compare the output
 of different models.
 
-Nine frontier-build prompts ship with the repo (source: [BridgeBench](https://www.bridgebench.ai/prompts)):
+Ten frontier-build prompts ship with the repo (most sourced from [BridgeBench](https://www.bridgebench.ai/prompts); `game-melon-jelly` was authored for this repo):
 
 | Prompt file | Build | Format | Difficulty |
 |-------------|-------|--------|------------|
@@ -196,6 +197,7 @@ Nine frontier-build prompts ship with the repo (source: [BridgeBench](https://ww
 | `game-mario-kart.toml` | AAA Mario Kart clone via sub-agents (one-sentence brief) | Three.js (markdown) | hard |
 | `game-cities-skylines.toml` | AAA Cities: Skylines II-class city builder via multi-agent critique loop | Three.js + Vite (markdown) | hard |
 | `game-lava-lamp.toml` | Photoreal ray-marched lava lamp studio shot | HTML | hard |
+| `game-melon-jelly.toml` | XPBD soft-body watermelon slice: squish, pinch, drag, cut, recolor | HTML | hard |
 | `app-stillwater.toml` | Voice-first AI therapy companion app | RN + NestJS + Postgres (markdown) | hard |
 
 Eight domain-probe prompts (short, targeted tests of specific capabilities):
