@@ -1,0 +1,1043 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<link rel="icon" href="data:,">
+<title>Melon Jelly — XPBD soft-body</title>
+<style>
+  :root { --glass: rgba(22,24,38,.76); --line: rgba(255,255,255,.14); --text:#eef0ff;
+          --muted:#a9aecb; --accent:#ff5d73; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { margin:0; height:100%; overflow:hidden; background:#0f1018; color:var(--text);
+    font:13px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    user-select:none; -webkit-user-select:none; overscroll-behavior:none; }
+  canvas { position:fixed; inset:0; display:block; width:100%; height:100%;
+    touch-action:none; cursor:grab; }
+  canvas.knife { cursor:crosshair; }
+  canvas.pinch { cursor:cell; }
+  canvas.drag  { cursor:grabbing; }
+  .glass { background:var(--glass); border:1px solid var(--line); border-radius:16px;
+    -webkit-backdrop-filter:blur(12px); backdrop-filter:blur(12px);
+    box-shadow:0 10px 30px rgba(0,0,0,.4); }
+  #toolbar { position:fixed; left:50%; bottom:max(14px,env(safe-area-inset-bottom));
+    transform:translateX(-50%); display:flex; gap:4px; padding:6px;
+    max-width:calc(100vw - 16px); z-index:5; }
+  .tb { display:flex; flex-direction:column; align-items:center; gap:2px; min-width:58px;
+    padding:8px 10px 6px; border:0; border-radius:11px; background:transparent; color:inherit;
+    font:inherit; font-size:11px; cursor:pointer; transition:background .15s; }
+  .tb:hover { background:rgba(255,255,255,.08); }
+  .tb.active { background:rgba(255,93,115,.24); box-shadow:inset 0 0 0 1px rgba(255,93,115,.65); }
+  .tb .ic { font-size:19px; line-height:1; }
+  .sep { width:1px; background:var(--line); margin:8px 2px; }
+  #colorPop { position:fixed; left:50%;
+    bottom:calc(max(14px,env(safe-area-inset-bottom)) + 80px); transform:translateX(-50%);
+    padding:12px; display:none; gap:10px; align-items:center; flex-wrap:wrap;
+    justify-content:center; max-width:calc(100vw - 16px); z-index:5; }
+  #colorPop.open { display:flex; }
+  .sw { width:30px; height:30px; border-radius:50%; border:2px solid rgba(255,255,255,.55);
+    cursor:pointer; padding:0; }
+  .sw.sel { border-color:#fff; box-shadow:0 0 0 3px rgba(255,255,255,.28); }
+  #colorInput { width:38px; height:34px; border:0; padding:0; background:none; cursor:pointer; }
+  #panel { position:fixed; top:12px; left:12px; width:250px; padding:0; z-index:5; }
+  #panel summary { padding:10px 14px; cursor:pointer; font-weight:600; list-style:none; }
+  #panel summary::-webkit-details-marker { display:none; }
+  #panel summary::after { content:"▾"; float:right; color:var(--muted); }
+  #panel[open] summary::after { content:"▴"; }
+  #panel .body { padding:0 14px 10px; display:grid; gap:7px; }
+  .row { display:grid; grid-template-columns:76px 1fr 42px; align-items:center; gap:8px;
+    font-size:12px; color:var(--muted); }
+  .row input[type=range] { width:100%; accent-color:var(--accent); }
+  .row output { text-align:right; color:var(--text); font-variant-numeric:tabular-nums; }
+  .hint { padding:0 14px 12px; color:var(--muted); font-size:11px; line-height:1.6; }
+  kbd { background:rgba(255,255,255,.1); border-radius:4px; padding:1px 5px;
+    font:inherit; font-size:10px; }
+  #fps { position:fixed; top:12px; right:12px; padding:7px 11px; font-size:12px;
+    font-variant-numeric:tabular-nums; cursor:pointer; z-index:5; }
+  #fps.off { display:none; }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+
+<details id="panel" class="glass" open>
+  <summary>Melon Jelly</summary>
+  <div class="body">
+    <label class="row">Stiffness<input id="pStiff" type="range" min="0.12" max="1" step="0.01"><output id="oStiff"></output></label>
+    <label class="row">Wobble<input id="pWobble" type="range" min="0.4" max="2.2" step="0.05"><output id="oWobble"></output></label>
+    <label class="row">Damping<input id="pDamp" type="range" min="0.02" max="1" step="0.01"><output id="oDamp"></output></label>
+    <label class="row">Gravity<input id="pGrav" type="range" min="0" max="5000" step="50"><output id="oGrav"></output></label>
+    <label class="row">Friction<input id="pFric" type="range" min="0" max="1.5" step="0.05"><output id="oFric"></output></label>
+    <label class="row">Substeps<input id="pSub" type="range" min="8" max="20" step="1"><output id="oSub"></output></label>
+    <label class="row">Particles<input id="pCount" type="range" min="380" max="1400" step="20"><output id="oCount"></output></label>
+  </div>
+  <div class="hint">
+    Drag to grab &amp; squish. <kbd>Shift</kbd>-drag (or two fingers) pinches.
+    Knife mode: draw a line to cut. <kbd>G</kbd><kbd>K</kbd><kbd>R</kbd><kbd>F</kbd>
+  </div>
+</details>
+
+<div id="toolbar" class="glass">
+  <button class="tb active" id="btnGrab"><span class="ic">&#9995;</span>Grab</button>
+  <button class="tb" id="btnKnife"><span class="ic">&#128298;</span>Knife</button>
+  <div class="sep"></div>
+  <button class="tb" id="btnColor"><span class="ic">&#127912;</span>Color</button>
+  <button class="tb" id="btnReset"><span class="ic">&#8635;</span>Reset</button>
+</div>
+
+<div id="colorPop" class="glass"></div>
+<div id="fps" class="glass">-- fps</div>
+
+<script>
+(function () {
+'use strict';
+
+/* ============================================================ tunables */
+const params = {
+  stiffness: 0.50,   // 0 meek .. 1 rigid (maps to XPBD compliance)
+  wobble:    1.00,   // scales compliance: >1 = softer, jigglier
+  damping:   0.28,
+  gravity:   2400,
+  friction:  0.55,
+  restitution: 0.22,
+  substeps:  10,     // >= 8, per the brief
+  iterations: 3,     // constraint solver passes per substep
+  maxSpeed:  3000,   // velocity clamp (px/s) -> no explosions
+  particles: 640,    // target particle count
+};
+
+const DIST_SCALE  = 1.7e-5;  // compliance base for distance constraints
+const AREA_SCALE  = 2.2e-5;  // compliance base for triangle area (bulk) constraints
+const RIND_SOFT   = 0.10;    // rind layer compliance as a fraction of flesh
+const SHEAR_SOFT  = 3.2;     // diagonal (shear) constraints are this much softer than structural
+const GRAB_SOFT   = 0.55;    // grab/pinch spring softness (no teleporting)
+const BULK_COMP   = 0.05;    // global bulk (area) compliance: low => incompressible
+const KNIFE_R     = 7;       // knife capsule radius (px)
+const FIXED_DT    = 1 / 60;
+
+/* ============================================================== state */
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+
+let W = 0, H = 0, dpr = 1, FLOOR = 0, BODY_R = 200, CX = 0;
+
+let P = [];                 // particles
+let cons = [];              // distance/shear constraints
+let tris = [];              // triangles (with area constraints)
+let liveTris = [];          // non-dead triangles
+let pieces = [];            // connected components: { tris:[] }
+let pieceOf = [];           // particle -> piece id (Int32Array)
+let boundary = [];          // { a, b, tri, cut }
+let cutEdges = new Set();   // edge keys severed by the knife
+let seeds = [];             // { tri, u, v, w, ang0, x, y }
+
+let dragged = [];           // active soft-spring targets for this substep
+let bulkRest = new Float64Array(0);  // per-piece rest area (bulk constraint)
+let bulkLam = new Float64Array(0);   // per-piece bulk multiplier
+let bulkGx = null, bulkGy = null, bulkArea = null, bulkWsum = null;
+let primary = null;         // active grab/pinch gesture
+let primaryId = null;
+let pointers = new Map();
+let knifeSeg = null;        // current knife segment (also a collider)
+let knifeTrail = [];        // { x, y, t }
+let tool = 'grab';
+let dirty = true;           // topology needs a rebuild
+let contact = null;         // per-particle contact flags for the last substride
+
+/* palette */
+const RIND = { r: 58, g: 128, b: 54 };
+const PITH = { r: 236, g: 242, b: 226 };
+let flesh  = { r: 255, g: 64, b: 82 };
+
+const stats = { frames: 0, steps: 0, maxSpeed: 0, nan: 0 };
+
+/* ============================================================== utils */
+const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+const lerp  = (a, b, t) => a + (b - a) * t;
+const ek    = (a, b) => (a < b ? a * 65536 + b : b * 65536 + a);
+
+function hexToRgb(hex) {
+  const h = hex.replace('#', '');
+  const n = parseInt(h.length === 3 ? h[0]+h[0]+h[1]+h[1]+h[2]+h[2] : h, 16);
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+
+function closestOnSeg(px, py, s) {
+  const dx = s.x2 - s.x1, dy = s.y2 - s.y1;
+  const L2 = dx * dx + dy * dy;
+  let t = L2 > 1e-9 ? ((px - s.x1) * dx + (py - s.y1) * dy) / L2 : 0;
+  t = clamp(t, 0, 1);
+  return { x: s.x1 + t * dx, y: s.y1 + t * dy };
+}
+
+function segHit(ax, ay, bx, by, s) {
+  const orient = (px, py, qx, qy, rx, ry) =>
+    Math.sign((qx - px) * (ry - py) - (qy - py) * (rx - px));
+  const d1 = orient(s.x1, s.y1, s.x2, s.y2, ax, ay);
+  const d2 = orient(s.x1, s.y1, s.x2, s.y2, bx, by);
+  const d3 = orient(ax, ay, bx, by, s.x1, s.y1);
+  const d4 = orient(ax, ay, bx, by, s.x2, s.y2);
+  return d1 !== d2 && d3 !== d4;
+}
+
+function pointInTri(px, py, a, b, c) {
+  const s = (p, q, r) => (p.x - r.x) * (q.y - r.y) - (q.x - r.x) * (p.y - r.y);
+  const d1 = s({ x: px, y: py }, a, b);
+  const d2 = s({ x: px, y: py }, b, c);
+  const d3 = s({ x: px, y: py }, c, a);
+  const neg = (d1 < 0) || (d2 < 0) || (d3 < 0);
+  const pos = (d1 > 0) || (d2 > 0) || (d3 > 0);
+  return !(neg && pos);
+}
+
+function bary(px, py, t) {
+  const a = P[t.a], b = P[t.b], c = P[t.c];
+  const d = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
+  if (Math.abs(d) < 1e-9) return { u: 0, v: 0, w: 1 };
+  const u = ((b.y - c.y) * (px - c.x) + (c.x - b.x) * (py - c.y)) / d;
+  const v = ((c.y - a.y) * (px - c.x) + (a.x - c.x) * (py - c.y)) / d;
+  return { u, v, w: 1 - u - v };
+}
+
+function findTriAt(x, y) {
+  for (const t of tris) {
+    if (t.dead) continue;
+    if (pointInTri(x, y, P[t.a], P[t.b], P[t.c])) return t;
+  }
+  return null;
+}
+
+/* ========================================================== body build */
+function build() {
+  P = []; cons = []; tris = []; seeds = []; liveTris = []; pieces = [];
+  cutEdges = new Set(); dragged = []; primary = null;
+
+  CX = W * 0.5;
+  FLOOR = H * 0.88;
+  BODY_R = Math.min(W * 0.40, FLOOR - H * 0.06, 430);
+  const h = BODY_R / Math.max(8, Math.round(Math.sqrt(params.particles / 1.57)));
+
+  // Triangular-ish lattice clipped to the upper half-disc (flat face on the floor).
+  const nx = Math.ceil((2 * BODY_R) / h) + 3;
+  const ny = Math.ceil(BODY_R / h) + 3;
+  const x0 = CX - BODY_R - h, y0 = FLOOR - BODY_R - h;
+  const idx = new Int32Array(nx * ny).fill(-1);
+  const at = (i, j) => (i < 0 || j < 0 || i >= nx || j >= ny) ? -1 : idx[j * nx + i];
+
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const x = x0 + i * h, y = y0 + j * h;
+      const dx = x - CX, dy = y - FLOOR;
+      if (dx * dx + dy * dy > BODY_R * BODY_R) continue;
+      if (y > FLOOR + 1e-6) continue;
+      const rr = Math.sqrt(dx * dx + dy * dy) / BODY_R;
+      idx[j * nx + i] = P.length;
+      P.push({
+        x, y, px: x, py: y, vx: 0, vy: 0, dead: false, rr,
+        im: rr > 0.86 ? 0.55 : 1,       // rind is denser -> stiffer layer feel
+        rind: rr > 0.86, pith: rr > 0.78 && rr <= 0.86,
+      });
+    }
+  }
+
+  const softness = () => (1 / Math.max(0.06, params.stiffness) - 1) * params.wobble;
+  const distSoft = (a, b, k) => softness() * DIST_SCALE * k * ((a.rind || b.rind) ? RIND_SOFT : 1);
+  const areaSoft = (a, b, c) => softness() * AREA_SCALE * ((a.rind || b.rind || c.rind) ? 0.4 : 1);
+
+  const addCon = (a, b, k) => {
+    if (a < 0 || b < 0) return;
+    const pa = P[a], pb = P[b];
+    cons.push({ a, b, rest: Math.hypot(pa.x - pb.x, pa.y - pb.y),
+                comp: distSoft(pa, pb, k), dead: false, lam: 0 });
+  };
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const a = at(i, j);
+      if (a < 0) continue;
+      addCon(a, at(i + 1, j), 0.6);         // structural (stiff)
+      addCon(a, at(i, j + 1), 0.6);         // structural (stiff)
+      addCon(a, at(i + 1, j + 1), SHEAR_SOFT); // shear
+      addCon(a, at(i + 1, j - 1), SHEAR_SOFT); // shear
+    }
+  }
+
+  const pushTri = (x, y, z) => {
+    const p0 = P[x], p1 = P[y], p2 = P[z];
+    const cx = (p0.x + p1.x + p2.x) / 3, cy = (p0.y + p1.y + p2.y) / 3;
+    const rr = Math.hypot(cx - CX, cy - FLOOR) / BODY_R;
+    if (rr > 1.03) return;                                   // guard rim slivers
+    const area = 0.5 * ((p1.x - p0.x) * (p2.y - p0.y) - (p2.x - p0.x) * (p1.y - p0.y));
+    if (Math.abs(area) < 1e-6) return;                       // guard degenerate
+    tris.push({ a: x, b: y, c: z, area0: area, rr, dead: false, piece: 0,
+                comp: areaSoft(p0, p1, p2), lam: 0 });
+  };
+  for (let j = 0; j < ny - 1; j++) {
+    for (let i = 0; i < nx - 1; i++) {
+      const a = at(i, j), b = at(i + 1, j), c = at(i + 1, j + 1), d = at(i, j + 1);
+      if (a < 0 || b < 0 || c < 0 || d < 0) continue;
+      if (((i + j) & 1) === 0) { pushTri(a, b, c); pushTri(a, c, d); }
+      else                     { pushTri(a, b, d); pushTri(b, c, d); }
+    }
+  }
+
+  // Seeds scattered through the flesh, anchored barycentrically to a triangle.
+  const pts = [];
+  for (let tries = 0; tries < 900 && pts.length < 24; tries++) {
+    const ang = Math.random() * Math.PI;
+    const r = Math.sqrt(Math.random()) * 0.58 * BODY_R;
+    const sx = CX + Math.cos(ang) * r;
+    const sy = FLOOR - Math.sin(ang) * r;
+    if (pts.some(t => Math.hypot(t.x - sx, t.y - sy) < BODY_R * 0.11)) continue;
+    pts.push({ x: sx, y: sy });
+  }
+  for (const s of pts) {
+    const t = findTriAt(s.x, s.y);
+    if (!t) continue;
+    const bc = bary(s.x, s.y, t);
+    if (bc.u < -0.05 || bc.v < -0.05 || bc.w < -0.05) continue;
+    const p0 = P[t.a], p1 = P[t.b];
+    seeds.push({ tri: t, u: bc.u, v: bc.v, w: bc.w,
+                 ang0: Math.atan2(p1.y - p0.y, p1.x - p0.x), x: s.x, y: s.y });
+  }
+
+  rebuildTopology();
+}
+
+/* ================================================= topology (post-cut) */
+function rebuildTopology() {
+  const n = P.length;
+  const parent = new Int32Array(n);
+  for (let i = 0; i < n; i++) parent[i] = i;
+  const find = (x) => {
+    let r = x;
+    while (parent[r] !== r) r = parent[r];
+    while (parent[x] !== r) { const nx = parent[x]; parent[x] = r; x = nx; }
+    return r;
+  };
+  const uni = (a, b) => { a = find(a); b = find(b); if (a !== b) parent[b] = a; };
+
+  liveTris = [];
+  for (const t of tris) {
+    if (t.dead) continue;
+    if (P[t.a].dead || P[t.b].dead || P[t.c].dead) { t.dead = true; continue; }
+    liveTris.push(t);
+    uni(t.a, t.b);
+    uni(t.b, t.c);
+  }
+
+  pieceOf = new Int32Array(n).fill(-1);
+  const ids = new Map();
+  pieces = [];
+  for (const t of liveTris) {
+    const root = find(t.a);
+    let id = ids.get(root);
+    if (id === undefined) {
+      id = pieces.length; ids.set(root, id);
+      pieces.push({ tris: [] });
+    }
+    t.piece = id;
+    pieces[id].tris.push(t);
+  }
+  for (const t of liveTris) {
+    pieceOf[t.a] = t.piece; pieceOf[t.b] = t.piece; pieceOf[t.c] = t.piece;
+  }
+
+  // Target area per piece for the global bulk constraint.
+  bulkRest = new Float64Array(pieces.length);
+  bulkLam = new Float64Array(pieces.length);
+  for (const t of liveTris) bulkRest[t.piece] += t.area0;
+
+  // Boundary edges (belong to exactly one live triangle) + severed-edge flags.
+  const em = new Map();
+  const edge = (a, b, t) => {
+    const k = ek(a, b);
+    const e = em.get(k);
+    if (e) e.count++;
+    else em.set(k, { a, b, tri: t, count: 1 });
+  };
+  for (const t of liveTris) { edge(t.a, t.b, t); edge(t.b, t.c, t); edge(t.c, t.a, t); }
+  boundary = [];
+  for (const [k, e] of em) {
+    if (e.count === 1) boundary.push({ a: e.a, b: e.b, tri: e.tri, cut: cutEdges.has(k) });
+  }
+
+  // Re-anchor seeds whose triangle was severed.
+  for (const s of seeds) {
+    if (!s.tri || !s.tri.dead) continue;
+    const t = findTriAt(s.x, s.y);
+    s.tri = (t && !t.dead) ? t : null;
+    if (!s.tri) continue;
+    const bc = bary(s.x, s.y, s.tri);
+    s.u = bc.u; s.v = bc.v; s.w = bc.w;
+    const p0 = P[s.tri.a], p1 = P[s.tri.b];
+    s.ang0 = Math.atan2(p1.y - p0.y, p1.x - p0.x);
+  }
+  dirty = false;
+}
+
+/* ============================================================== physics */
+function softness() { return (1 / Math.max(0.06, params.stiffness) - 1) * params.wobble; }
+
+function solveDistance(h2) {
+  for (const c of cons) {
+    if (c.dead) continue;
+    const a = P[c.a], b = P[c.b];
+    if (a.dead || b.dead) continue;
+    const dx = a.x - b.x, dy = a.y - b.y;
+    const d = Math.hypot(dx, dy);
+    if (d < 1e-9) continue;
+    const C = d - c.rest;
+    const alpha = c.comp / h2;
+    const denom = a.im + b.im + alpha;
+    const dw = (-C - alpha * c.lam) / denom;
+    c.lam += dw;
+    const nx = dx / d, ny = dy / d;
+    a.x += a.im * dw * nx; a.y += a.im * dw * ny;
+    b.x -= b.im * dw * nx; b.y -= b.im * dw * ny;
+  }
+}
+
+function solveArea(h2) {
+  for (const t of tris) {
+    if (t.dead) continue;
+    const a = P[t.a], b = P[t.b], c = P[t.c];
+    if (a.dead || b.dead || c.dead) continue;
+    const area = 0.5 * ((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y));
+    const C = area - t.area0;
+    // dA/dvertex (signed area gradients)
+    const gax = 0.5 * (b.y - c.y), gay = 0.5 * (c.x - b.x);
+    const gbx = 0.5 * (c.y - a.y), gby = 0.5 * (a.x - c.x);
+    const gcx = 0.5 * (a.y - b.y), gcy = 0.5 * (b.x - a.x);
+    let wsum = a.im * (gax * gax + gay * gay)
+             + b.im * (gbx * gbx + gby * gby)
+             + c.im * (gcx * gcx + gcy * gcy);
+    if (wsum < 1e-12) continue;
+    const alpha = t.comp / h2;
+    const dw = (-C - alpha * t.lam) / (wsum + alpha);
+    t.lam += dw;
+    a.x += a.im * dw * gax; a.y += a.im * dw * gay;
+    b.x += b.im * dw * gbx; b.y += b.im * dw * gby;
+    c.x += c.im * dw * gcx; c.y += c.im * dw * gcy;
+  }
+}
+
+// Global bulk (pressure) constraint: one scalar per piece enforcing
+// sum(triangle areas) == rest area. Distributes the correction over every
+// particle of the piece, so the body stays incompressible (and therefore
+// bulges sideways) far better than the per-triangle pass alone, at the cost
+// of a single extra Lagrange multiplier per piece.
+function solveBulk(h2) {
+  const n = P.length;
+  if (!bulkGx || bulkGx.length !== n) {
+    bulkGx = new Float64Array(n); bulkGy = new Float64Array(n);
+  }
+  const np = pieces.length;
+  if (!bulkArea || bulkArea.length !== np) {
+    bulkArea = new Float64Array(np); bulkWsum = new Float64Array(np);
+  }
+  bulkGx.fill(0); bulkGy.fill(0); bulkArea.fill(0); bulkWsum.fill(0);
+
+  for (const t of tris) {
+    if (t.dead) continue;
+    const a = P[t.a], b = P[t.b], c = P[t.c];
+    if (a.dead || b.dead || c.dead) continue;
+    bulkArea[t.piece] += 0.5 * ((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y));
+    bulkGx[t.a] += 0.5 * (b.y - c.y); bulkGy[t.a] += 0.5 * (c.x - b.x);
+    bulkGx[t.b] += 0.5 * (c.y - a.y); bulkGy[t.b] += 0.5 * (a.x - c.x);
+    bulkGx[t.c] += 0.5 * (a.y - b.y); bulkGy[t.c] += 0.5 * (b.x - a.x);
+  }
+  for (let i = 0; i < n; i++) {
+    const k = pieceOf[i];
+    if (k < 0 || P[i].dead) continue;
+    bulkWsum[k] += P[i].im * (bulkGx[i] * bulkGx[i] + bulkGy[i] * bulkGy[i]);
+  }
+  const alpha = BULK_COMP / h2;
+  for (let k = 0; k < np; k++) {
+    const C = bulkArea[k] - bulkRest[k];
+    const denom = bulkWsum[k] + alpha;
+    if (denom < 1e-12) continue;
+    const dw = (-C - alpha * bulkLam[k]) / denom;
+    bulkLam[k] += dw;
+    if (!Number.isFinite(dw)) { bulkLam[k] = 0; continue; }
+    for (const t of pieces[k].tris) {
+      if (t.dead) continue;
+      for (const idx of [t.a, t.b, t.c]) {
+        const p = P[idx];
+        p.x += p.im * dw * bulkGx[idx];
+        p.y += p.im * dw * bulkGy[idx];
+      }
+    }
+  }
+}
+
+// Soft springs pulling grabbed regions toward their target (grab / pinch).
+function solveInteractions() {
+  for (const d of dragged) {
+    const p = d.p;
+    if (p.dead) continue;
+    const dx = p.x - d.tx, dy = p.y - d.ty;
+    const dist = Math.hypot(dx, dy);
+    if (dist < 1e-9) continue;
+    const dw = (-dist - d.soft * d.lam) / (d.w + d.soft);
+    d.lam += dw;
+    const nx = dx / dist, ny = dy / dist;
+    p.x += d.w * dw * nx; p.y += d.w * dw * ny;
+  }
+}
+
+function refreshDrag() {
+  dragged = [];
+  if (!primary) return;
+  const tgt = pointers.get(primaryId);
+  if (!tgt) return;
+  if (primary.type === 'grab') {
+    // rigid translation: each grabbed particle keeps its offset from the grab
+    // point, so the region moves with the cursor instead of gathering to it.
+    const dx = tgt.x - primary.pivot.x, dy = tgt.y - primary.pivot.y;
+    for (const it of primary.items) {
+      dragged.push({ p: it.p, tx: it.x0 + dx, ty: it.y0 + dy,
+                     w: it.w, soft: GRAB_SOFT, lam: 0 });
+    }
+  } else {
+    const mx = (primary.pivot.x + tgt.x) * 0.5, my = (primary.pivot.y + tgt.y) * 0.5;
+    for (const it of primary.items)      dragged.push({ p: it.p, tx: mx, ty: my, w: it.w, soft: GRAB_SOFT, lam: 0 });
+    for (const it of primary.pivotItems) dragged.push({ p: it.p, tx: mx, ty: my, w: it.w * 0.5, soft: GRAB_SOFT, lam: 0 });
+  }
+}
+
+function resolveCollisions() {
+  for (let i = 0; i < P.length; i++) {
+    const p = P[i];
+    if (p.dead) continue;
+    contact[i] = 0;
+    if (knifeSeg) {
+      const cp = closestOnSeg(p.x, p.y, knifeSeg);
+      const dx = p.x - cp.x, dy = p.y - cp.y;
+      const d = Math.hypot(dx, dy);
+      if (d < KNIFE_R && d > 1e-6) {
+        const push = KNIFE_R - d;
+        p.x += (dx / d) * push; p.y += (dy / d) * push;
+        contact[i] |= 4;
+      }
+    }
+    if (p.y > FLOOR) { p.y = FLOOR; contact[i] |= 1; }
+    if (p.x < 2)     { p.x = 2;     contact[i] |= 2; }
+    if (p.x > W - 2) { p.x = W - 2; contact[i] |= 2; }
+  }
+}
+
+function contactResponse() {
+  const fric = Math.exp(-params.friction * 6 * FIXED_DT / params.substeps);
+  for (let i = 0; i < P.length; i++) {
+    const c = contact[i];
+    if (!c) continue;
+    const p = P[i];
+    if (c & 1) {
+      if (p.vy > 60) p.vy = -p.vy * params.restitution;
+      else if (p.vy > 0) p.vy = 0;
+      p.vx *= fric;
+    }
+    if (c & 2) {
+      if (Math.abs(p.vx) > 60) p.vx = -p.vx * params.restitution;
+      else p.vx = 0;
+    }
+  }
+}
+
+function physicsStep(dt) {
+  const sub = clamp(params.substeps | 0, 8, 24);
+  const h = dt / sub;
+  const h2 = h * h;
+  if (!contact || contact.length !== P.length) contact = new Uint8Array(P.length);
+
+  for (let s = 0; s < sub; s++) {
+    refreshDrag();
+
+    // 1. predict
+    const gy = params.gravity * h;
+    for (let i = 0; i < P.length; i++) {
+      const p = P[i];
+      if (p.dead) continue;
+      p.vy += gy;
+      p.px = p.x; p.py = p.y;
+      p.x += p.vx * h; p.y += p.vy * h;
+    }
+
+    // 2. solve constraints
+    for (const c of cons) c.lam = 0;
+    for (const t of tris) t.lam = 0;
+    for (let k = 0; k < bulkLam.length; k++) bulkLam[k] = 0;
+    for (let it = 0; it < params.iterations; it++) {
+      solveDistance(h2);
+      solveArea(h2);
+      solveBulk(h2);
+      solveInteractions();
+    }
+
+    // 3. project collisions (positions)
+    resolveCollisions();
+
+    // 4. velocities from positions, damped and clamped
+    const damp = Math.exp(-params.damping * 8 * h);
+    const mx = params.maxSpeed;
+    for (let i = 0; i < P.length; i++) {
+      const p = P[i];
+      if (p.dead) continue;
+      p.vx = (p.x - p.px) / h;
+      p.vy = (p.y - p.py) / h;
+      p.vx *= damp; p.vy *= damp;
+      const sp = Math.hypot(p.vx, p.vy);
+      if (sp > mx) { const k = mx / sp; p.vx *= k; p.vy *= k; }
+      if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) {
+        // graceful NaN recovery: rewind to last known-good position
+        stats.nan++;
+        p.x = p.px; p.y = p.py; p.vx = 0; p.vy = 0;
+        if (!Number.isFinite(p.x)) { p.x = CX; p.y = FLOOR - 10; }
+      }
+      const sp2 = p.vx * p.vx + p.vy * p.vy;
+      if (sp2 > stats.maxSpeed) stats.maxSpeed = sp2;
+    }
+
+    // 5. friction / restitution on the contacts found in step 3
+    contactResponse();
+    stats.steps++;
+  }
+}
+
+/* ============================================================== cutting */
+function triHit(a, b, c, seg) {
+  if (segHit(a.x, a.y, b.x, b.y, seg)) return true;
+  if (segHit(b.x, b.y, c.x, c.y, seg)) return true;
+  if (segHit(c.x, c.y, a.x, a.y, seg)) return true;
+  if (pointInTri(seg.x1, seg.y1, a, b, c)) return true;
+  if (pointInTri(seg.x2, seg.y2, a, b, c)) return true;
+  return false;
+}
+
+function cutSegment(x1, y1, x2, y2) {
+  const seg = { x1, y1, x2, y2 };
+  const bx1 = Math.min(x1, x2) - 4, bx2 = Math.max(x1, x2) + 4;
+  const by1 = Math.min(y1, y2) - 4, by2 = Math.max(y1, y2) + 4;
+  let removed = 0;
+  for (const t of tris) {
+    if (t.dead) continue;
+    const a = P[t.a], b = P[t.b], c = P[t.c];
+    if (Math.min(a.x, b.x, c.x) > bx2 || Math.max(a.x, b.x, c.x) < bx1) continue;
+    if (Math.min(a.y, b.y, c.y) > by2 || Math.max(a.y, b.y, c.y) < by1) continue;
+    if (triHit(a, b, c, seg)) {
+      t.dead = true; removed++;
+      cutEdges.add(ek(t.a, t.b)); cutEdges.add(ek(t.b, t.c)); cutEdges.add(ek(t.c, t.a));
+    }
+  }
+  if (!removed) return;
+  for (const c of cons) {
+    if (c.dead) continue;
+    const a = P[c.a], b = P[c.b];
+    if (segHit(a.x, a.y, b.x, b.y, seg)) c.dead = true;
+  }
+  // drop grab entries whose particle vanished
+  if (primary) {
+    primary.items = primary.items.filter(it => !it.p.dead);
+    primary.pivotItems = primary.pivotItems.filter(it => !it.p.dead);
+  }
+  dirty = true;
+}
+
+/* ============================================================ rendering */
+function triColor(t, cx, cy) {
+  let r0, g0, b0, a;
+  const rr = t.rr;
+  if (rr >= 0.88) {                          // rind blend -> white pith at inner edge
+    const u = clamp((rr - 0.88) / 0.12, 0, 1);
+    r0 = lerp(PITH.r, RIND.r, u); g0 = lerp(PITH.g, RIND.g, u); b0 = lerp(PITH.b, RIND.b, u);
+    a = 1;
+  } else if (rr >= 0.78) {                   // pith band
+    r0 = PITH.r; g0 = PITH.g; b0 = PITH.b; a = 1;
+  } else {                                   // flesh, lighter toward the centre
+    const u = 1 - clamp(rr / 0.78, 0, 1);
+    r0 = lerp(flesh.r, 255, u * 0.22);
+    g0 = lerp(flesh.g, 255, u * 0.22);
+    b0 = lerp(flesh.b, 255, u * 0.22);
+    a = 0.95;
+  }
+  // depth shading (dome catches more light than the base)
+  const dy = clamp((cy - (FLOOR - BODY_R)) / BODY_R, 0, 1);
+  const shade = 1.06 - 0.20 * dy;
+  // broad soft specular -> glossy jelly surface
+  const lx = CX - W * 0.05, ly = FLOOR - BODY_R * 1.15;
+  const sx = cx - lx, sy = cy - ly;
+  const sig = BODY_R * 0.72;
+  const spec = Math.exp(-(sx * sx + sy * sy) / (2 * sig * sig));
+  const add = spec * 105;
+  r0 = clamp(r0 * shade + add, 0, 255);
+  g0 = clamp(g0 * shade + add, 0, 255);
+  b0 = clamp(b0 * shade + add, 0, 255);
+  if (spec > 0.55) a = Math.min(1, a + (spec - 0.55) * 0.9);
+  return 'rgba(' + (r0 | 0) + ',' + (g0 | 0) + ',' + (b0 | 0) + ',' + a.toFixed(3) + ')';
+}
+
+function render() {
+  if (dirty) rebuildTopology();
+
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, '#181a2b');
+  bg.addColorStop(1, '#0b0c13');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = 'rgba(255,255,255,.035)';
+  ctx.fillRect(0, FLOOR, W, H - FLOOR);
+  ctx.strokeStyle = 'rgba(255,255,255,.10)';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0, FLOOR); ctx.lineTo(W, FLOOR); ctx.stroke();
+
+  // ---- drop shadows ------------------------------------------------
+  for (const pc of pieces) {
+    let minX = 1e9, maxX = -1e9, minY = 1e9;
+    for (const t of pc.tris) {
+      for (const vi of [t.a, t.b, t.c]) {
+        const p = P[vi];
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+      }
+    }
+    const w = maxX - minX;
+    const cx = (minX + maxX) * 0.5;
+    const hgt = FLOOR - minY;
+    const alpha = Math.max(0, 0.34 - (hgt / (BODY_R * 2.2)) * 0.34);
+    if (alpha < 0.02) continue;
+    const rx = w * 0.55 + 8, ry = Math.max(7, w * 0.11);
+    const g = ctx.createRadialGradient(cx, FLOOR + 3, 0, cx, FLOOR + 3, rx);
+    g.addColorStop(0, 'rgba(0,0,0,' + alpha.toFixed(3) + ')');
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.save();
+    ctx.translate(cx, FLOOR + 3);
+    ctx.scale(1, ry / rx);
+    ctx.translate(-cx, -(FLOOR + 3));
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(cx, FLOOR + 3, rx, 0, 6.2832); ctx.fill();
+    ctx.restore();
+  }
+
+  // ---- flesh / rind mesh -------------------------------------------
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = 1.4;
+  for (const t of liveTris) {
+    const a = P[t.a], b = P[t.b], c = P[t.c];
+    const cx = (a.x + b.x + c.x) / 3, cy = (a.y + b.y + c.y) / 3;
+    const col = triColor(t, cx, cy);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.lineTo(c.x, c.y); ctx.closePath();
+    ctx.fillStyle = col; ctx.fill();
+    ctx.strokeStyle = col; ctx.stroke();   // hides hairline seams between triangles
+  }
+
+  // ---- boundary strokes: rind stays green/pith, cut faces show flesh -
+  ctx.lineWidth = 2.2;
+  for (const e of boundary) {
+    const a = P[e.a], b = P[e.b];
+    let col;
+    if (e.cut) {
+      col = 'rgba(' + (flesh.r * 0.62 | 0) + ',' + (flesh.g * 0.45 | 0) + ',' + (flesh.b * 0.5 | 0) + ',1)';
+    } else {
+      const rr = e.tri.rr;
+      col = rr >= 0.88 ? 'rgba(40,96,40,.95)'
+          : rr >= 0.78 ? 'rgba(210,220,205,.9)'
+          : 'rgba(' + (flesh.r * 0.7 | 0) + ',' + (flesh.g * 0.5 | 0) + ',' + (flesh.b * 0.55 | 0) + ',.9)';
+    }
+    ctx.strokeStyle = col;
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+  }
+
+  // ---- seeds --------------------------------------------------------
+  for (const s of seeds) {
+    if (!s.tri || s.tri.dead) continue;
+    const p0 = P[s.tri.a], p1 = P[s.tri.b], p2 = P[s.tri.c];
+    const x = s.u * p0.x + s.v * p1.x + s.w * p2.x;
+    const y = s.u * p0.y + s.v * p1.y + s.w * p2.y;
+    s.x = x; s.y = y;
+    const ang = Math.atan2(p1.y - p0.y, p1.x - p0.x) - s.ang0;
+    ctx.save();
+    ctx.translate(x, y); ctx.rotate(ang);
+    ctx.fillStyle = '#2b1c12';
+    ctx.beginPath(); ctx.ellipse(0, 0, 4.6, 2.9, 0, 0, 6.2832); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,.22)';
+    ctx.beginPath(); ctx.ellipse(-1.1, -0.8, 1.5, 0.8, 0, 0, 6.2832); ctx.fill();
+    ctx.restore();
+  }
+
+  // ---- knife trail ---------------------------------------------------
+  const now = performance.now();
+  knifeTrail = knifeTrail.filter(pt => now - pt.t < 650);
+  if (knifeTrail.length > 1) {
+    ctx.save();
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    for (let i = 1; i < knifeTrail.length; i++) {
+      const k = 1 - (now - knifeTrail[i].t) / 650;
+      ctx.strokeStyle = 'rgba(255,' + (120 + 120 * k | 0) + ',' + (140 + 80 * k | 0) + ',' + (0.55 * k).toFixed(3) + ')';
+      ctx.lineWidth = 1 + 3.5 * k;
+      ctx.beginPath();
+      ctx.moveTo(knifeTrail[i - 1].x, knifeTrail[i - 1].y);
+      ctx.lineTo(knifeTrail[i].x, knifeTrail[i].y);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+  if (knifeSeg) {
+    ctx.strokeStyle = 'rgba(255,255,255,.85)';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(knifeSeg.x1, knifeSeg.y1);
+    ctx.lineTo(knifeSeg.x2, knifeSeg.y2);
+    ctx.stroke();
+  }
+}
+
+/* ================================================================ input */
+function pickRegion(x, y, r) {
+  const out = []; const r2 = r * r;
+  for (let i = 0; i < P.length; i++) {
+    const p = P[i];
+    if (p.dead) continue;
+    const dx = p.x - x, dy = p.y - y;
+    const d2 = dx * dx + dy * dy;
+    if (d2 > r2) continue;
+    out.push({ p, w: p.im * Math.max(0.1, 1 - Math.sqrt(d2) / r) });
+  }
+  return out;
+}
+
+function pickGrab(x, y) {
+  let best = -1, bd = 1e9;
+  for (let i = 0; i < P.length; i++) {
+    const p = P[i];
+    if (p.dead) continue;
+    const d = Math.hypot(p.x - x, p.y - y);
+    if (d < bd) { bd = d; best = i; }
+  }
+  const radius = BODY_R * 0.17;
+  if (best < 0 || bd > radius) return null;
+  const piece = pieceOf[best];
+  const items = [];
+  const rad = radius * 1.3;
+  for (let i = 0; i < P.length; i++) {
+    const p = P[i];
+    if (p.dead) continue;
+    if (piece >= 0 && pieceOf[i] !== piece) continue;   // drag one piece at a time
+    const d = Math.hypot(p.x - x, p.y - y);
+    if (d > rad) continue;
+    items.push({ p, w: p.im * Math.max(0.08, 1 - d / rad), x0: p.x, y0: p.y });
+  }
+  return { type: 'grab', items, pivot: { x, y }, pivotItems: [] };
+}
+
+function startPinch(x, y) {
+  const r = BODY_R * 0.24;
+  return { type: 'pinch', pivot: { x, y },
+           pivotItems: pickRegion(x, y, r), items: pickRegion(x, y, r) };
+}
+
+cv.addEventListener('contextmenu', e => e.preventDefault());
+
+cv.addEventListener('pointerdown', e => {
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (tool === 'knife') {
+    knifeSeg = { x1: e.clientX, y1: e.clientY, x2: e.clientX, y2: e.clientY };
+    knifeTrail = [{ x: e.clientX, y: e.clientY, t: performance.now() }];
+    return;
+  }
+  if (!primary) {
+    const wantPinch = e.shiftKey || e.button === 2;
+    primary = wantPinch ? startPinch(e.clientX, e.clientY) : pickGrab(e.clientX, e.clientY);
+    primaryId = e.pointerId;
+  } else if (pointers.size >= 2) {
+    // second finger / pointer promotes the gesture to a pinch
+    const first = pointers.values().next().value;
+    primary = startPinch(first.x, first.y);
+    primaryId = [...pointers.keys()][0];
+  }
+  cv.classList.toggle('pinch', !!(primary && primary.type === 'pinch'));
+  cv.classList.toggle('drag', !!(primary && primary.type === 'grab'));
+});
+
+cv.addEventListener('pointermove', e => {
+  const prev = pointers.get(e.pointerId);
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (tool === 'knife' && knifeSeg && prev) {
+    knifeSeg = { x1: prev.x, y1: prev.y, x2: e.clientX, y2: e.clientY };
+    cutSegment(prev.x, prev.y, e.clientX, e.clientY);
+    knifeTrail.push({ x: e.clientX, y: e.clientY, t: performance.now() });
+  } else if (primary && e.pointerId === primaryId && primary.type === 'pinch') {
+    primary.items = pickRegion(e.clientX, e.clientY, BODY_R * 0.24);
+  }
+});
+
+function endPointer(e) {
+  pointers.delete(e.pointerId);
+  if (tool === 'knife') { knifeSeg = null; }
+  if (e.pointerId === primaryId) { primary = null; dragged = []; }
+  if (!primary) cv.classList.remove('pinch', 'drag');
+}
+cv.addEventListener('pointerup', endPointer);
+cv.addEventListener('pointercancel', endPointer);
+
+/* ================================================================== UI */
+const panel = document.getElementById('panel');
+const fpsEl = document.getElementById('fps');
+const btnGrab = document.getElementById('btnGrab');
+const btnKnife = document.getElementById('btnKnife');
+const btnColor = document.getElementById('btnColor');
+const btnReset = document.getElementById('btnReset');
+const colorPop = document.getElementById('colorPop');
+
+function setTool(t) {
+  tool = t;
+  btnGrab.classList.toggle('active', t === 'grab');
+  btnKnife.classList.toggle('active', t === 'knife');
+  cv.classList.toggle('knife', t === 'knife');
+  if (t !== 'knife') knifeSeg = null;
+}
+btnGrab.onclick = () => setTool('grab');
+btnKnife.onclick = () => setTool('knife');
+btnColor.onclick = () => colorPop.classList.toggle('open');
+btnReset.onclick = () => reset();
+
+const SWATCHES = ['#ff4155', '#ff2e63', '#ff7a59', '#ffb03a',
+                  '#e14bd6', '#3ad2c0', '#8fa4ff'];
+let selectedSwatch = SWATCHES[0];
+for (const hex of SWATCHES) {
+  const b = document.createElement('button');
+  b.className = 'sw';
+  b.style.background = hex;
+  b.title = hex;
+  b.onclick = () => setFlesh(hex, b);
+  colorPop.appendChild(b);
+}
+const colorInput = document.createElement('input');
+colorInput.type = 'color';
+colorInput.id = 'colorInput';
+colorInput.value = '#ff4155';
+colorInput.oninput = () => setFlesh(colorInput.value, null);
+colorPop.appendChild(colorInput);
+setFlesh(SWATCHES[0], colorPop.querySelector('.sw'));
+
+function setFlesh(hex, btn) {
+  flesh = hexToRgb(hex);
+  selectedSwatch = hex;
+  colorInput.value = hex.length === 7 ? hex : colorInput.value;
+  const sws = colorPop.querySelectorAll('.sw');
+  for (const s of sws) s.classList.toggle('sel', hex.length === 7 && s.title.toLowerCase() === hex.toLowerCase());
+  void btn;
+}
+
+// --- parameter panel -------------------------------------------------
+const knob = (id, out, key, fmt, onchange) => {
+  const el = document.getElementById(id);
+  const o = document.getElementById(out);
+  el.value = params[key];
+  o.textContent = fmt(params[key]);
+  el.oninput = () => {
+    params[key] = parseFloat(el.value);
+    o.textContent = fmt(params[key]);
+    if (onchange) onchange();
+  };
+};
+knob('pStiff', 'oStiff', 'stiffness', v => v.toFixed(2));
+knob('pWobble', 'oWobble', 'wobble', v => v.toFixed(2));
+knob('pDamp', 'oDamp', 'damping', v => v.toFixed(2));
+knob('pGrav', 'oGrav', 'gravity', v => (v | 0).toString());
+knob('pFric', 'oFric', 'friction', v => v.toFixed(2));
+knob('pSub', 'oSub', 'substeps', v => (v | 0).toString());
+const countEl = document.getElementById('pCount');
+const oCount = document.getElementById('oCount');
+countEl.value = params.particles;
+oCount.textContent = params.particles;
+countEl.oninput = () => {
+  params.particles = parseInt(countEl.value, 10);
+  oCount.textContent = params.particles;
+  build();
+};
+
+fpsEl.onclick = () => fpsEl.classList.toggle('off');
+addEventListener('keydown', e => {
+  if (e.key === 'g') setTool('grab');
+  else if (e.key === 'k') setTool('knife');
+  else if (e.key === 'r') reset();
+  else if (e.key === 'f') fpsEl.classList.toggle('off');
+});
+
+/* ================================================================ boot */
+function resizeCanvas() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  cv.width = Math.round(W * dpr);
+  cv.height = Math.round(H * dpr);
+  cv.style.width = W + 'px';
+  cv.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+function reset() {
+  knifeSeg = null;
+  knifeTrail = [];
+  dragged = [];
+  primary = null;
+  pointers.clear();
+  stats.maxSpeed = 0; stats.nan = 0; stats.frames = 0; stats.steps = 0;
+  resizeCanvas();
+  build();
+  dirty = true;
+  render();
+}
+
+addEventListener('resize', () => reset());
+
+let last = performance.now();
+let acc = 0;
+let fpsAcc = 0, fpsFrames = 0;
+
+function frame(now) {
+  const dt = Math.min((now - last) / 1000, 0.05);   // clamp to avoid spiral of death
+  last = now;
+  acc += dt;
+  let guard = 0;
+  while (acc >= FIXED_DT && guard++ < 4) {
+    physicsStep(FIXED_DT);
+    acc -= FIXED_DT;
+  }
+  render();
+  stats.frames++;
+
+  fpsAcc += dt; fpsFrames++;
+  if (fpsAcc >= 0.5) {
+    fpsEl.textContent = Math.round(fpsFrames / fpsAcc) + ' fps';
+    fpsAcc = 0; fpsFrames = 0;
+  }
+  requestAnimationFrame(frame);
+}
+
+resizeCanvas();
+build();
+render();
+requestAnimationFrame(frame);
+
+// Debug hook (used by the headless smoke test; harmless in the browser).
+window.__mj = {
+  params, stats, reset, cutSegment,
+  particles: () => P,
+  triangles: () => tris,
+  pieces: () => pieces,
+  boundary: () => boundary,
+  seeds: () => seeds,
+  setFlesh,
+  floor: () => FLOOR,
+  size: () => ({ W, H }),
+};
+
+})();
+</script>
+</body>
+</html>

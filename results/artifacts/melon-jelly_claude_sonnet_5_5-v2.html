@@ -1,0 +1,1364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Melon Jelly</title>
+<style>
+  :root {
+    --ink: #1d2433;
+    --glass: rgba(255, 255, 255, 0.9);   /* no backdrop-filter: blurring an animating canvas costs frames */
+    --glass-edge: rgba(255, 255, 255, 0.9);
+    --shadow: 0 10px 30px rgba(30, 45, 80, 0.18), 0 2px 6px rgba(30, 45, 80, 0.12);
+  }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden; background: #dbe3f0; color: var(--ink);
+    font: 600 14px/1.2 ui-rounded, "SF Pro Rounded", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent;
+  }
+  canvas#view {
+    position: fixed; inset: 0; width: 100%; height: 100%; display: block;
+    touch-action: none; cursor: grab;
+  }
+  canvas#view.knife { cursor: crosshair; }
+  canvas#view.dragging { cursor: grabbing; }
+
+  .glass {
+    background: var(--glass); border: 1px solid var(--glass-edge); box-shadow: var(--shadow);
+  }
+  #toolbar {
+    position: fixed; left: 50%; bottom: max(14px, env(safe-area-inset-bottom)); transform: translateX(-50%);
+    display: flex; gap: 4px; padding: 6px; border-radius: 18px; z-index: 5; max-width: calc(100vw - 16px);
+  }
+  .tb {
+    display: flex; align-items: center; gap: 8px; padding: 10px 14px; border: 0; border-radius: 13px;
+    background: transparent; color: inherit; font: inherit; cursor: pointer; white-space: nowrap;
+    transition: background .15s, color .15s, transform .1s;
+  }
+  .tb:hover { background: rgba(29, 36, 51, 0.08); }
+  .tb:active { transform: scale(0.96); }
+  .tb[aria-pressed="true"], .tb[aria-expanded="true"] { background: var(--ink); color: #fff; }
+  .tb svg { width: 20px; height: 20px; flex: none; }
+  .tb .dot { width: 18px; height: 18px; border-radius: 50%; border: 2px solid rgba(255,255,255,.9);
+             box-shadow: 0 0 0 1.5px rgba(29,36,51,.35); background: var(--flesh, #ff3f62); flex: none; }
+  .tb kbd { font: 600 11px ui-monospace, Menlo, monospace; opacity: .5; }
+  @media (max-width: 520px) { .tb { padding: 10px 11px; } .tb span.lbl, .tb kbd { display: none; } }
+
+  #colorPop {
+    position: fixed; left: 50%; bottom: calc(max(14px, env(safe-area-inset-bottom)) + 66px); transform: translateX(-50%);
+    padding: 12px; border-radius: 16px; z-index: 6; display: flex; flex-direction: column; gap: 10px; align-items: center;
+  }
+  #colorPop[hidden] { display: none; }
+  .swatches { display: grid; grid-template-columns: repeat(8, 30px); gap: 8px; }
+  .sw { width: 30px; height: 30px; border-radius: 50%; border: 2px solid #fff; cursor: pointer; padding: 0;
+        box-shadow: 0 0 0 1.5px rgba(29,36,51,.25), 0 3px 6px rgba(0,0,0,.15); transition: transform .12s; }
+  .sw:hover { transform: scale(1.12); }
+  .sw[aria-pressed="true"] { box-shadow: 0 0 0 3px var(--ink), 0 3px 6px rgba(0,0,0,.2); }
+  .pickrow { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+  .pickrow input[type=color] { width: 54px; height: 30px; padding: 0; border: 0; background: none; cursor: pointer; border-radius: 8px; }
+  @media (max-width: 420px) { .swatches { grid-template-columns: repeat(4, 34px); } .sw { width: 34px; height: 34px; } }
+
+  #fps {
+    position: fixed; left: 12px; top: 12px; padding: 6px 10px; border-radius: 10px; z-index: 4;
+    font: 600 12px ui-monospace, Menlo, Consolas, monospace; pointer-events: none;
+  }
+  #fps[hidden] { display: none; }
+
+  #panelWrap { position: fixed; right: 12px; top: 12px; z-index: 6; width: 244px; max-width: calc(100vw - 24px); }
+  #panelBtn { display: flex; margin-left: auto; border-radius: 12px; padding: 8px 12px; }
+  #panel { margin-top: 8px; padding: 12px 14px 8px; border-radius: 16px; }
+  #panel[hidden] { display: none; }
+  .row { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; margin-bottom: 10px; font-size: 12.5px; }
+  .row output { opacity: .6; font-variant-numeric: tabular-nums; }
+  .row input[type=range] { grid-column: 1 / -1; width: 100%; accent-color: var(--ink); margin: 0; }
+  .chk { display: flex; align-items: center; gap: 8px; margin: 2px 0 10px; font-size: 12.5px; cursor: pointer; }
+  .chk input { accent-color: var(--ink); }
+  .link { background: none; border: 0; padding: 0 0 8px; font: inherit; font-size: 12px; text-decoration: underline; cursor: pointer; opacity: .65; color: inherit; }
+
+  #hint {
+    position: fixed; left: 50%; top: 14px; transform: translateX(-50%); padding: 8px 14px; border-radius: 12px;
+    font-size: 12.5px; opacity: 0.85; z-index: 3; pointer-events: none; text-align: center; transition: opacity .6s;
+    max-width: calc(100vw - 280px);
+  }
+  #hint.gone { opacity: 0; }
+  @media (max-width: 760px) { #hint { display: none; } }
+
+  #toast {
+    position: fixed; left: 50%; top: 60px; transform: translateX(-50%); padding: 8px 14px; border-radius: 12px;
+    background: var(--ink); color: #fff; font-size: 13px; z-index: 9; opacity: 0; pointer-events: none; transition: opacity .25s;
+  }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<canvas id="view" aria-label="Melon Jelly simulation"></canvas>
+
+<div id="fps" class="glass">-- FPS</div>
+<div id="hint" class="glass">Drag to squish · <b>Shift</b>/right-click to pinch · <b>K</b> for the knife</div>
+<div id="toast" role="status"></div>
+
+<div id="panelWrap">
+  <button id="panelBtn" class="tb glass" aria-expanded="false" aria-controls="panel" title="Physics settings (P)">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg>
+    <span class="lbl">Physics</span>
+  </button>
+  <div id="panel" class="glass" hidden></div>
+</div>
+
+<div id="colorPop" class="glass" hidden>
+  <div class="swatches" id="swatches"></div>
+  <label class="pickrow">Custom <input type="color" id="colorInput" value="#ff3f62" aria-label="Custom flesh colour"></label>
+</div>
+
+<div id="toolbar" class="glass" role="toolbar" aria-label="Tools">
+  <button class="tb" id="tGrab" aria-pressed="true" title="Grab (G)">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 12V5.5a1.5 1.5 0 0 1 3 0V11m0-1V4.5a1.5 1.5 0 0 1 3 0V11m0-4.5a1.5 1.5 0 0 1 3 0V13m0-4a1.5 1.5 0 0 1 3 0v5.5A6.5 6.5 0 0 1 14 21h-1.7a6 6 0 0 1-4.7-2.3L4.6 15a1.6 1.6 0 0 1 2.3-2.2L8 14"/></svg>
+    <span class="lbl">Grab</span><kbd>G</kbd>
+  </button>
+  <button class="tb" id="tKnife" aria-pressed="false" title="Knife (K)">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.5 3.5c-6 0-11.5 3-14.5 9.5l-3 7.5 7.5-3c6.500-3 9.500-8.500 10-14z"/><path d="M8.500 15.500 14 10"/></svg>
+    <span class="lbl">Knife</span><kbd>K</kbd>
+  </button>
+  <button class="tb" id="tColor" aria-expanded="false" aria-controls="colorPop" title="Flesh colour (C)">
+    <span class="dot" aria-hidden="true"></span><span class="lbl">Color</span><kbd>C</kbd>
+  </button>
+  <button class="tb" id="tReset" title="Reset (R)">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.700L3 8"/><path d="M3 3v5h5"/></svg>
+    <span class="lbl">Reset</span><kbd>R</kbd>
+  </button>
+</div>
+
+<script>
+'use strict';
+
+/* =====================================================================
+ *  MELON JELLY: XPBD soft-body watermelon slice
+ *  Sections: 1 config · 2 mesh · 3 physics · 4 cutting · 5 input
+ *            6 rendering · 7 UI · 8 main loop
+ * ===================================================================== */
+
+/* ============================ 1. CONFIG ============================ */
+
+const DT = 1 / 60;            // fixed physics step
+const SUB = 16;               // XPBD substeps per step (small steps, 1 iteration each)
+const DTS = DT / SUB;
+const WORLD_MIN_W = 1200;     // the visible world is at least this big (world units)
+const WORLD_MIN_W_PORTRAIT = 760;
+const WORLD_MIN_H = 760;
+const MELON_R = 270;          // slice radius in world units
+const MELON_DETAIL = 22;      // R / lattice spacing  ->  about 880 particles
+const MAX_SPEED = 2600;       // velocity clamp, world units / s
+const DEFAULT_FLESH = '#ff3f62';
+const GRIP_GRAB = 0.09, GRIP_PINCH = 0.14;   // pointer spring strength per substep
+const LEASH = 2200;                          // max speed of the grab anchor, world units / s
+const MAX_LAG = 150;                         // the pointer may lead the grabbed region by at most this much
+const PALM = { half: 72, r: 34 };            // pressing from empty space: a flat palm (capsule) pushes down
+
+const PRESETS = [
+  ['Watermelon', '#ff3f62'], ['Bubblegum', '#ff7ac0'], ['Tangerine', '#ff9a3c'], ['Lemon', '#ffd93d'],
+  ['Lime', '#8fe04a'], ['Ocean', '#3fb0ff'], ['Grape', '#9a6bff'], ['Mint', '#2fe0c0'],
+];
+
+/** @typedef {{stiffness:number, volume:number, wobble:number, damping:number, gravity:number, friction:number}} Params */
+/** @type {Params} */
+const DEFAULTS = { stiffness: 0.7, volume: 0.6, wobble: 0.45, damping: 0.4, gravity: 0.5, friction: 0.7 };
+/** @type {Params} */
+const params = Object.assign({}, DEFAULTS);
+
+/** Slider metadata for the settings panel. */
+const PARAM_UI = [
+  ['stiffness', 'Stiffness', 'Edge / shear stiffness of the flesh'],
+  ['volume', 'Volume keeping', 'How strongly area is preserved (side bulge when squashed)'],
+  ['wobble', 'Wobble', 'Less internal damping, so the jelly rings longer'],
+  ['damping', 'Damping', 'Global air drag'],
+  ['gravity', 'Gravity', 'Gravity strength'],
+  ['friction', 'Friction', 'Floor and wall friction'],
+];
+
+/** Maps the 0..1 sliders to solver constants. */
+function derive() {
+  const p = params;
+  return {
+    g: 800 + p.gravity * 2400,
+    alphaE: Math.pow(10, -5.0 - 3.5 * p.stiffness),       // flesh edge compliance
+    alphaR: Math.pow(10, -5.0 - 3.5 * p.stiffness) / 18,  // rind is much stiffer
+    alphaA: Math.pow(10, -8.0 - 4.0 * p.volume),          // normalised area compliance
+    tau: 0.045 - 0.040 * p.wobble,                        // Rayleigh-style internal damping time (s)
+    drag: 0.05 + p.damping * 3,
+    mu: 0.15 + p.friction * 1.0,
+  };
+}
+
+/* ============================ 2. MESH ============================== */
+
+/** Small deterministic PRNG so every reset gives the identical melon. */
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * Bowyer-Watson Delaunay triangulation (O(n * t), fine for ~900 points at startup).
+ * @param {number[]} px @param {number[]} py @param {number} S super-triangle scale
+ * @returns {number[][]} triangles as index triples
+ */
+function delaunay(px, py, S) {
+  const n = px.length;
+  const xs = px.concat([-4 * S, 4 * S, 0]);
+  const ys = py.concat([-S, -S, 4 * S]);
+  const mk = (a, b, c) => {
+    const ax = xs[a], ay = ys[a], bx = xs[b], by = ys[b], cx = xs[c], cy = ys[c];
+    const d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by));
+    const a2 = ax * ax + ay * ay, b2 = bx * bx + by * by, c2 = cx * cx + cy * cy;
+    const ux = (a2 * (by - cy) + b2 * (cy - ay) + c2 * (ay - by)) / d;
+    const uy = (a2 * (cx - bx) + b2 * (ax - cx) + c2 * (bx - ax)) / d;
+    return { a, b, c, ux, uy, r2: (ax - ux) * (ax - ux) + (ay - uy) * (ay - uy) };
+  };
+  const K = n + 3;
+  let tris = [mk(n, n + 1, n + 2)];
+  for (let i = 0; i < n; i++) {
+    const x = xs[i], y = ys[i];
+    const keep = [], edges = new Map();
+    for (const t of tris) {
+      const dx = x - t.ux, dy = y - t.uy;
+      if (dx * dx + dy * dy < t.r2 * (1 - 1e-12)) {
+        for (const [u, v] of [[t.a, t.b], [t.b, t.c], [t.c, t.a]]) {
+          const key = u < v ? u * K + v : v * K + u;
+          const e = edges.get(key);
+          if (e) e[2]++; else edges.set(key, [u, v, 1]);
+        }
+      } else keep.push(t);
+    }
+    for (const e of edges.values()) if (e[2] === 1) keep.push(mk(e[0], e[1], i));
+    tris = keep;
+  }
+  return tris.filter(t => t.a < n && t.b < n && t.c < n).map(t => [t.a, t.b, t.c]);
+}
+
+const triArea = (px, py, a, b, c) =>
+  0.5 * ((px[b] - px[a]) * (py[c] - py[a]) - (px[c] - px[a]) * (py[b] - py[a]));
+
+/**
+ * Builds the half-disc melon in local coordinates: flat cut face on top (y = 0),
+ * rind on the arc below. Boundary points sit exactly on the circle so the outline is clean.
+ * @param {number} R
+ */
+function makeMelonMesh(R) {
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const rng = mulberry32(1234 + attempt);
+    const nFlat = MELON_DETAIL * 2;
+    const h = 2 * R / nFlat, rowH = h * 0.8660254;
+    const jit = h * 0.001 * (1 + attempt * 4);
+    const px = [], py = [], rind = [];
+    const add = (x, y, r) => { px.push(x); py.push(y); rind.push(r ? 1 : 0); };
+
+    const nArc = Math.round(Math.PI * R / h);
+    for (let k = 0; k <= nArc; k++) {                     // arc incl. both corners
+      const th = Math.PI * k / nArc;
+      add(R * Math.cos(th), k === nArc ? 0 : R * Math.sin(th), 1);
+    }
+    for (let j = 1; j < nFlat; j++) {                     // flat edge, bowed outwards by a hair so
+      const x = -R + j * h, u = x / R;                    // the hull is strictly convex (no collinear triples)
+      add(x, -0.02 * h * (1 - u * u), 0);
+    }
+    for (let i = 1; i * rowH < R - 0.62 * h; i++) {       // hex lattice interior
+      const y = i * rowH;
+      for (let j = 0; j <= nFlat; j++) {
+        const x = -R + (j + 0.5 * (i & 1)) * h, d = Math.hypot(x, y);
+        if (d < R - 0.62 * h) add(x + (rng() - .5) * jit, y + (rng() - .5) * jit, d >= R - 1.5 * h);
+      }
+    }
+
+    const raw = delaunay(px, py, R * 40);
+    const tris = raw.map(t => (triArea(px, py, t[0], t[1], t[2]) < 0 ? [t[0], t[2], t[1]] : t));
+
+    // Validation: closed manifold, no overlaps, covers the half-disc polygon.
+    const dir = new Set(), K = px.length;
+    let ok = true, area = 0, minA = Infinity;
+    for (const t of tris) {
+      const a = triArea(px, py, t[0], t[1], t[2]);
+      area += a; minA = Math.min(minA, a);
+      for (let k = 0; k < 3; k++) {
+        const key = t[k] * K + t[(k + 1) % 3];
+        if (dir.has(key)) ok = false;
+        dir.add(key);
+      }
+    }
+    let boundary = 0;
+    for (const key of dir) {
+      const u = Math.floor(key / K), v = key % K;
+      if (!dir.has(v * K + u)) boundary++;
+    }
+    const poly = [];
+    for (let k = 0; k <= nArc; k++) poly.push(k);
+    for (let j = 1; j < nFlat; j++) poly.push(nArc + j);
+    let polyA = 0;
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i], b = poly[(i + 1) % poly.length];
+      polyA += px[a] * py[b] - px[b] * py[a];
+    }
+    polyA = Math.abs(polyA) / 2;
+    if (ok && boundary === poly.length && Math.abs(area - polyA) < polyA * 1e-6 && minA > 0.02 * h * h) {
+      return { px, py, rind, tris, nArc, h, R };
+    }
+  }
+  throw new Error('mesh generation failed');
+}
+
+/* ============================ 3. PHYSICS =========================== */
+
+const view = { w: 1, h: 1, dpr: 1, k: 1, ww: WORLD_MIN_W, wh: WORLD_MIN_H, floorY: 640, left: 0, right: WORLD_MIN_W, ceil: -900 };
+
+let CAPP = 0;                                      // particle capacity (3 * triangles is the hard upper bound)
+let NP = 0, NT = 0, NE = 0;
+/** Particle state, struct-of-arrays. X/Y simulation, DX/DY interpolated for drawing, RX/RY rest pose. */
+let X, Y, PX, PY, VX, VY, W, RX, RY, SX, SY, DX, DY, IR;
+/** Triangles: vertex ids, rest area, inverse rest edge matrix, per-edge "original outer arc" flag,
+ *  and a tombstone flag for crumbs removed by cutting. */
+let TV, TA0, TINV, TARC, TDEAD;
+/** Distance constraints (rebuilt after every cut). */
+let EA, EB, EL, ER;
+/** @type {{t:number,b0:number,b1:number,b2:number,ang:number,len:number}[]} */
+let seeds = [];
+let simTime = 0;
+let foldTime = 0, healLeft = 0;                        // self-heal bookkeeping (see healFolds)
+let meshR = MELON_R;
+
+/** Allocates and fills all arrays for a fresh, uncut melon. */
+function loadMelon() {
+  const R = meshR;
+  const m = makeMelonMesh(R);
+  NP = m.px.length; NT = m.tris.length;
+  CAPP = NT * 3;
+  const f = n => new Float64Array(n);
+  X = f(CAPP); Y = f(CAPP); PX = f(CAPP); PY = f(CAPP); VX = f(CAPP); VY = f(CAPP); W = f(CAPP);
+  RX = f(CAPP); RY = f(CAPP); SX = f(CAPP); SY = f(CAPP); DX = f(CAPP); DY = f(CAPP);
+  IR = new Uint8Array(CAPP);
+  TV = new Int32Array(NT * 3); TA0 = f(NT); TINV = f(NT * 4); TARC = new Uint8Array(NT * 3); TDEAD = new Uint8Array(NT);
+  EA = new Int32Array(NT * 3); EB = new Int32Array(NT * 3); EL = f(NT * 3); ER = new Uint8Array(NT * 3);
+
+  const cx = view.ww / 2, cy = view.floorY - R - 90;     // starts hovering, so it drops on load
+  for (let i = 0; i < NP; i++) {
+    RX[i] = m.px[i]; RY[i] = m.py[i]; IR[i] = m.rind[i];
+    X[i] = PX[i] = SX[i] = DX[i] = cx + m.px[i];
+    Y[i] = PY[i] = SY[i] = DY[i] = cy + m.py[i];
+  }
+  for (let t = 0; t < NT; t++) {
+    const [a, b, c] = m.tris[t];
+    TV[3 * t] = a; TV[3 * t + 1] = b; TV[3 * t + 2] = c;
+    const e1x = RX[b] - RX[a], e1y = RY[b] - RY[a], e2x = RX[c] - RX[a], e2y = RY[c] - RY[a];
+    const det = e1x * e2y - e2x * e1y;
+    TA0[t] = det / 2;
+    TINV[4 * t] = e2y / det; TINV[4 * t + 1] = -e2x / det; TINV[4 * t + 2] = -e1y / det; TINV[4 * t + 3] = e1x / det;
+    for (let k = 0; k < 3; k++) {
+      const u = TV[3 * t + k], v = TV[3 * t + (k + 1) % 3];
+      TARC[3 * t + k] = (u <= m.nArc && v <= m.nArc && Math.abs(u - v) === 1) ? 1 : 0;
+    }
+  }
+  makeSeeds(m);
+  updateMasses();
+  rebuildEdges();
+  rebuildPieces();
+  simTime = 0;
+}
+
+/** Seeds live in two rings and are glued to the triangle that contains them (barycentric). */
+function makeSeeds(m) {
+  const rng = mulberry32(777);
+  seeds = [];
+  const place = (r, th, len) => {
+    const x = r * Math.cos(th), y = r * Math.sin(th);
+    for (let t = 0; t < NT; t++) {
+      const a = TV[3 * t], b = TV[3 * t + 1], c = TV[3 * t + 2];
+      const iv = TINV, dx = x - RX[a], dy = y - RY[a];
+      const b1 = iv[4 * t] * dx + iv[4 * t + 1] * dy, b2 = iv[4 * t + 2] * dx + iv[4 * t + 3] * dy;
+      const b0 = 1 - b1 - b2;
+      if (b0 >= -1e-9 && b1 >= -1e-9 && b2 >= -1e-9) {
+        seeds.push({ t, b0, b1, b2, ang: th + (rng() - 0.5) * 0.7, len });
+        return;
+      }
+    }
+  };
+  const R = m.R, s = R / 270;
+  for (let i = 0; i < 9; i++) place(R * (0.60 + (rng() - .5) * 0.05), Math.PI * (0.13 + 0.74 * (i + .5) / 9), (15 + rng() * 3) * s);
+  for (let i = 0; i < 6; i++) place(R * (0.37 + (rng() - .5) * 0.05), Math.PI * (0.18 + 0.64 * (i + .5) / 6), (14 + rng() * 3) * s);
+}
+
+/** Particle mass = one third of each incident triangle's rest area (uniform density). */
+function updateMasses() {
+  const m = new Float64Array(NP);
+  for (let t = 0; t < NT; t++) {
+    if (TDEAD[t]) continue;
+    const a = TA0[t] / 3;
+    m[TV[3 * t]] += a; m[TV[3 * t + 1]] += a; m[TV[3 * t + 2]] += a;
+  }
+  for (let i = 0; i < NP; i++) W[i] = m[i] > 1e-9 ? 1 / m[i] : 0;
+}
+
+/** Rebuilds the unique edge list. Rest lengths always come from the original rest pose. */
+function rebuildEdges() {
+  const seen = new Set();
+  NE = 0;
+  for (let t = 0; t < NT; t++) {
+    if (TDEAD[t]) continue;
+    for (let k = 0; k < 3; k++) {
+      const a = TV[3 * t + k], b = TV[3 * t + (k + 1) % 3];
+      const key = a < b ? a * CAPP + b : b * CAPP + a;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      EA[NE] = a; EB[NE] = b;
+      EL[NE] = Math.hypot(RX[a] - RX[b], RY[a] - RY[b]);
+      ER[NE] = IR[a] && IR[b] ? 1 : 0;
+      NE++;
+    }
+  }
+}
+
+/**
+ * Safety net for extreme manipulation: a heavily folded mesh can sit in a local minimum of the
+ * constraint solver. If many triangles stay inverted for 1.5 s while nothing is held, pull every
+ * piece gently back towards its rigidly fitted rest shape for a moment so it unfolds.
+ */
+function healFolds() {
+  let inv = 0;
+  for (let t = 0; t < NT; t++) {
+    if (TDEAD[t]) continue;
+    const i = TV[3 * t], j = TV[3 * t + 1], k = TV[3 * t + 2];
+    if ((X[j] - X[i]) * (Y[k] - Y[i]) - (X[k] - X[i]) * (Y[j] - Y[i]) <= 0) inv++;
+  }
+  const held = [...handles.values()].some(h => h.kind !== 'cut' && h.kind !== 'press');
+  foldTime = inv > Math.max(10, NT * 0.01) && !held ? foldTime + DT : 0;
+  if (foldTime > 1.5) { healLeft = 1.0; foldTime = 0; }
+  if (healLeft > 0) healLeft -= DT;
+}
+
+/** Pulls each piece towards its best rigid fit of the rest pose (2D Procrustes). */
+function shapeMatch(k) {
+  const n = pieces.length;
+  const m = new Float64Array(n), cx = new Float64Array(n), cy = new Float64Array(n), rx = new Float64Array(n), ry = new Float64Array(n);
+  for (let p = 0; p < NP; p++) {
+    const pc = pieceOfPart[p]; if (pc < 0 || W[p] === 0) continue;
+    const w = 1 / W[p];
+    m[pc] += w; cx[pc] += w * X[p]; cy[pc] += w * Y[p]; rx[pc] += w * RX[p]; ry[pc] += w * RY[p];
+  }
+  const sn = new Float64Array(n), cs = new Float64Array(n);
+  for (let p = 0; p < NP; p++) {
+    const pc = pieceOfPart[p]; if (pc < 0 || W[p] === 0) continue;
+    const w = 1 / W[p], ax = RX[p] - rx[pc] / m[pc], ay = RY[p] - ry[pc] / m[pc], bx = X[p] - cx[pc] / m[pc], by = Y[p] - cy[pc] / m[pc];
+    cs[pc] += w * (ax * bx + ay * by); sn[pc] += w * (ax * by - ay * bx);
+  }
+  for (let p = 0; p < NP; p++) {
+    const pc = pieceOfPart[p]; if (pc < 0 || W[p] === 0) continue;
+    const th = Math.atan2(sn[pc], cs[pc]), c = Math.cos(th), s = Math.sin(th);
+    const ax = RX[p] - rx[pc] / m[pc], ay = RY[p] - ry[pc] / m[pc];
+    X[p] += (cx[pc] / m[pc] + c * ax - s * ay - X[p]) * k;
+    Y[p] += (cy[pc] / m[pc] + s * ax + c * ay - Y[p]) * k;
+  }
+}
+
+/** Active pointer interactions: grab / pinch / press / cut. @type {Map<number, any>} */
+const handles = new Map();
+
+/** One fixed physics step = SUB XPBD substeps. */
+function stepPhysics() {
+  const c = derive();
+  for (let s = 0; s < SUB; s++) substep(c, DTS);
+  simTime += DT;
+  healFolds();
+  // NaN / runaway guard: rebuild instead of exploding
+  for (let i = 0; i < NP; i++) {
+    const v = X[i] + Y[i];
+    if (!(v > -1e6 && v < 1e6)) { recoverFromBlowup(); return; }
+  }
+}
+
+/**
+ * One XPBD substep: predict, solve area + distance constraints (compliant, with damping),
+ * apply pointer interactions, resolve floor/wall contacts, update velocities.
+ */
+function substep(c, dt) {
+  const n = NP, g = c.g, vmax2 = MAX_SPEED * MAX_SPEED;
+  for (let p = 0; p < n; p++) {
+    PX[p] = X[p]; PY[p] = Y[p];
+    if (W[p] === 0) { VX[p] = VY[p] = 0; continue; }       // orphaned by a removed crumb: parked
+    let vx = VX[p], vy = VY[p] + g * dt;
+    const s2 = vx * vx + vy * vy;
+    if (s2 > vmax2) { const s = MAX_SPEED / Math.sqrt(s2); vx *= s; vy *= s; }
+    VX[p] = vx; VY[p] = vy;
+    X[p] += vx * dt; Y[p] += vy * dt;
+  }
+
+  const gam = c.tau / dt;                                  // XPBD damping factor
+  const dt2 = dt * dt;
+
+  // --- area (volume in 2D) constraints, normalised: C = A / A0 - 1
+  const aA = c.alphaA / dt2;
+  for (let t = 0; t < NT; t++) {
+    if (TDEAD[t]) continue;
+    const i = TV[3 * t], j = TV[3 * t + 1], k = TV[3 * t + 2];
+    const xi = X[i], yi = Y[i], xj = X[j], yj = Y[j], xk = X[k], yk = Y[k];
+    const A = 0.5 * ((xj - xi) * (yk - yi) - (xk - xi) * (yj - yi));
+    const inv = 1 / TA0[t];
+    const C = (A - TA0[t]) * inv;
+    const gix = 0.5 * (yj - yk) * inv, giy = 0.5 * (xk - xj) * inv;
+    const gjx = 0.5 * (yk - yi) * inv, gjy = 0.5 * (xi - xk) * inv;
+    const gkx = 0.5 * (yi - yj) * inv, gky = 0.5 * (xj - xi) * inv;
+    const wi = W[i], wj = W[j], wk = W[k];
+    const S = wi * (gix * gix + giy * giy) + wj * (gjx * gjx + gjy * gjy) + wk * (gkx * gkx + gky * gky);
+    const den = (1 + gam) * S + aA;
+    if (den < 1e-20) continue;                             // degenerate / pinned triangle
+    const rel = gix * (xi - PX[i]) + giy * (yi - PY[i]) + gjx * (xj - PX[j]) + gjy * (yj - PY[j]) +
+                gkx * (xk - PX[k]) + gky * (yk - PY[k]);
+    const dl = (-C - gam * rel) / den;
+    X[i] += wi * dl * gix; Y[i] += wi * dl * giy;
+    X[j] += wj * dl * gjx; Y[j] += wj * dl * gjy;
+    X[k] += wk * dl * gkx; Y[k] += wk * dl * gky;
+  }
+
+  // --- distance constraints (stretch + shear of the triangle lattice); rind edges are stiffer
+  const aE = c.alphaE / dt2, aR = c.alphaR / dt2;
+  for (let e = 0; e < NE; e++) {
+    const a = EA[e], b = EB[e];
+    const dx = X[a] - X[b], dy = Y[a] - Y[b];
+    const d = Math.sqrt(dx * dx + dy * dy);
+    if (d < 1e-9) continue;
+    const nx = dx / d, ny = dy / d;
+    const rel = nx * ((X[a] - PX[a]) - (X[b] - PX[b])) + ny * ((Y[a] - PY[a]) - (Y[b] - PY[b]));
+    const wa = W[a], wb = W[b];
+    const dl = (-(d - EL[e]) - gam * rel) / ((1 + gam) * (wa + wb) + (ER[e] ? aR : aE));
+    X[a] += wa * dl * nx; Y[a] += wa * dl * ny;
+    X[b] -= wb * dl * nx; Y[b] -= wb * dl * ny;
+  }
+
+  for (const h of handles.values()) applyHandle(h, dt);
+  if (healLeft > 0) shapeMatch(0.03);
+
+  // --- collisions: floor (Coulomb friction, position based), walls, ceiling
+  const fy = view.floorY, lx = view.left, rx = view.right, cy = view.ceil, mu = c.mu;
+  for (let p = 0; p < n; p++) {
+    let x = X[p], y = Y[p];
+    if (y > fy) {
+      const pen = Math.min(y - fy, 10);                    // cap so a shrinking window can't catapult pieces
+      y -= pen;
+      const tx = x - PX[p], lim = mu * Math.min(pen, 3);
+      x = Math.abs(tx) <= lim ? PX[p] : x - Math.sign(tx) * lim;
+    }
+    if (x < lx) { const pen = Math.min(lx - x, 10); x += pen; const ty = y - PY[p], lim = 0.25 * Math.min(pen, 3);
+      y = Math.abs(ty) <= lim ? PY[p] : y - Math.sign(ty) * lim; }
+    else if (x > rx) { const pen = Math.min(x - rx, 10); x -= pen; const ty = y - PY[p], lim = 0.25 * Math.min(pen, 3);
+      y = Math.abs(ty) <= lim ? PY[p] : y - Math.sign(ty) * lim; }
+    if (y < cy) y = cy;
+    X[p] = x; Y[p] = y;
+  }
+
+  const inv = 1 / dt, damp = Math.max(0, 1 - c.drag * dt);
+  for (let p = 0; p < n; p++) { VX[p] = (X[p] - PX[p]) * inv * damp; VY[p] = (Y[p] - PY[p]) * inv * damp; }
+}
+
+/** Applies a pointer interaction as compliant, per-particle weighted attachments (never teleports). */
+function applyHandle(h, dt) {
+  if (h.kind === 'press') {
+    // soft kinematic capsule (a flat palm): pushes particles out, gentle enough never to fight the floor violently
+    const r = PALM.r, r2 = r * r, x0 = h.x - PALM.half, x1 = h.x + PALM.half;
+    for (let p = 0; p < NP; p++) {
+      const nx = X[p] < x0 ? x0 : X[p] > x1 ? x1 : X[p];
+      const dx = X[p] - nx, dy = Y[p] - h.y, d2 = dx * dx + dy * dy;
+      if (d2 < r2 && d2 > 1e-9) {
+        const d = Math.sqrt(d2), push = (r - d) * 0.6;
+        X[p] += dx / d * push; Y[p] += dy / d * push;
+      }
+    }
+    return;
+  }
+  if (h.kind === 'cut') return;
+  h.age += dt;
+  // The anchor chases the pointer with a speed limit, so a mouse flick can never yank the jelly
+  // faster than it can physically follow (this is what keeps violent drags from folding the mesh).
+  const lx = h.x - h.ax, ly = h.y - h.ay, ld = Math.hypot(lx, ly), step = LEASH * dt;
+  if (ld > step) { h.ax += lx / ld * step; h.ay += ly / ld * step; } else { h.ax = h.x; h.ay = h.y; }
+  // ...and never gets further ahead of the grabbed region than MAX_LAG, which bounds the stretch
+  let cx = 0, cy = 0, cw = 0;
+  for (let q = 0; q < h.idx.length; q++) { cx += X[h.idx[q]] * h.wt[q]; cy += Y[h.idx[q]] * h.wt[q]; cw += h.wt[q]; }
+  if (cw > 0) {
+    const gx = h.ax + h.mox - cx / cw, gy = h.ay + h.moy - cy / cw, gd = Math.hypot(gx, gy);
+    if (gd > MAX_LAG) { h.ax -= gx * (1 - MAX_LAG / gd); h.ay -= gy * (1 - MAX_LAG / gd); }
+  }
+  const ramp = Math.min(1, h.age / 0.35), ease = 1 - (1 - ramp) * (1 - ramp);
+  let ax = h.ax, ay = h.ay;
+  let shrink = 1;
+  if (h.pair) {                                            // two-finger pinch: both regions drift to the midpoint
+    ax += ((h.pair.ax - h.ax) / 2) * 0.22 * ease;
+    ay += ((h.pair.ay - h.ay) / 2) * 0.22 * ease;
+  } else if (h.kind === 'pinch') {
+    shrink = 1 - 0.78 * ease;                              // radial contraction towards the pointer
+  }
+  const grip = h.kind === 'pinch' ? GRIP_PINCH : GRIP_GRAB;
+  for (let q = 0; q < h.idx.length; q++) {
+    const p = h.idx[q];
+    const f = Math.min(0.5, grip * h.wt[q]);
+    const tx = ax + h.ox[q] * shrink, ty = ay + h.oy[q] * shrink;
+    X[p] += (tx - X[p]) * f; Y[p] += (ty - Y[p]) * f;
+  }
+}
+
+/** Full rebuild when the simulation produced non-finite numbers. */
+function recoverFromBlowup() {
+  handles.clear();
+  loadMelon();
+  toast('Simulation recovered');
+}
+
+/* ============================ 4. CUTTING =========================== */
+
+/** Pieces: connected sets of triangles plus their boundary loops (rebuilt after every cut). */
+let pieces = [];
+/** @type {Int32Array} */ let pieceOfPart = new Int32Array(0);
+/** @type {Int32Array} */ let pieceOfTri = new Int32Array(0);
+
+function segCross(x1, y1, x2, y2, x3, y3, x4, y4) {
+  const d1x = x2 - x1, d1y = y2 - y1, d2x = x4 - x3, d2y = y4 - y3;
+  const den = d1x * d2y - d1y * d2x;
+  if (Math.abs(den) < 1e-12) return false;
+  const tx = x3 - x1, ty = y3 - y1;
+  const s = (tx * d2y - ty * d2x) / den, u = (tx * d1y - ty * d1x) / den;
+  return s >= 0 && s <= 1 && u >= 0 && u <= 1;
+}
+
+/** Squared distance from point p to segment a-b. */
+function pointSegDist2(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+  const t = l2 > 0 ? clamp(((px - ax) * dx + (py - ay) * dy) / l2, 0, 1) : 0;
+  const qx = ax + t * dx - px, qy = ay + t * dy - py;
+  return qx * qx + qy * qy;
+}
+
+/** True if segments a-b and c-d cross or come within `eps` of each other. */
+function segsTouch(ax, ay, bx, by, cx, cy, dx, dy, eps) {
+  if (segCross(ax, ay, bx, by, cx, cy, dx, dy)) return true;
+  const e2 = eps * eps;
+  return pointSegDist2(ax, ay, cx, cy, dx, dy) < e2 || pointSegDist2(bx, by, cx, cy, dx, dy) < e2 ||
+         pointSegDist2(cx, cy, ax, ay, bx, by) < e2 || pointSegDist2(dx, dy, ax, ay, bx, by) < e2;
+}
+
+/**
+ * Cuts the mesh along the knife segment (world coords, current drawn positions).
+ * Every mesh edge the blade crosses is severed, which removes the link between the two triangles
+ * sharing it. Two triangles still linked by an uncrossed edge have both endpoints on the same side
+ * of the blade, so the severed links form a closed barrier. Vertices whose triangle fan is split are
+ * duplicated per fan: no mass is lost and the pieces become separate particle sets.
+ *
+ * A drag arrives as many short segments and one segment alone often cannot split a fan, so severed
+ * triangle pairs are remembered in `memo` for the duration of the stroke.
+ * @param {Set<number>} [memo] severed triangle pairs of the current stroke (t1 * NT + t2, t1 < t2)
+ * @returns {boolean} true if anything was separated
+ */
+function cutSegment(ax, ay, bx, by, memo = new Set()) {
+  if (NT === 0 || (ax === bx && ay === by)) return false;
+  const K = CAPP;
+  const emap = new Map();                                   // edge key -> triangles sharing it
+  for (let t = 0; t < NT; t++) {
+    if (TDEAD[t]) continue;
+    for (let k = 0; k < 3; k++) {
+      const u = TV[3 * t + k], v = TV[3 * t + (k + 1) % 3];
+      const key = u < v ? u * K + v : v * K + u;
+      const l = emap.get(key);
+      if (l) l.push(t); else emap.set(key, [t]);
+    }
+  }
+  // Overlap consecutive segments a little: the mesh moves between pointer events and an edge that
+  // crosses exactly at a joint would otherwise slip through and leave the body connected.
+  const len = Math.hypot(bx - ax, by - ay), ox = (bx - ax) / len * CUT_OVERLAP, oy = (by - ay) / len * CUT_OVERLAP;
+  ax -= ox; ay -= oy; bx += ox; by += oy;
+  const minx = Math.min(ax, bx) - 30, maxx = Math.max(ax, bx) + 30;
+  const miny = Math.min(ay, by) - 30, maxy = Math.max(ay, by) + 30;
+  for (const [key, l] of emap) {
+    if (l.length < 2) continue;                              // outer boundary edge, nothing to separate
+    const u = Math.floor(key / K), v = key % K;
+    const x0 = DX[u], y0 = DY[u], x1 = DX[v], y1 = DY[v];
+    if ((x0 < minx && x1 < minx) || (x0 > maxx && x1 > maxx) || (y0 < miny && y1 < miny) || (y0 > maxy && y1 > maxy)) continue;
+    if (segsTouch(ax, ay, bx, by, x0, y0, x1, y1, CUT_EPS)) {
+      memo.add(l[0] < l[1] ? l[0] * NT + l[1] : l[1] * NT + l[0]);
+    }
+  }
+  // memo pairs that still share an edge (by particle id) are the currently severed edges
+  const sev = new Set();
+  for (const pair of memo) {
+    const a = Math.floor(pair / NT), b = pair % NT;
+    for (let k = 0; k < 3; k++) {
+      const u = TV[3 * a + k], v = TV[3 * a + (k + 1) % 3];
+      const key = u < v ? u * K + v : v * K + u;
+      const l = emap.get(key);
+      if (l && l.length === 2 && ((l[0] === a && l[1] === b) || (l[0] === b && l[1] === a))) sev.add(key);
+    }
+  }
+  if (!sev.size) return false;
+
+  // Group the triangle fan around each touched vertex by connectivity across un-severed edges.
+  const touched = new Set();
+  for (const key of sev) { touched.add(Math.floor(key / K)); touched.add(key % K); }
+  const incident = new Map();
+  for (let t = 0; t < NT; t++) {
+    if (TDEAD[t]) continue;
+    for (let k = 0; k < 3; k++) {
+      const p = TV[3 * t + k];
+      if (!touched.has(p)) continue;
+      const l = incident.get(p);
+      if (l) l.push(t); else incident.set(p, [t]);
+    }
+  }
+  const nx = -(by - ay), ny = bx - ax, nl = Math.hypot(nx, ny) || 1;
+  const plan = [];                                          // {v, groups:[[tri...]...]}
+  for (const [v, list] of incident) {
+    const par = list.map((_, i) => i);
+    const find = i => { while (par[i] !== i) i = par[i] = par[par[i]]; return i; };
+    const at = new Map(list.map((t, i) => [t, i]));
+    for (const t of list) {
+      for (let k = 0; k < 3; k++) {
+        const u = TV[3 * t + k], w = TV[3 * t + (k + 1) % 3];
+        if (u !== v && w !== v) continue;
+        const key = u < w ? u * K + w : w * K + u;
+        if (sev.has(key)) continue;
+        for (const t2 of emap.get(key)) if (t2 !== t && at.has(t2)) par[find(at.get(t2))] = find(at.get(t));
+      }
+    }
+    const groups = new Map();
+    list.forEach((t, i) => { const r = find(i); if (!groups.has(r)) groups.set(r, []); groups.get(r).push(t); });
+    if (groups.size > 1) plan.push({ v, groups: [...groups.values()] });
+  }
+  if (!plan.length) return false;
+
+  for (const { v, groups } of plan) {
+    groups.forEach((tris, gi) => {
+      let id = v;
+      if (gi > 0) {                                         // new particle for every extra fan
+        id = NP++;
+        X[id] = X[v]; Y[id] = Y[v]; PX[id] = PX[v]; PY[id] = PY[v]; VX[id] = VX[v]; VY[id] = VY[v];
+        RX[id] = RX[v]; RY[id] = RY[v]; IR[id] = IR[v]; SX[id] = SX[v]; SY[id] = SY[v]; DX[id] = DX[v]; DY[id] = DY[v];
+        for (const t of tris) for (let k = 0; k < 3; k++) if (TV[3 * t + k] === v) TV[3 * t + k] = id;
+      }
+      // small kick away from the blade so the two faces visibly part
+      let sx = 0, sy = 0;
+      for (const t of tris) {
+        sx += (DX[TV[3 * t]] + DX[TV[3 * t + 1]] + DX[TV[3 * t + 2]]) / 3;
+        sy += (DY[TV[3 * t]] + DY[TV[3 * t + 1]] + DY[TV[3 * t + 2]]) / 3;
+      }
+      sx /= tris.length; sy /= tris.length;
+      const side = Math.sign((sx - ax) * nx + (sy - ay) * ny) || 1;
+      VX[id] += side * nx / nl * 55; VY[id] += side * ny / nl * 55;
+    });
+  }
+  updateMasses();
+  rebuildEdges();
+  rebuildPieces();
+  // A boundary triangle whose only links were severed becomes a one-triangle crumb. Re-linking it
+  // could bridge the two sides through a shared vertex, so drop such crumbs instead.
+  let dropped = false;
+  for (const pc of pieces) {
+    if (pc.tris.length > CRUMB_TRIS) continue;
+    for (const t of pc.tris) TDEAD[t] = 1;
+    dropped = true;
+  }
+  if (dropped) { updateMasses(); rebuildEdges(); rebuildPieces(); }
+  return true;
+}
+
+/** Union-find over triangles -> pieces, their seeds and ordered boundary loops. */
+function rebuildPieces() {
+  const par = new Int32Array(NT);
+  for (let i = 0; i < NT; i++) par[i] = i;
+  const find = i => { while (par[i] !== i) i = par[i] = par[par[i]]; return i; };
+  const owner = new Int32Array(NP).fill(-1);
+  for (let t = 0; t < NT; t++) {
+    if (TDEAD[t]) continue;
+    for (let k = 0; k < 3; k++) {
+      const p = TV[3 * t + k];
+      if (owner[p] < 0) owner[p] = t; else par[find(t)] = find(owner[p]);
+    }
+  }
+  pieces = [];
+  pieceOfTri = new Int32Array(NT);
+  pieceOfPart = new Int32Array(NP).fill(-1);
+  const rootIdx = new Int32Array(NT).fill(-1);
+  for (let t = 0; t < NT; t++) {
+    if (TDEAD[t]) { pieceOfTri[t] = -1; continue; }
+    const r = find(t);
+    if (rootIdx[r] < 0) { rootIdx[r] = pieces.length; pieces.push({ tris: [], seeds: [], loops: [] }); }
+    pieceOfTri[t] = rootIdx[r];
+    pieces[rootIdx[r]].tris.push(t);
+    for (let k = 0; k < 3; k++) pieceOfPart[TV[3 * t + k]] = rootIdx[r];
+  }
+  for (const s of seeds) if (!TDEAD[s.t]) pieces[pieceOfTri[s.t]].seeds.push(s);
+
+  // boundary edges = directed triangle edges without a reverse partner
+  const dir = new Set();
+  for (let t = 0; t < NT; t++) if (!TDEAD[t]) for (let k = 0; k < 3; k++) dir.add(TV[3 * t + k] * CAPP + TV[3 * t + (k + 1) % 3]);
+  const be = [], starts = new Map();
+  for (let t = 0; t < NT; t++) {
+    if (TDEAD[t]) continue;
+    for (let k = 0; k < 3; k++) {
+      const u = TV[3 * t + k], v = TV[3 * t + (k + 1) % 3];
+      if (dir.has(v * CAPP + u)) continue;
+      const e = be.length;
+      be.push({ u, v, arc: TARC[3 * t + k], t, used: false });
+      if (!starts.has(u)) starts.set(u, []);
+      starts.get(u).push(e);
+    }
+  }
+  for (const e0 of be) {
+    if (e0.used) continue;
+    const ids = [], arcs = [];
+    let e = e0;
+    for (let guard = 0; guard < 100000 && e && !e.used; guard++) {
+      e.used = true; ids.push(e.u); arcs.push(e.arc);
+      const cand = starts.get(e.v);
+      e = cand ? be[cand.find(i => !be[i].used)] : undefined;
+    }
+    if (ids.length >= 3) pieces[pieceOfTri[e0.t]].loops.push({ ids: Int32Array.from(ids), arc: Uint8Array.from(arcs) });
+  }
+}
+
+/* ============================ 5. INPUT ============================= */
+
+const canvas = /** @type {HTMLCanvasElement} */ (document.getElementById('view'));
+let tool = 'grab';                                          // 'grab' | 'knife'
+/** Fading knife trail points. @type {{x:number,y:number,t:number}[]} */
+const trail = [];
+
+const toWorld = e => ({ x: e.clientX / view.k, y: e.clientY / view.k });
+
+/**
+ * Picks the particles of the piece under the pointer, with a quadratic falloff weight.
+ * Offsets are stored relative to the pointer so grabbing never teleports anything.
+ */
+function pickParticles(x, y, r, reach = r) {
+  let best = -1, bd = Infinity;
+  for (let p = 0; p < NP; p++) {
+    if (pieceOfPart[p] < 0) continue;
+    const d = (DX[p] - x) ** 2 + (DY[p] - y) ** 2;
+    if (d < bd) { bd = d; best = p; }
+  }
+  if (best < 0 || bd > reach * reach) return null;
+  const piece = pieceOfPart[best], idx = [], wt = [], ox = [], oy = [];
+  for (let p = 0; p < NP; p++) {
+    if (pieceOfPart[p] !== piece) continue;
+    const d = Math.hypot(X[p] - x, Y[p] - y);
+    if (d >= r) continue;
+    const w = (1 - d / r) ** 2;
+    idx.push(p); wt.push(w); ox.push(X[p] - x); oy.push(Y[p] - y);
+  }
+  let mox = 0, moy = 0, sw = 0;
+  for (let q = 0; q < idx.length; q++) { mox += ox[q] * wt[q]; moy += oy[q] * wt[q]; sw += wt[q]; }
+  return { idx: Int32Array.from(idx), wt: Float64Array.from(wt), ox: Float64Array.from(ox), oy: Float64Array.from(oy),
+           mox: mox / sw, moy: moy / sw };
+}
+
+let CUT_EPS = 0.75, CUT_OVERLAP = 2.5;
+const CRUMB_TRIS = 2;
+const GRAB_RADIUS = 80, GRAB_REACH = 34, PINCH_RADIUS = 110;
+
+function onPointerDown(e) {
+  e.preventDefault();
+  closeColorPop();
+  canvas.setPointerCapture(e.pointerId);
+  const { x, y } = toWorld(e);
+  const mouse = e.pointerType === 'mouse';
+  if (mouse && e.button !== 0 && e.button !== 2) return;
+  const pinch = mouse && (e.button === 2 || e.shiftKey);
+
+  if (pinch) {
+    const pick = pickParticles(x, y, PINCH_RADIUS);
+    if (pick) handles.set(e.pointerId, Object.assign({ kind: 'pinch', x, y, ax: x, ay: y, age: 0, pair: null }, pick));
+  } else if (tool === 'knife') {
+    handles.set(e.pointerId, { kind: 'cut', x, y, lx: x, ly: y, memo: new Set() });
+    trail.push({ x, y, t: performance.now(), brk: true });
+  } else {
+    const pick = pickParticles(x, y, GRAB_RADIUS, GRAB_REACH);
+    let h;
+    if (pick) {
+      h = Object.assign({ kind: 'grab', x, y, ax: x, ay: y, age: 0, pair: null }, pick);
+      const other = [...handles.values()].find(o => o.kind === 'grab' && !o.pair);
+      if (!mouse && other) { h.pair = other; other.pair = h; h.age = other.age = 0; }   // two fingers -> pinch
+    } else {
+      h = { kind: 'press', x, y };                              // empty space: a flat palm pressing down
+    }
+    handles.set(e.pointerId, h);
+  }
+  canvas.classList.add('dragging');
+}
+
+function onPointerMove(e) {
+  const h = handles.get(e.pointerId);
+  if (!h) return;
+  e.preventDefault();
+  const evs = (e.getCoalescedEvents && e.getCoalescedEvents()) || [];
+  const list = evs.length ? evs : [e];
+  for (const ev of list) {
+    const { x, y } = toWorld(ev);
+    if (h.kind === 'cut') {
+      cutSegment(h.lx, h.ly, x, y, h.memo);
+      h.lx = x; h.ly = y;
+      trail.push({ x, y, t: performance.now() });
+    }
+    h.x = x; h.y = y;
+  }
+}
+
+function onPointerUp(e) {
+  const h = handles.get(e.pointerId);
+  if (!h) return;
+  if (h.pair) h.pair.pair = null;
+  handles.delete(e.pointerId);
+  if (!handles.size) canvas.classList.remove('dragging');
+}
+
+canvas.addEventListener('pointerdown', onPointerDown);
+canvas.addEventListener('pointermove', onPointerMove);
+canvas.addEventListener('pointerup', onPointerUp);
+canvas.addEventListener('pointercancel', onPointerUp);
+canvas.addEventListener('lostpointercapture', onPointerUp);
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+window.addEventListener('blur', () => { handles.clear(); canvas.classList.remove('dragging'); });
+
+/* ============================ 6. RENDERING ========================= */
+
+const ctx = canvas.getContext('2d', { alpha: false });
+const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+const rgb = (c, a = 1) => `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${a})`;
+const mix = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+const WHITE = [255, 255, 255], BLACK = [0, 0, 0];
+const hex2rgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+
+let colorCur = hex2rgb(DEFAULT_FLESH), colorTar = colorCur.slice();
+let showMesh = false;
+let bgGrad = null, floorGrad = null;
+
+const RIND = { w: 0.034, pith: 0.026 };                     // band widths as a fraction of R
+const RIND_DARK = [27, 96, 44], RIND_MID = [52, 156, 72], PITH = [243, 248, 222];
+const LIGHT = { x: -0.5, y: -0.866 };                       // direction towards the light (up-left)
+const HL_BUCKETS = 5;
+const CUT_SMOOTH_PASSES = 28;
+const TRAIL_MS = 520;                                        // how long the knife trail lingers
+
+/** Scratch buffers for the Chaikin-smoothed loop. */
+let sA = { x: new Float32Array(4096), y: new Float32Array(4096), f: new Uint8Array(4096) };
+let sB = { x: new Float32Array(4096), y: new Float32Array(4096), f: new Uint8Array(4096) };
+
+function chaikin(src, dst, n) {
+  for (let i = 0; i < n; i++) {
+    const j = i + 1 === n ? 0 : i + 1;
+    dst.x[2 * i] = 0.75 * src.x[i] + 0.25 * src.x[j]; dst.y[2 * i] = 0.75 * src.y[i] + 0.25 * src.y[j];
+    dst.x[2 * i + 1] = 0.25 * src.x[i] + 0.75 * src.x[j]; dst.y[2 * i + 1] = 0.25 * src.y[i] + 0.75 * src.y[j];
+    dst.f[2 * i] = src.f[i]; dst.f[2 * i + 1] = src.f[i] & src.f[j];
+  }
+}
+
+/** Two rounds of corner cutting turn the particle outline into a smooth curve; returns point count. */
+function smoothLoop(loop) {
+  const n = loop.ids.length, need = n * 4;
+  if (sA.x.length < need) {
+    const m = need * 2;
+    sA = { x: new Float32Array(m), y: new Float32Array(m), f: new Uint8Array(m) };
+    sB = { x: new Float32Array(m), y: new Float32Array(m), f: new Uint8Array(m) };
+  }
+  for (let i = 0; i < n; i++) { const p = loop.ids[i]; sA.x[i] = DX[p]; sA.y[i] = DY[p]; sA.f[i] = loop.arc[i]; }
+  chaikin(sA, sB, n);
+  chaikin(sB, sA, 2 * n);
+  relaxCutRuns(need);
+  return need;
+}
+
+/**
+ * The mesh splits along triangle edges, which leaves a sawtooth on the cut face. For drawing only,
+ * Laplacian-relax the points of cut runs (the rind ends stay anchored) so the face reads as a clean cut.
+ */
+function relaxCutRuns(n) {
+  const x = sA.x, y = sA.y, f = sA.f, tx = sB.x, ty = sB.y;
+  let any = false;
+  for (let i = 0; i < n; i++) if (!f[i]) { any = true; break; }
+  if (!any) return;
+  for (let pass = 0; pass < CUT_SMOOTH_PASSES; pass++) {
+    for (let i = 0; i < n; i++) {
+      const h = i === 0 ? n - 1 : i - 1, j = i + 1 === n ? 0 : i + 1;
+      if (f[h] || f[i]) { tx[i] = x[i]; ty[i] = y[i]; continue; }
+      tx[i] = 0.5 * x[i] + 0.25 * (x[h] + x[j]);
+      ty[i] = 0.5 * y[i] + 0.25 * (y[h] + y[j]);
+    }
+    x.set(tx.subarray(0, n)); y.set(ty.subarray(0, n));
+  }
+}
+
+function buildBackdrop() {
+  bgGrad = ctx.createLinearGradient(0, 0, 0, view.floorY);
+  bgGrad.addColorStop(0, '#f1f4fb'); bgGrad.addColorStop(1, '#d3dcec');
+  floorGrad = ctx.createLinearGradient(0, view.floorY, 0, view.wh);
+  floorGrad.addColorStop(0, '#c9d2e1'); floorGrad.addColorStop(1, '#a9b5ca');
+}
+
+function drawBackdrop() {
+  ctx.fillStyle = bgGrad; ctx.fillRect(0, 0, view.ww, view.floorY + 1);
+  ctx.fillStyle = floorGrad; ctx.fillRect(0, view.floorY, view.ww, view.wh - view.floorY + 2);
+  ctx.fillStyle = 'rgba(255,255,255,0.7)'; ctx.fillRect(0, view.floorY - 0.5, view.ww, 2.5);
+}
+
+function drawShadow(minx, maxx, maxy, glow) {
+  const height = Math.max(0, view.floorY - maxy), fade = 1 / (1 + height / 160);
+  const wd = maxx - minx, cxm = (minx + maxx) / 2;
+  const rx = wd * (0.5 + Math.min(height, 400) / 2500) + 16, ry = 12 + Math.min(height, 400) * 0.03;
+  ctx.save();
+  ctx.translate(cxm, view.floorY + 5);
+  ctx.scale(1, ry / rx);
+  let g = ctx.createRadialGradient(0, 0, 0, 0, 0, rx);
+  g.addColorStop(0, `rgba(28,38,66,${0.42 * fade})`); g.addColorStop(0.55, `rgba(28,38,66,${0.20 * fade})`); g.addColorStop(1, 'rgba(28,38,66,0)');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, rx, 0, 6.2832); ctx.fill();
+  g = ctx.createRadialGradient(0, -rx * 0.3, 0, 0, -rx * 0.3, rx * 0.8);   // tinted light spilling through the jelly
+  g.addColorStop(0, rgb(glow, 0.22 * fade)); g.addColorStop(1, rgb(glow, 0));
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, -rx * 0.3, rx * 0.8, 0, 6.2832); ctx.fill();
+  ctx.restore();
+}
+
+/** Pulls a seed's position and orientation from the (deformed) triangle it is glued to. */
+function drawSeed(s) {
+  const t = s.t, a = TV[3 * t], b = TV[3 * t + 1], c = TV[3 * t + 2];
+  const px = s.b0 * DX[a] + s.b1 * DX[b] + s.b2 * DX[c], py = s.b0 * DY[a] + s.b1 * DY[b] + s.b2 * DY[c];
+  const s1x = DX[b] - DX[a], s1y = DY[b] - DY[a], s2x = DX[c] - DX[a], s2y = DY[c] - DY[a];
+  const m = TINV, i4 = 4 * t;
+  const f00 = s1x * m[i4] + s2x * m[i4 + 2], f01 = s1x * m[i4 + 1] + s2x * m[i4 + 3];
+  const f10 = s1y * m[i4] + s2y * m[i4 + 2], f11 = s1y * m[i4 + 1] + s2y * m[i4 + 3];
+  const rot = Math.atan2(f10 - f01, f00 + f11);
+  const sc = clamp(Math.sqrt(Math.abs(f00 * f11 - f01 * f10)), 0.6, 1.5);
+  const L = s.len * sc;
+  ctx.save();
+  ctx.translate(px, py); ctx.rotate(s.ang + rot);
+  ctx.beginPath();
+  ctx.moveTo(L * 0.5, 0);
+  ctx.bezierCurveTo(L * 0.18, -L * 0.40, -L * 0.46, -L * 0.32, -L * 0.5, 0);
+  ctx.bezierCurveTo(-L * 0.46, L * 0.32, L * 0.18, L * 0.40, L * 0.5, 0);
+  ctx.fillStyle = '#21140f'; ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(-L * 0.08, -L * 0.12, L * 0.22, L * 0.07, -0.15, 0, 6.2832);
+  ctx.fillStyle = 'rgba(255,235,220,0.42)'; ctx.fill();
+  ctx.restore();
+}
+
+/** Draws one piece: translucent flesh, rind bands on the original skin only, seeds, gloss. */
+function drawPiece(pc, col) {
+  const R = meshR, rw = RIND.w * R, pw = RIND.pith * R;
+  const outline = new Path2D(), arcP = new Path2D(), cutP = new Path2D();
+  const hl = [];
+  for (let i = 0; i < HL_BUCKETS; i++) hl.push(new Path2D());
+  let minx = 1e9, miny = 1e9, maxx = -1e9, maxy = -1e9;
+
+  for (const lp of pc.loops) {
+    const n = smoothLoop(lp), x = sA.x, y = sA.y, f = sA.f;
+    outline.moveTo(x[0], y[0]);
+    for (let i = 1; i < n; i++) outline.lineTo(x[i], y[i]);
+    outline.closePath();
+    let prev = -1;
+    for (let i = 0; i < n; i++) {
+      const j = i + 1 === n ? 0 : i + 1;
+      const x0 = x[i], y0 = y[i], x1 = x[j], y1 = y[j], isArc = f[i] === 1;
+      if (x0 < minx) minx = x0; if (x0 > maxx) maxx = x0; if (y0 < miny) miny = y0; if (y0 > maxy) maxy = y0;
+      const path = isArc ? arcP : cutP;
+      if (prev !== f[i]) path.moveTo(x0, y0);
+      path.lineTo(x1, y1);
+      prev = f[i];
+      const dx = x1 - x0, dy = y1 - y0, len = Math.hypot(dx, dy);
+      if (len < 1e-4) continue;
+      const facing = (dy / len) * LIGHT.x + (-dx / len) * LIGHT.y;   // outward normal . light
+      if (facing < 0.2) continue;
+      const a = Math.pow(facing, 2.2), off = isArc ? rw * 0.45 : 6;
+      const ix = -dy / len * off, iy = dx / len * off, b = Math.min(HL_BUCKETS - 1, (a * HL_BUCKETS) | 0);
+      hl[b].moveTo(x0 + ix, y0 + iy); hl[b].lineTo(x1 + ix, y1 + iy);
+    }
+  }
+  if (minx > maxx) return;
+
+  const w = maxx - minx, h = maxy - miny, cxm = (minx + maxx) / 2, cym = (miny + maxy) / 2;
+  const flesh = col.flesh, light = mix(flesh, WHITE, 0.38), dark = mix(flesh, BLACK, 0.30);
+
+  ctx.save();
+  ctx.clip(outline);
+  const rr = Math.max(w, h) * 0.62 + 24;
+  const g = ctx.createRadialGradient(cxm - w * 0.08, cym - h * 0.15, rr * 0.04, cxm, cym, rr);
+  g.addColorStop(0, rgb(light, 0.94)); g.addColorStop(0.62, rgb(flesh, 0.93)); g.addColorStop(1, rgb(dark, 0.95));
+  ctx.fillStyle = g;
+  ctx.fillRect(minx - 2, miny - 2, w + 4, h + 4);
+
+  ctx.lineJoin = 'round'; ctx.lineCap = 'butt';
+  ctx.strokeStyle = rgb(dark, 0.30); ctx.lineWidth = 34; ctx.stroke(outline);          // thicker-looking jelly edge
+  ctx.strokeStyle = rgb(mix(flesh, WHITE, 0.62), 0.20); ctx.lineWidth = 2 * (rw + pw + 24); ctx.stroke(arcP);
+  ctx.strokeStyle = rgb(mix(flesh, WHITE, 0.62), 0.28); ctx.lineWidth = 2 * (rw + pw + 11); ctx.stroke(arcP);
+  ctx.strokeStyle = rgb(PITH); ctx.lineWidth = 2 * (rw + pw); ctx.stroke(arcP);                   // white pith
+  ctx.strokeStyle = rgb(RIND_DARK); ctx.lineWidth = 2 * rw; ctx.stroke(arcP);                      // green rind
+  ctx.strokeStyle = rgb(RIND_MID); ctx.lineWidth = 2 * rw * 0.7; ctx.stroke(arcP);
+  ctx.strokeStyle = rgb(mix(flesh, WHITE, 0.55), 0.55); ctx.lineWidth = 12; ctx.stroke(cutP);     // fresh cut face
+  ctx.strokeStyle = rgb(WHITE, 0.30); ctx.lineWidth = 3.5; ctx.stroke(cutP);
+
+  for (const s of pc.seeds) drawSeed(s);
+
+  // gloss: soft broad sheen + tight specular line along edges facing the light
+  const sh = ctx.createRadialGradient(minx + w * 0.3, miny + h * 0.28, 0, minx + w * 0.3, miny + h * 0.28, Math.max(w, h) * 0.55);
+  sh.addColorStop(0, 'rgba(255,255,255,0.20)'); sh.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = sh; ctx.fillRect(minx - 2, miny - 2, w + 4, h + 4);
+  for (let b = 0; b < HL_BUCKETS; b++) {
+    const a = (b + 0.5) / HL_BUCKETS;
+    ctx.strokeStyle = `rgba(255,255,255,${0.14 * a})`; ctx.lineWidth = 11; ctx.stroke(hl[b]);
+    ctx.strokeStyle = `rgba(255,255,255,${0.62 * a})`; ctx.lineWidth = 3.4; ctx.stroke(hl[b]);
+  }
+  ctx.restore();
+
+  ctx.lineWidth = 1.4; ctx.strokeStyle = 'rgba(50,20,30,0.20)'; ctx.stroke(outline);
+}
+
+function drawMeshDebug() {
+  ctx.lineWidth = 0.8; ctx.strokeStyle = 'rgba(20,30,60,0.35)'; ctx.beginPath();
+  for (let e = 0; e < NE; e++) { ctx.moveTo(DX[EA[e]], DY[EA[e]]); ctx.lineTo(DX[EB[e]], DY[EB[e]]); }
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(20,30,60,0.7)';
+  for (let p = 0; p < NP; p++) ctx.fillRect(DX[p] - 1.2, DY[p] - 1.2, 2.4, 2.4);
+}
+
+function drawOverlays(now) {
+  // knife trail
+  while (trail.length && now - trail[0].t > TRAIL_MS) trail.shift();
+  if (trail.length > 1) {
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    for (let pass = 0; pass < 2; pass++) {
+      for (let i = 1; i < trail.length; i++) {
+        if (trail[i].brk) continue;
+        const a = 1 - (now - trail[i].t) / TRAIL_MS;
+        ctx.strokeStyle = pass ? `rgba(255,255,255,${a})` : `rgba(70,130,255,${0.5 * a})`;
+        ctx.lineWidth = (pass ? 3 : 11) * (0.4 + a * 0.6);
+        ctx.beginPath(); ctx.moveTo(trail[i - 1].x, trail[i - 1].y); ctx.lineTo(trail[i].x, trail[i].y); ctx.stroke();
+      }
+    }
+  }
+  for (const h of handles.values()) {
+    if (h.kind === 'cut') {
+      ctx.fillStyle = 'rgba(40,50,80,0.85)'; ctx.beginPath(); ctx.arc(h.x, h.y, 5, 0, 6.2832); ctx.fill();
+      ctx.strokeStyle = 'white'; ctx.lineWidth = 1.6; ctx.stroke();
+    } else if (h.kind === 'press') {
+      ctx.fillStyle = 'rgba(255,255,255,0.38)'; ctx.strokeStyle = 'rgba(40,50,80,0.45)'; ctx.lineWidth = 2;
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(h.x - PALM.half - PALM.r, h.y - PALM.r, 2 * (PALM.half + PALM.r), 2 * PALM.r, PALM.r);
+      else ctx.rect(h.x - PALM.half - PALM.r, h.y - PALM.r, 2 * (PALM.half + PALM.r), 2 * PALM.r);
+      ctx.fill(); ctx.stroke();
+    } else {
+      ctx.strokeStyle = h.kind === 'pinch' ? 'rgba(255,255,255,0.9)' : 'rgba(40,50,80,0.55)';
+      ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(h.x, h.y, 11, 0, 6.2832); ctx.fill(); ctx.stroke();
+    }
+  }
+}
+
+/** Blends the previous and current physics state so 120/144 Hz displays stay smooth at a 60 Hz step. */
+function updateDrawPositions(alpha) {
+  for (let p = 0; p < NP; p++) { DX[p] = SX[p] + (X[p] - SX[p]) * alpha; DY[p] = SY[p] + (Y[p] - SY[p]) * alpha; }
+}
+
+function render(now, dtFrame) {
+  colorCur = mix(colorCur, colorTar, 1 - Math.exp(-dtFrame * 14));   // smooth recolouring, no flicker
+  const col = { flesh: colorCur };
+  ctx.setTransform(view.dpr * view.k, 0, 0, view.dpr * view.k, 0, 0);
+  drawBackdrop();
+  // two passes so shadows never paint over a neighbouring piece
+  for (const pc of pieces) {
+    let minx = 1e9, maxx = -1e9, maxy = -1e9;
+    for (const t of pc.tris) for (let k = 0; k < 3; k++) {
+      const p = TV[3 * t + k];
+      if (DX[p] < minx) minx = DX[p]; if (DX[p] > maxx) maxx = DX[p]; if (DY[p] > maxy) maxy = DY[p];
+    }
+    drawShadow(minx, maxx, maxy, colorCur);
+  }
+  for (const pc of pieces) drawPiece(pc, col);
+  if (showMesh) drawMeshDebug();
+  drawOverlays(now);
+}
+
+/* ============================ 7. UI ================================ */
+
+const $ = id => document.getElementById(id);
+const fpsEl = $('fps'), toastEl = $('toast');
+let toastTimer = 0;
+
+function toast(msg) {
+  toastEl.textContent = msg; toastEl.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => toastEl.classList.remove('show'), 1800);
+}
+
+function setTool(name) {
+  tool = name;
+  $('tGrab').setAttribute('aria-pressed', String(name === 'grab'));
+  $('tKnife').setAttribute('aria-pressed', String(name === 'knife'));
+  canvas.classList.toggle('knife', name === 'knife');
+}
+
+function setColor(hex) {
+  colorTar = hex2rgb(hex);
+  document.documentElement.style.setProperty('--flesh', hex);
+  $('colorInput').value = hex;
+  document.querySelectorAll('.sw').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.hex === hex)));
+}
+
+function closeColorPop() { $('colorPop').hidden = true; $('tColor').setAttribute('aria-expanded', 'false'); }
+function toggleColorPop() {
+  const open = $('colorPop').hidden;
+  $('colorPop').hidden = !open; $('tColor').setAttribute('aria-expanded', String(open));
+}
+
+function resetMelon() {
+  handles.clear(); trail.length = 0; canvas.classList.remove('dragging');
+  loadMelon();
+  accum = 0;
+}
+
+function togglePanel(force) {
+  const open = force ?? $('panel').hidden;
+  $('panel').hidden = !open; $('panelBtn').setAttribute('aria-expanded', String(open));
+}
+
+function buildPanel() {
+  const panel = $('panel');
+  for (const [key, label, tip] of PARAM_UI) {
+    const row = document.createElement('div'); row.className = 'row'; row.title = tip;
+    row.innerHTML = `<label for="p_${key}">${label}</label><output id="o_${key}"></output>
+      <input type="range" id="p_${key}" min="0" max="1" step="0.01">`;
+    panel.appendChild(row);
+    const inp = row.querySelector('input'), out = row.querySelector('output');
+    inp.value = params[key]; out.textContent = Math.round(params[key] * 100);
+    inp.addEventListener('input', () => { params[key] = +inp.value; out.textContent = Math.round(params[key] * 100); });
+  }
+  const mk = (html) => { const d = document.createElement('div'); d.innerHTML = html; return d.firstElementChild; };
+  const fps = mk('<label class="chk"><input type="checkbox" id="chkFps" checked> Show FPS <small>(F)</small></label>');
+  const mesh = mk('<label class="chk"><input type="checkbox" id="chkMesh"> Show mesh <small>(M)</small></label>');
+  const rst = mk('<button class="link" id="resetParams">Restore defaults</button>');
+  panel.append(fps, mesh, rst);
+  $('chkFps').addEventListener('change', e => { fpsEl.hidden = !e.target.checked; });
+  $('chkMesh').addEventListener('change', e => { showMesh = e.target.checked; });
+  rst.addEventListener('click', () => {
+    Object.assign(params, DEFAULTS);
+    for (const [key] of PARAM_UI) { $('p_' + key).value = params[key]; $('o_' + key).textContent = Math.round(params[key] * 100); }
+  });
+}
+
+function buildSwatches() {
+  const box = $('swatches');
+  for (const [name, hex] of PRESETS) {
+    const b = document.createElement('button');
+    b.className = 'sw'; b.style.background = hex; b.dataset.hex = hex; b.title = name; b.setAttribute('aria-label', name);
+    b.addEventListener('click', () => setColor(hex));
+    box.appendChild(b);
+  }
+}
+
+$('tGrab').addEventListener('click', () => setTool('grab'));
+$('tKnife').addEventListener('click', () => setTool('knife'));
+$('tColor').addEventListener('click', toggleColorPop);
+$('tReset').addEventListener('click', resetMelon);
+$('panelBtn').addEventListener('click', () => togglePanel());
+$('colorInput').addEventListener('input', e => setColor(e.target.value));
+window.addEventListener('keydown', e => {
+  if (e.target instanceof HTMLInputElement && e.target.type !== 'checkbox') return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  switch (e.key.toLowerCase()) {
+    case 'g': setTool('grab'); break;
+    case 'k': setTool('knife'); break;
+    case 'c': toggleColorPop(); break;
+    case 'r': resetMelon(); break;
+    case 'p': togglePanel(); break;
+    case 'f': { const c = $('chkFps'); c.checked = !c.checked; fpsEl.hidden = !c.checked; break; }
+    case 'm': { const c = $('chkMesh'); c.checked = !c.checked; showMesh = c.checked; break; }
+    case 'escape': closeColorPop(); togglePanel(false); break;
+  }
+});
+
+/* ============================ 8. MAIN LOOP ========================= */
+
+let accum = 0, last = 0, fpsFrames = 0, fpsT = 0, debugPause = false;
+
+function resize() {
+  view.dpr = Math.min(window.devicePixelRatio || 1, 3);
+  view.w = window.innerWidth; view.h = window.innerHeight;
+  canvas.width = Math.round(view.w * view.dpr); canvas.height = Math.round(view.h * view.dpr);
+  const minW = view.w / view.h < 0.8 ? WORLD_MIN_W_PORTRAIT : WORLD_MIN_W;   // phones: keep the melon a decent size
+  view.k = Math.min(view.w / minW, view.h / WORLD_MIN_H);
+  view.ww = view.w / view.k; view.wh = view.h / view.k;
+  view.floorY = (view.h - 92) / view.k;                     // leaves the toolbar room below the "table" edge
+  view.left = 0; view.right = view.ww;
+  buildBackdrop();
+}
+
+function frame(t) {
+  const dtFrame = Math.min(0.05, Math.max(0, (t - last) / 1000));
+  last = t;
+  accum += dtFrame;
+  let steps = 0;
+  while (!debugPause && accum >= DT && steps < 4) {
+    SX.set(X.subarray(0, NP)); SY.set(Y.subarray(0, NP));    // snapshot for render interpolation
+    stepPhysics();
+    accum -= DT; steps++;
+  }
+  if (steps === 4) accum = 0;
+  updateDrawPositions(accum / DT);
+  render(t, dtFrame);
+
+  fpsFrames++;
+  if (t - fpsT >= 500) {
+    fpsEl.textContent = Math.round(fpsFrames * 1000 / (t - fpsT)) + ' FPS · ' + pieces.length + (pieces.length === 1 ? ' piece' : ' pieces');
+    fpsFrames = 0; fpsT = t;
+  }
+  requestAnimationFrame(frame);
+}
+
+window.addEventListener('resize', resize);
+document.addEventListener('visibilitychange', () => { last = performance.now(); });
+
+buildPanel();
+buildSwatches();
+setColor(DEFAULT_FLESH);
+resize();
+loadMelon();
+setTimeout(() => $('hint').classList.add('gone'), 7000);
+requestAnimationFrame(t => { last = t; fpsT = t; requestAnimationFrame(frame); });
+
+/* Test/debug hook: lets automated checks drive the simulation without a real GPU frame loop. */
+window.__melon = {
+  view, params, handles, DEFAULTS,
+  set cutEps(v) { CUT_EPS = v; },
+  get liveTris() { let n = 0; for (let t = 0; t < NT; t++) if (!TDEAD[t]) n++; return n; },
+  set paused(v) { debugPause = v; },
+  get particles() { return NP; }, get triangles() { return NT; }, get edges() { return NE; },
+  get pieces() { return pieces.length; },
+  renderOnce() { updateDrawPositions(1); render(performance.now(), 1 / 60); },
+  step(n = 1) { for (let i = 0; i < n; i++) { SX.set(X.subarray(0, NP)); SY.set(Y.subarray(0, NP)); stepPhysics(); } updateDrawPositions(1); },
+  cut: (ax, ay, bx, by, memo) => cutSegment(ax, ay, bx, by, memo),
+  reset: resetMelon,
+  stats() {
+    let minx = 1e9, maxx = -1e9, miny = 1e9, maxy = -1e9, ke = 0, vmax = 0, bad = 0;
+    for (let p = 0; p < NP; p++) {
+      if (!(X[p] === X[p] && Y[p] === Y[p])) bad++;
+      minx = Math.min(minx, X[p]); maxx = Math.max(maxx, X[p]); miny = Math.min(miny, Y[p]); maxy = Math.max(maxy, Y[p]);
+      const s = Math.hypot(VX[p], VY[p]); vmax = Math.max(vmax, s); ke += s * s;
+    }
+    let inv = 0;
+    for (let t = 0; t < NT; t++) {
+      if (TDEAD[t]) continue;
+      const i = TV[3 * t], j = TV[3 * t + 1], k = TV[3 * t + 2];
+      if (0.5 * ((X[j] - X[i]) * (Y[k] - Y[i]) - (X[k] - X[i]) * (Y[j] - Y[i])) <= 0) inv++;
+    }
+    return { minx, maxx, miny, maxy, w: maxx - minx, h: maxy - miny, vmax, rms: Math.sqrt(ke / Math.max(1, NP)), bad, inverted: inv, floorY: view.floorY };
+  },
+  pos: p => [X[p], Y[p]],
+  bridges(ax, ay, bx, by) { const sd = (x, y) => (x - ax) * (by - ay) - (y - ay) * (bx - ax); const emap = new Map(); for (let t = 0; t < NT; t++) { if (TDEAD[t]) continue; for (let k = 0; k < 3; k++) { const u = TV[3*t+k], v = TV[3*t+(k+1)%3]; const key = u < v ? u * CAPP + v : v * CAPP + u; const l = emap.get(key); if (l) l.push(t); else emap.set(key, [t]); } } const cs = t => { const i = TV[3*t], j = TV[3*t+1], k = TV[3*t+2]; return sd((DX[i]+DX[j]+DX[k])/3, (DY[i]+DY[j]+DY[k])/3); }; const out = []; for (const [key, l] of emap) { if (l.length < 2) continue; const u = Math.floor(key / CAPP), v = key % CAPP; if (Math.sign(cs(l[0])) !== Math.sign(cs(l[1]))) out.push({ u, v, ux: +DX[u].toFixed(1), uy: +DY[u].toFixed(1), vx: +DX[v].toFixed(1), vy: +DY[v].toFixed(1), su: +sd(DX[u], DY[u]).toFixed(1), sv: +sd(DX[v], DY[v]).toFixed(1), c0: +cs(l[0]).toFixed(1), c1: +cs(l[1]).toFixed(1), tris: l }); } return out; },
+  leak(ax, ay, bx, by) { const sd = p => (DX[p] - ax) * (by - ay) - (DY[p] - ay) * (bx - ax); const side = t => { const n = [0, 1, 2].reduce((a, k) => a + (sd(TV[3*t+k]) > 0 ? 1 : 0), 0); return n >= 2 ? 1 : -1; }; const byV = new Map(); for (let t = 0; t < NT; t++) { if (TDEAD[t]) continue; for (let k = 0; k < 3; k++) { const v = TV[3*t+k]; (byV.get(v) || byV.set(v, []).get(v)).push(t); } } const out = []; for (const [v, l] of byV) { const sides = new Set(l.map(side)); if (sides.size > 1) out.push({ v, x: +DX[v].toFixed(1), y: +DY[v].toFixed(1), sd: +sd(v).toFixed(1), n: l.length, tris: l.map(t => [t, side(t), [0,1,2].map(k => TV[3*t+k]).join('/')].join(':')) }); } return out; },
+  survivors(ax, ay, bx, by) { const emap = new Map(); for (let t = 0; t < NT; t++) { if (TDEAD[t]) continue; for (let k = 0; k < 3; k++) { const u = TV[3*t+k], v = TV[3*t+(k+1)%3]; const key = u < v ? u * CAPP + v : v * CAPP + u; const l = emap.get(key); if (l) l.push(t); else emap.set(key, [t]); } } const out = []; for (const [key, l] of emap) { if (l.length < 2) continue; const u = Math.floor(key / CAPP), v = key % CAPP; if (segCross(ax, ay, bx, by, DX[u], DY[u], DX[v], DY[v])) out.push({ u, v, ux: +DX[u].toFixed(1), uy: +DY[u].toFixed(1), vx: +DX[v].toFixed(1), vy: +DY[v].toFixed(1), tris: l }); } return out; },
+  pieceSizes: () => pieces.map(pc => [pc.tris.length, pc.loops.length]),
+  invertedTris() { const o = []; for (let t = 0; t < NT; t++) { const i = TV[3 * t], j = TV[3 * t + 1], k = TV[3 * t + 2]; const A = 0.5 * ((X[j] - X[i]) * (Y[k] - Y[i]) - (X[k] - X[i]) * (Y[j] - Y[i])); if (A <= 0) o.push({ t, A, A0: TA0[t], rest: [RX[i], RY[i], RX[j], RY[j], RX[k], RY[k]].map(v => +v.toFixed(1)) }); } return o; },
+};
+</script>
+</body>
+</html>
