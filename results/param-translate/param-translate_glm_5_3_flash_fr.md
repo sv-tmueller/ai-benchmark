@@ -1,0 +1,1 @@
+La programmation est l'art de dire à un autre humain ce que l'on veut que l'ordinateur fasse.
