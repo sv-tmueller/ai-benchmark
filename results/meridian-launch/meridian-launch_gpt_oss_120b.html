@@ -1,0 +1,639 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Meridian‑9 Launch</title>
+<style>
+  body{margin:0;overflow:hidden;background:#000;font-family:system-ui,sans-serif;}
+  #hud{
+    position:absolute;top:10px;left:10px;color:#fff;pointer-events:none;
+    font-size:14px;line-height:1.4;white-space:pre;
+    text-shadow:0 0 4px #000;
+  }
+  #debug{
+    position:absolute;top:0;right:0;background:rgba(0,0,0,0.7);color:#0f0;
+    padding:5px;font-size:12px;display:none;max-height:100vh;overflow:auto;
+  }
+  #qualityToggle{
+    position:absolute;bottom:10px;right:10px;background:#222;color:#fff;
+    border:none;padding:5px 10px;cursor:pointer;
+  }
+</style>
+</head>
+<body>
+<div id="hud"></div>
+<div id="debug"></div>
+<button id="qualityToggle">Toggle Quality</button>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.164.0/build/three.module.js",
+    "three/examples/jsm/controls/OrbitControls.js": "https://unpkg.com/three@0.164.0/examples/jsm/controls/OrbitControls.js",
+    "three/examples/jsm/objects/Sky.js": "https://unpkg.com/three@0.164.0/examples/jsm/objects/Sky.js",
+    "three/examples/jsm/postprocessing/EffectComposer.js": "https://unpkg.com/three@0.164.0/examples/jsm/postprocessing/EffectComposer.js",
+    "three/examples/jsm/postprocessing/RenderPass.js": "https://unpkg.com/three@0.164.0/examples/jsm/postprocessing/RenderPass.js",
+    "three/examples/jsm/postprocessing/UnrealBloomPass.js": "https://unpkg.com/three@0.164.0/examples/jsm/postprocessing/UnrealBloomPass.js",
+    "three/examples/jsm/postprocessing/SMAAPass.js": "https://unpkg.com/three@0.164.0/examples/jsm/postprocessing/SMAAPass.js",
+    "three/examples/jsm/pmrem/PMREMGenerator.js": "https://unpkg.com/three@0.164.0/examples/jsm/pmrem/PMREMGenerator.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import {OrbitControls} from 'three/examples/jsm/controls/OrbitControls.js';
+import {Sky} from 'three/examples/jsm/objects/Sky.js';
+import {EffectComposer} from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import {RenderPass} from 'three/examples/jsm/postprocessing/RenderPass.js';
+import {UnrealBloomPass} from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import {SMAAPass} from 'three/examples/jsm/postprocessing/SMAAPass.js';
+import {PMREMGenerator} from 'three/examples/jsm/pmrem/PMREMGenerator.js';
+
+// ------------------------------------------------------------
+// GLOBALS & SETTINGS
+// ------------------------------------------------------------
+const SETTINGS = {
+    high: {
+        plumeSegments: 80,
+        plumeRadius: 2,
+        particleCount: 400,
+        bloomStrength: 1.5,
+        bloomRadius: 0.8,
+        heatDistort: true
+    },
+    low: {
+        plumeSegments: 40,
+        plumeRadius: 1.2,
+        particleCount: 150,
+        bloomStrength: 0.8,
+        bloomRadius: 0.5,
+        heatDistort: false
+    }
+};
+let currentQuality = 'high';
+let cfg = SETTINGS[currentQuality];
+
+// ------------------------------------------------------------
+// SCENE SETUP
+// ------------------------------------------------------------
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+renderer.setSize(window.innerWidth,window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.outputEncoding = THREE.sRGBEncoding;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+
+const camera = new THREE.PerspectiveCamera(45,window.innerWidth/window.innerHeight,0.1,2000);
+camera.position.set(0,5,30);
+camera.lookAt(0,5,0);
+
+// ------------------------------------------------------------
+// SKY (Hosek‑Wilkie via three.js Sky)
+// ------------------------------------------------------------
+const sky = new Sky();
+sky.scale.setScalar(10000);
+scene.add(sky);
+const sun = new THREE.Vector3();
+
+function updateSky(t) {
+    const turbidity = 10;
+    const rayleigh = 2;
+    const mieCoefficient = 0.005;
+    const mieDirectionalG = 0.8;
+    const elevation = THREE.MathUtils.degToRad(5); // low dawn
+    const azimuth = THREE.MathUtils.degToRad(120);
+    sky.material.uniforms['turbidity'].value = turbidity;
+    sky.material.uniforms['rayleigh'].value = rayleigh;
+    sky.material.uniforms['mieCoefficient'].value = mieCoefficient;
+    sky.material.uniforms['mieDirectionalG'].value = mieDirectionalG;
+    sun.setFromSphericalCoords(1, elevation, azimuth);
+    sky.material.uniforms['sunPosition'].value.copy(sun);
+}
+updateSky();
+
+// ------------------------------------------------------------
+// PMREM ENVIRONMENT
+// ------------------------------------------------------------
+const pmremGenerator = new PMREMGenerator(renderer);
+pmremGenerator.compileEquirectangularShader();
+const envMap = pmremGenerator.fromCubemap(sky).texture;
+scene.environment = envMap;
+scene.background = sky.material.uniforms['sunPosition'].value;
+
+// ------------------------------------------------------------
+// LIGHTING
+// ------------------------------------------------------------
+const dirLight = new THREE.DirectionalLight(0xffffff,1.2);
+dirLight.position.set(-10,20,10);
+dirLight.castShadow = true;
+dirLight.shadow.mapSize.width = 1024;
+dirLight.shadow.mapSize.height = 1024;
+dirLight.shadow.camera.near = 0.5;
+dirLight.shadow.camera.far = 200;
+scene.add(dirLight);
+
+// ------------------------------------------------------------
+// GROUND & PAD
+// ------------------------------------------------------------
+const groundGeo = new THREE.PlaneGeometry(2000,2000);
+const groundMat = new THREE.MeshStandardMaterial({color:0x2c3e50});
+const ground = new THREE.Mesh(groundGeo,groundMat);
+ground.rotation.x = -Math.PI/2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// Simple launch mount
+function createMount(){
+    const mount = new THREE.Group();
+    const baseGeo = new THREE.CylinderGeometry(4,4,1,32);
+    const baseMat = new THREE.MeshStandardMaterial({color:0x555555});
+    const base = new THREE.Mesh(baseGeo,baseMat);
+    base.castShadow = true;
+    mount.add(base);
+    // Strongback
+    const sbGeo = new THREE.BoxGeometry(0.8,12,0.8);
+    const sb = new THREE.Mesh(sbGeo,baseMat);
+    sb.position.set(0,6.5,0);
+    sb.castShadow = true;
+    mount.add(sb);
+    mount.position.set(0,0.5,0);
+    return mount;
+}
+scene.add(createMount());
+
+// ------------------------------------------------------------
+// VEHICLE (procedural)
+// ------------------------------------------------------------
+function createRocket(){
+    const rocket = new THREE.Group();
+
+    // First stage
+    const stage1Geo = new THREE.CylinderGeometry(1.85,1.85,30,32);
+    const stage1Mat = new THREE.MeshStandardMaterial({
+        color:0xffffff,
+        roughness:0.6,
+        metalness:0.0,
+        envMap: envMap
+    });
+    const stage1 = new THREE.Mesh(stage1Geo,stage1Mat);
+    stage1.castShadow = true;
+    stage1.position.y = 15;
+    rocket.add(stage1);
+
+    // Interstage band
+    const bandGeo = new THREE.CylinderGeometry(1.85,1.85,2,32);
+    const bandMat = new THREE.MeshStandardMaterial({color:0x111111, roughness:0.8});
+    const band = new THREE.Mesh(bandGeo,bandMat);
+    band.position.y = 31;
+    band.castShadow = true;
+    rocket.add(band);
+
+    // Second stage
+    const stage2Geo = new THREE.CylinderGeometry(1.6,1.6,15,32);
+    const stage2Mat = stage1Mat.clone();
+    const stage2 = new THREE.Mesh(stage2Geo,stage2Mat);
+    stage2.position.y = 38.5;
+    stage2.castShadow = true;
+    rocket.add(stage2);
+
+    // Fairing (ogive)
+    const fairingGeo = new THREE.ConeGeometry(1.6,13,32);
+    const fairingMat = stage1Mat.clone();
+    const fairing = new THREE.Mesh(fairingGeo,fairingMat);
+    fairing.position.y = 48.5;
+    fairing.castShadow = true;
+    rocket.add(fairing);
+
+    // Engine bells (octaweb)
+    const bellGeo = new THREE.CylinderGeometry(0.3,0.5,2,16);
+    const bellMat = new THREE.MeshStandardMaterial({color:0x222222, metalness:0.9, roughness:0.2});
+    const bellPositions = [];
+    const radius = 1.5;
+    for(let i=0;i<8;i++){
+        const ang = i*Math.PI/4;
+        bellPositions.push(new THREE.Vector3(Math.cos(ang)*radius,0,Math.sin(ang)*radius));
+    }
+    bellPositions.push(new THREE.Vector3(0,0,0)); // centre
+    bellPositions.forEach(pos=>{
+        const bell = new THREE.Mesh(bellGeo,bellMat);
+        bell.position.set(pos.x,0.5,pos.z);
+        bell.rotation.x = Math.PI/2;
+        bell.castShadow = true;
+        rocket.add(bell);
+    });
+
+    // Grid fins
+    const finGeo = new THREE.BoxGeometry(0.2,2,4);
+    const finMat = new THREE.MeshStandardMaterial({color:0x111111, roughness:0.8});
+    const finAngles = [0,Math.PI/2,Math.PI,3*Math.PI/2];
+    finAngles.forEach(a=>{
+        const fin = new THREE.Mesh(finGeo,finMat);
+        fin.position.set(Math.cos(a)*1.8,33,Math.sin(a)*1.8);
+        fin.rotation.y = a;
+        fin.castShadow = true;
+        rocket.add(fin);
+    });
+
+    // Landing legs (folded)
+    const legGeo = new THREE.BoxGeometry(0.2,5,0.2);
+    const legMat = finMat;
+    const legOffsets = [
+        [1.2,0,1.2],
+        [-1.2,0,1.2],
+        [-1.2,0,-1.2],
+        [1.2,0,-1.2]
+    ];
+    legOffsets.forEach(o=>{
+        const leg = new THREE.Mesh(legGeo,legMat);
+        leg.position.set(o[0],7.5,o[2]);
+        leg.rotation.z = Math.PI/4;
+        leg.castShadow = true;
+        rocket.add(leg);
+    });
+
+    // Frost band (simple white ring)
+    const frostGeo = new THREE.TorusGeometry(1.85,0.05,8,32);
+    const frostMat = new THREE.MeshStandardMaterial({color:0xe0f7ff, emissive:0x99ddff, roughness:0.9});
+    const frost = new THREE.Mesh(frostGeo,frostMat);
+    frost.rotation.x = Math.PI/2;
+    frost.position.y = 20;
+    rocket.add(frost);
+
+    return rocket;
+}
+const rocket = createRocket();
+scene.add(rocket);
+
+// ------------------------------------------------------------
+// PLUME SHADERS
+// ------------------------------------------------------------
+const plumeVertex = `
+    uniform float time;
+    uniform float lengthScale;
+    uniform float radiusScale;
+    varying float vDist;
+    void main(){
+        vec3 pos = position;
+        float noise = sin(pos.y*10.0 + time*5.0) * 0.1;
+        pos.x += noise;
+        pos.z += noise;
+        vDist = pos.y;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(pos,1.0);
+    }
+`;
+const plumeFragment = `
+    uniform float time;
+    varying float vDist;
+    void main(){
+        float t = vDist;
+        // core brightness with shock diamonds
+        float diamonds = abs(sin(t*15.0 - time*20.0));
+        float core = smoothstep(0.0,0.2,diamonds);
+        vec3 col = mix(vec3(1.0,0.9,0.7), vec3(1.0,0.5,0.2), t*0.5);
+        col *= core;
+        gl_FragColor = vec4(col, core);
+    }
+`;
+function createPlume(){
+    const geom = new THREE.CylinderGeometry(0.1, cfg.plumeRadius, cfg.plumeSegments, 8, 1, true);
+    const mat = new THREE.ShaderMaterial({
+        vertexShader: plumeVertex,
+        fragmentShader: plumeFragment,
+        transparent:true,
+        depthWrite:false,
+        blending:THREE.AdditiveBlending,
+        uniforms:{
+            time:{value:0},
+            lengthScale:{value:1},
+            radiusScale:{value:1}
+        }
+    });
+    const mesh = new THREE.Mesh(geom,mat);
+    mesh.rotation.x = Math.PI/2;
+    mesh.position.y = 0.5;
+    mesh.castShadow = false;
+    return mesh;
+}
+const plumeCore = createPlume();
+rocket.add(plumeCore);
+
+// Outer sheath (simple additive mesh)
+function createSheath(){
+    const geom = new THREE.CylinderGeometry(cfg.plumeRadius*0.8,cfg.plumeRadius*2,cfg.plumeSegments,8,1,true);
+    const mat = new THREE.MeshBasicMaterial({
+        color:new THREE.Color(0xffaa55),
+        transparent:true,
+        opacity:0.2,
+        depthWrite:false,
+        blending:THREE.AdditiveBlending,
+        side:THREE.DoubleSide
+    });
+    const mesh = new THREE.Mesh(geom,mat);
+    mesh.rotation.x = Math.PI/2;
+    mesh.position.y = 0.5;
+    return mesh;
+}
+const plumeSheath = createSheath();
+rocket.add(plumeSheath);
+
+// ------------------------------------------------------------
+// SOFT PARTICLE SMOKE
+// ------------------------------------------------------------
+const particleTex = new THREE.DataTexture( new Uint8Array([255,255,255,255]),1,1,THREE.RGBAFormat );
+particleTex.needsUpdate = true;
+function createSmoke(){
+    const geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(cfg.particleCount*3);
+    const sizes = new Float32Array(cfg.particleCount);
+    for(let i=0;i<cfg.particleCount;i++){
+        positions[i*3+0] = (Math.random()-0.5)*2;
+        positions[i*3+1] = Math.random()*cfg.plumeSegments*0.5;
+        positions[i*3+2] = (Math.random()-0.5)*2;
+        sizes[i] = Math.random()*5+5;
+    }
+    geometry.setAttribute('position',new THREE.BufferAttribute(positions,3));
+    geometry.setAttribute('size',new THREE.BufferAttribute(sizes,1));
+    const material = new THREE.ShaderMaterial({
+        uniforms:{
+            time:{value:0},
+            map:{value:particleTex},
+            cameraPos:{value:new THREE.Vector3()}
+        },
+        vertexShader:`
+            attribute float size;
+            varying float vAlpha;
+            uniform float time;
+            void main(){
+                vec3 pos = position;
+                pos.y += sin(time*2.0 + position.y*0.5)*0.2;
+                vAlpha = 1.0 - (pos.y/`+cfg.plumeSegments+`.0);
+                vec4 mvPosition = modelViewMatrix * vec4(pos,1.0);
+                gl_PointSize = size * (300.0 / -mvPosition.z);
+                gl_Position = projectionMatrix * mvPosition;
+            }
+        `,
+        fragmentShader:`
+            uniform sampler2D map;
+            varying float vAlpha;
+            void main(){
+                vec4 tex = texture2D(map, gl_PointCoord);
+                gl_FragColor = vec4(tex.rgb, tex.a * vAlpha * 0.5);
+            }
+        `,
+        transparent:true,
+        depthWrite:false,
+        blending:THREE.NormalBlending
+    });
+    const particles = new THREE.Points(geometry,material);
+    particles.renderOrder = 1;
+    return particles;
+}
+const smoke = createSmoke();
+rocket.add(smoke);
+
+// ------------------------------------------------------------
+// PLUME LIGHT (flickering)
+// ------------------------------------------------------------
+const plumeLight = new THREE.PointLight(0xffaa55,2,200,2);
+plumeLight.position.set(0,0.5,0);
+rocket.add(plumeLight);
+
+// ------------------------------------------------------------
+ // GROUND CLOUD (flame trench)
+// ------------------------------------------------------------
+function createGroundCloud(){
+    const geo = new THREE.PlaneGeometry(30,5,30,5);
+    const mat = new THREE.MeshBasicMaterial({
+        color:0xffaa33,
+        transparent:true,
+        opacity:0.6,
+        side:THREE.DoubleSide,
+        depthWrite:false,
+        blending:THREE.AdditiveBlending
+    });
+    const mesh = new THREE.Mesh(geo,mat);
+    mesh.rotation.x = -Math.PI/2;
+    mesh.position.set(0,0.01, -5);
+    return mesh;
+}
+const groundCloud = createGroundCloud();
+scene.add(groundCloud);
+
+// ------------------------------------------------------------
+// CAMERA PATH (keyframes)
+// ------------------------------------------------------------
+const camKeyframes = [
+    {t:0, pos:new THREE.Vector3(0,5,30), look:new THREE.Vector3(0,5,0), fov:45},
+    {t:12, pos:new THREE.Vector3(0,7,20), look:new THREE.Vector3(0,7,0), fov:45},
+    {t:30, pos:new THREE.Vector3(0,12,12), look:new THREE.Vector3(0,12,0), fov:35},
+    {t:70, pos:new THREE.Vector3(0,30,15), look:new THREE.Vector3(0,30,0), fov:30},
+    {t:120, pos:new THREE.Vector3(0,80,40), look:new THREE.Vector3(0,80,0), fov:25},
+    {t:160, pos:new THREE.Vector3(0,120,80), look:new THREE.Vector3(0,120,0), fov:20}
+];
+function lerpKeyframes(t){
+    let a = camKeyframes[0], b = camKeyframes[camKeyframes.length-1];
+    for(let i=0;i<camKeyframes.length-1;i++){
+        if(t>=camKeyframes[i].t && t<camKeyframes[i+1].t){
+            a = camKeyframes[i];
+            b = camKeyframes[i+1];
+            break;
+        }
+    }
+    const dt = (t - a.t)/(b.t - a.t);
+    const pos = new THREE.Vector3().lerpVectors(a.pos,b.pos,dt);
+    const look = new THREE.Vector3().lerpVectors(a.look,b.look,dt);
+    const fov = THREE.MathUtils.lerp(a.fov,b.fov,dt);
+    return {pos,look,fov};
+}
+
+// ------------------------------------------------------------
+// HUD
+// ------------------------------------------------------------
+const hud = document.getElementById('hud');
+function updateHUD(state){
+    const lines = [
+        `T-${(10-state.time).toFixed(1)}s`,
+        `Alt: ${state.alt.toFixed(0)} m`,
+        `Vel: ${state.vel.toFixed(1)} m/s`,
+        `Stage: ${state.stage}`
+    ];
+    hud.textContent = lines.join('\n');
+}
+
+// ------------------------------------------------------------
+// AUDIO (procedural)
+// ------------------------------------------------------------
+let audioCtx, masterGain, rumbleOsc;
+function initAudio(){
+    audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+    masterGain = audioCtx.createGain();
+    masterGain.gain.value = 0.3;
+    masterGain.connect(audioCtx.destination);
+    rumbleOsc = audioCtx.createOscillator();
+    const rumbleGain = audioCtx.createGain();
+    rumbleOsc.type = 'sawtooth';
+    rumbleOsc.frequency.setValueAtTime(30, audioCtx.currentTime);
+    rumbleOsc.connect(rumbleGain);
+    rumbleGain.connect(masterGain);
+    rumbleGain.gain.setValueAtTime(0, audioCtx.currentTime);
+    rumbleOsc.start();
+    // simple crackle
+    const noiseBuf = audioCtx.createBuffer(1, audioCtx.sampleRate, audioCtx.sampleRate);
+    const data = noiseBuf.getChannelData(0);
+    for(let i=0;i<data.length;i++) data[i] = Math.random()*2-1;
+    const noise = audioCtx.createBufferSource();
+    noise.buffer = noiseBuf;
+    const noiseGain = audioCtx.createGain();
+    noiseGain.gain.value = 0;
+    noise.connect(noiseGain).connect(masterGain);
+    noise.start();
+    window.rumbleGain = rumbleGain;
+    window.noiseGain = noiseGain;
+}
+function updateAudio(state){
+    if(!audioCtx) return;
+    const t = state.time;
+    // ignition rumble
+    if(t>0 && t<5){
+        const g = THREE.MathUtils.mapLinear(t,0,5,0.2,1);
+        rumbleGain.gain.setTargetAtTime(g, audioCtx.currentTime, 0.1);
+    }else{
+        rumbleGain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.2);
+    }
+    // crackle bursts near max‑Q (t≈70)
+    if(Math.abs(t-70)<5){
+        const g = THREE.MathUtils.mapLinear(Math.abs(t-70),5,0,0,0.5);
+        noiseGain.gain.setTargetAtTime(g, audioCtx.currentTime, 0.05);
+    }else{
+        noiseGain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.1);
+    }
+}
+
+// ------------------------------------------------------------
+// POST‑PROCESSING
+// ------------------------------------------------------------
+const composer = new EffectComposer(renderer);
+composer.setSize(window.innerWidth,window.innerHeight);
+composer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+composer.addPass(new RenderPass(scene,camera));
+
+const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth,window.innerHeight), cfg.bloomStrength, cfg.bloomRadius, 0.85);
+bloomPass.threshold = 0.7;
+composer.addPass(bloomPass);
+
+const smaaPass = new SMAAPass(window.innerWidth*renderer.getPixelRatio(), window.innerHeight*renderer.getPixelRatio());
+composer.addPass(smaaPass);
+
+// ------------------------------------------------------------
+// MAIN LOOP & TIMELINE
+// ------------------------------------------------------------
+let startTime = null;
+let paused = false;
+const state = {
+    time: -10, // start at T‑10
+    alt:0,
+    vel:0,
+    stage:1
+};
+
+function animate(timestamp){
+    if(!startTime) startTime = timestamp;
+    const delta = (timestamp - startTime)/1000;
+    if(!paused){
+        state.time = delta - 10; // T‑10 offset
+        // Simple kinematics (placeholder)
+        if(state.time>0 && state.time<160){
+            const g = 9.81;
+            const thrust = (state.time<2)?0: (state.time<150? 2.5e6 : 0);
+            const mass = 500000 - 3000*state.time; // crude mass loss
+            const accel = thrust/mass - g;
+            state.vel = Math.max(state.vel + accel*0.016,0);
+            state.alt += state.vel*0.016;
+            if(state.time>150 && state.stage===1){
+                state.stage=2;
+            }
+        }
+        // Update plume length & width based on altitude
+        const lengthScale = THREE.MathUtils.clamp(state.alt/2000,0.2,1);
+        plumeCore.scale.set(1, lengthScale*10,1);
+        plumeSheath.scale.set(1, lengthScale*12,1);
+        plumeCore.material.uniforms.time.value = state.time;
+        plumeSheath.visible = state.time>0;
+        // Light flicker
+        plumeLight.intensity = 2 + Math.sin(state.time*30)*0.3;
+        // Ground cloud fade
+        groundCloud.material.opacity = THREE.MathUtils.clamp(1 - state.time/20,0,1);
+        // Camera
+        const cam = lerpKeyframes(state.time);
+        camera.position.lerp(cam.pos,0.05);
+        camera.lookAt(cam.look);
+        camera.fov = THREE.MathUtils.lerp(camera.fov, cam.fov,0.05);
+        camera.updateProjectionMatrix();
+        // HUD
+        updateHUD(state);
+        // Audio
+        updateAudio(state);
+    }
+    // Render
+    composer.render();
+    requestAnimationFrame(animate);
+}
+requestAnimationFrame(animate);
+
+// ------------------------------------------------------------
+// INTERACTION (user gesture to start audio)
+// ------------------------------------------------------------
+window.addEventListener('click',()=>{
+    if(!audioCtx) initAudio();
+});
+
+// ------------------------------------------------------------
+// DEBUG PANEL (hidden)
+// ------------------------------------------------------------
+const debug = document.getElementById('debug');
+function logDebug(msg){
+    debug.textContent += msg + '\\n';
+}
+function toggleDebug(){
+    debug.style.display = debug.style.display==='none'?'block':'none';
+}
+window.addEventListener('keydown',e=>{
+    if(e.key==='`') toggleDebug();
+});
+
+// ------------------------------------------------------------
+// QUALITY TOGGLE
+// ------------------------------------------------------------
+document.getElementById('qualityToggle').addEventListener('click',()=>{
+    currentQuality = (currentQuality==='high')?'low':'high';
+    cfg = SETTINGS[currentQuality];
+    // Re‑create plume & particles with new config
+    rocket.remove(plumeCore);
+    rocket.remove(plumeSheath);
+    rocket.remove(smoke);
+    const newCore = createPlume(); rocket.add(newCore); plumeCore = newCore;
+    const newSheath = createSheath(); rocket.add(newSheath); plumeSheath = newSheath;
+    const newSmoke = createSmoke(); rocket.add(newSmoke); smoke = newSmoke;
+    // Update bloom
+    bloomPass.strength = cfg.bloomStrength;
+    bloomPass.radius = cfg.bloomRadius;
+    logDebug('Quality switched to '+currentQuality);
+});
+
+// ------------------------------------------------------------
+// RESIZE HANDLER
+// ------------------------------------------------------------
+window.addEventListener('resize',()=>{
+    const w = window.innerWidth, h = window.innerHeight;
+    camera.aspect = w/h;
+    camera.updateProjectionMatrix();
+    renderer.setSize(w,h);
+    composer.setSize(w,h);
+    smaaPass.setSize(w*renderer.getPixelRatio(), h*renderer.getPixelRatio());
+});
+</script>
+</body>
+</html>
