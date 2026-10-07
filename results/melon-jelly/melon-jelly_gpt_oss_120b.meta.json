@@ -1,0 +1,61 @@
+{
+  "generated_utc": "2026-10-07T15:08:13.858480+00:00",
+  "toml": "game-melon-jelly.toml",
+  "prompt_id": "game-melon-jelly",
+  "name_suffix": null,
+  "title": "Melon Jelly: XPBD soft-body watermelon slice",
+  "endpoint": "https://ai.noris.de/v1/chat/completions",
+  "model": "vllm/release/gpt-oss-120b",
+  "params": {
+    "temperature": 0.2,
+    "max_tokens_requested_initial": 65536,
+    "max_tokens_effective_last_attempt": 65536,
+    "reasoning_effort": null,
+    "stream": true,
+    "name_suffix": null
+  },
+  "finish_reason": "stop",
+  "truncated": false,
+  "usage": {
+    "prompt_tokens": 842,
+    "prompt_tokens_details": {
+      "cached_read_tokens": 64,
+      "cached_tokens": 64,
+      "cache_write_tokens": 0
+    },
+    "completion_tokens": 5147,
+    "completion_tokens_details": {},
+    "total_tokens": 5989,
+    "reasoning_tokens": null
+  },
+  "retries": [
+    {
+      "attempt": 1,
+      "max_tokens": 65536,
+      "reasoning_effort": null,
+      "finish_reason": "stop",
+      "elapsed_s": 50.37,
+      "done_sentinel": true,
+      "name_suffix": null
+    }
+  ],
+  "num_retry_api_calls": 0,
+  "grading": null,
+  "outputs": {
+    "deliverable": "results/melon-jelly/melon-jelly_gpt_oss_120b.html",
+    "review_html": null
+  },
+  "playability": {
+    "label": "BROKEN_AT_BOOT",
+    "painted": "NO_PAINT",
+    "clickThroughTransition": false,
+    "sustainedAnimation": false,
+    "consoleErrors": 1,
+    "scriptTruncated": null,
+    "motionFrames": null,
+    "motionChangedRatio": null,
+    "motionMaxMeanAbsDiff": null,
+    "serverMode": "http-127.0.0.1",
+    "verifiedBy": "verify_playable.mjs (raised bar, #97 addendum)"
+  }
+}
