@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Sunset Ocean</title>
+<style>
+  body{margin:0;overflow:hidden;background:#000;}
+  #debug{position:absolute;top:0;right:0;z-index:10;}
+</style>
+</head>
+<body>
+<div id="debug" style="display:none;"></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.module.js",
+    "three/examples/jsm/controls/OrbitControls.js": "https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/controls/OrbitControls.js",
+    "three/examples/jsm/postprocessing/EffectComposer.js": "https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/postprocessing/EffectComposer.js",
+    "three/examples/jsm/postprocessing/RenderPass.js": "https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/postprocessing/RenderPass.js",
+    "three/examples/jsm/postprocessing/UnrealBloomPass.js": "https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/postprocessing/UnrealBloomPass.js",
+    "three/examples/jsm/postprocessing/SMAAPass.js": "https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/postprocessing/SMAAPass.js",
+    "three/examples/jsm/postprocessing/OutputPass.js": "https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/postprocessing/OutputPass.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import {OrbitControls} from 'three/examples/jsm/controls/OrbitControls.js';
+import {EffectComposer} from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import {RenderPass} from 'three/examples/jsm/postprocessing/RenderPass.js';
+import {UnrealBloomPass} from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import {SMAAPass} from 'three/examples/jsm/postprocessing/SMAAPass.js';
+import {OutputPass} from 'three/examples/jsm/postprocessing/OutputPass.js';
+
+// ------------------------------------------------------------
+// PARAMETERS & QUALITY SETTINGS
+// ------------------------------------------------------------
+const SETTINGS = {
+    quality: 'high', // 'low' or 'high' – toggled with L key
+    // wave counts (high quality)
+    swellCount: 4,
+    windCount: 6,
+    detailNormalLayers: 2,
+    bloomResolution: 512
+};
+
+function applyQuality() {
+    if (SETTINGS.quality === 'low') {
+        SETTINGS.swellCount = 2;
+        SETTINGS.windCount = 3;
+        SETTINGS.detailNormalLayers = 1;
+        SETTINGS.bloomResolution = 256;
+    } else {
+        SETTINGS.swellCount = 4;
+        SETTINGS.windCount = 6;
+        SETTINGS.detailNormalLayers = 2;
+        SETTINGS.bloomResolution = 512;
+    }
+}
+applyQuality();
+
+// ------------------------------------------------------------
+// BASIC THREE.JS SETUP
+// ------------------------------------------------------------
+const renderer = new THREE.WebGLRenderer({antialias: false, alpha: false});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.2;
+renderer.outputEncoding = THREE.sRGBEncoding;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+
+const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 2000);
+camera.position.set(0, 2.5, 5);
+camera.lookAt(0, 0, -1);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enablePan = false;
+controls.minDistance = 2;
+controls.maxDistance = 30;
+controls.maxPolarAngle = Math.PI / 2 - 0.02; // never go under water
+controls.minPolarAngle = Math.PI / 2 - 0.4; // keep horizon slightly above centre
+
+// ------------------------------------------------------------
+// SKY (Hosek‑Wilkie / Preetham style) + CLOUDS
+// ------------------------------------------------------------
+const skyUniforms = {
+    sunDirection: {value: new THREE.Vector3()},
+    turbidity: {value: 10},
+    rayleigh: {value: 2},
+    mieCoefficient: {value: 0.005},
+    mieDirectionalG: {value: 0.8},
+    time: {value: 0}
+};
+
+const skyVertexShader = `
+varying vec3 vWorldPosition;
+void main(){
+    vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+    vWorldPosition = worldPosition.xyz;
+    gl_Position = projectionMatrix * viewMatrix * worldPosition;
+}
+`;
+
+const skyFragmentShader = `
+// ------------------------------------------------
+// Analytic sky based on three.js Sky (Hosek‑Wilkie)
+// ------------------------------------------------
+uniform vec3 sunDirection;
+uniform float turbidity;
+uniform float rayleigh;
+uniform float mieCoefficient;
+uniform float mieDirectionalG;
+uniform float time;
+varying vec3 vWorldPosition;
+
+// constants
+const vec3 up = vec3(0.0, 1.0, 0.0);
+const float pi = 3.1415926535897932384626433832795;
+
+// ------------------------------------------------
+// Simple 3D noise (value noise) for clouds
+// ------------------------------------------------
+float hash(vec2 p){
+    return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453123);
+}
+float noise(vec2 p){
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    float a = hash(i);
+    float b = hash(i + vec2(1.0,0.0));
+    float c = hash(i + vec2(0.0,1.0));
+    float d = hash(i + vec2(1.0,1.0));
+    vec2 u = f*f*(3.0-2.0*f);
+    return mix(a, b, u.x) + (c - a)* u.y * (1.0 - u.x) + (d - b) * u.x * u.y;
+}
+float fbm(vec2 p){
+    float total = 0.0;
+    float amp = 0.5;
+    for(int i=0;i<5;i++){
+        total += amp*noise(p);
+        p *= 2.0;
+        amp *= 0.5;
+    }
+    return total;
+}
+
+// ------------------------------------------------
+// Sky colour (same as three.js Sky)
+// ------------------------------------------------
+vec3 totalRayleigh = vec3(5.802e-6, 13.558e-6, 33.1e-6);
+vec3 totalMie = vec3(21e-6);
+
+float rayleighPhase(float cosTheta){
+    return (3.0/(16.0*pi)) * (1.0 + pow(cosTheta,2.0));
+}
+float hgPhase(float cosTheta, float g){
+    return (1.0/(4.0*pi)) * ((1.0 - g*g) / pow(1.0 - 2.0*g*cosTheta + g*g, 1.5));
+}
+vec3 getSkyColor(vec3 viewDir){
+    float cosTheta = dot(viewDir, sunDirection);
+    // Rayleigh
+    vec3 rayleighAtm = rayleigh * rayleighPhase(cosTheta);
+    // Mie
+    vec3 mieAtm = mieCoefficient * hgPhase(cosTheta, mieDirectionalG);
+    // combine
+    vec3 result = rayleighAtm + mieAtm;
+    result = pow(result, vec3(0.5)); // simple tonemap
+    return result;
+}
+
+// ------------------------------------------------
+// Cloud layer (high, soft FBM)
+// ------------------------------------------------
+float cloudMask(vec3 dir){
+    // map direction to a 2D plane
+    vec2 uv = dir.xz * 0.5 + 0.5;
+    uv += vec2(time*0.01, 0.0);
+    float c = fbm(uv*4.0) * 0.6 + fbm(uv*8.0)*0.4;
+    // shape the cloud band near horizon
+    float horizonFactor = smoothstep(-0.2, 0.2, dir.y);
+    return c * horizonFactor;
+}
+
+void main(){
+    vec3 viewDir = normalize(vWorldPosition - cameraPosition);
+    vec3 skyCol = getSkyColor(viewDir);
+    float clouds = cloudMask(viewDir);
+    vec3 cloudCol = mix(vec3(0.0), vec3(1.0,0.9,0.8), clouds);
+    // simple lighting for cloud undersides
+    float sunDot = max(dot(viewDir, sunDirection),0.0);
+    cloudCol *= mix(1.0, 1.5, sunDot);
+    gl_FragColor = vec4(skyCol + cloudCol*0.3, 1.0);
+}
+`;
+
+const skyGeometry = new THREE.SphereGeometry(500, 64, 32);
+const skyMaterial = new THREE.ShaderMaterial({
+    vertexShader: skyVertexShader,
+    fragmentShader: skyFragmentShader,
+    side: THREE.BackSide,
+    uniforms: skyUniforms
+});
+const skyMesh = new THREE.Mesh(skyGeometry, skyMaterial);
+scene.add(skyMesh);
+
+// Sun direction (low on horizon)
+const SUN_ELEVATION = THREE.MathUtils.degToRad(5); // 5°
+const SUN_AZIMUTH = THREE.MathUtils.degToRad(45);
+skyUniforms.sunDirection.value.setFromSphericalCoords(
+    Math.cos(SUN_ELEVATION),
+    SUN_ELEVATION,
+    SUN_AZIMUTH
+).normalize();
+
+// ------------------------------------------------------------
+// PROCEDURAL DETAIL NORMAL MAPS (canvas)
+// ------------------------------------------------------------
+function generateNormalMap(size, scale) {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    const img = ctx.createImageData(size, size);
+    const data = img.data;
+
+    // Simple value noise
+    const rand = (x, y) => {
+        const n = x + y * 57;
+        const nn = (n << 13) ^ n;
+        return (1.0 - ((nn * (nn * nn * 15731 + 789221) + 1376312589) & 0x7fffffff) / 1073741824.0);
+    };
+    const noise = (x, y) => {
+        const ix = Math.floor(x);
+        const iy = Math.floor(y);
+        const fx = x - ix;
+        const fy = y - iy;
+        const a = rand(ix, iy);
+        const b = rand(ix + 1, iy);
+        const c = rand(ix, iy + 1);
+        const d = rand(ix + 1, iy + 1);
+        const u = fx * fx * (3.0 - 2.0 * fx);
+        const v = fy * fy * (3.0 - 2.0 * fy);
+        return THREE.MathUtils.lerp(
+            THREE.MathUtils.lerp(a, b, u),
+            THREE.MathUtils.lerp(c, d, u),
+            v
+        );
+    };
+
+    for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+            const nx = x / size * scale;
+            const ny = y / size * scale;
+            const n = noise(nx, ny);
+            // Derivatives for normal
+            const eps = 0.001;
+            const nx1 = noise(nx + eps, ny);
+            const ny1 = noise(nx, ny + eps);
+            const dx = (nx1 - n) * scale;
+            const dy = (ny1 - n) * scale;
+            const normal = new THREE.Vector3(-dx, -dy, 1).normalize();
+            const idx = (y * size + x) * 4;
+            data[idx] = (normal.x * 0.5 + 0.5) * 255;
+            data[idx + 1] = (normal.y * 0.5 + 0.5) * 255;
+            data[idx + 2] = (normal.z * 0.5 + 0.5) * 255;
+            data[idx + 3] = 255;
+        }
+    }
+    ctx.putImageData(img, 0, 0);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.minFilter = tex.magFilter = THREE.LinearFilter;
+    tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    return tex;
+}
+const detailNormalMaps = [
+    generateNormalMap(256, 4.0),
+    generateNormalMap(256, 12.0)
+];
+
+// ------------------------------------------------------------
+// WATER SHADER (Gerstner + BRDF)
+// ------------------------------------------------------------
+const waterUniforms = {
+    time: {value: 0},
+    cameraPos: {value: new THREE.Vector3()},
+    sunDirection: {value: skyUniforms.sunDirection.value.clone()},
+    detailNormal0: {value: detailNormalMaps[0]},
+    detailNormal1: {value: detailNormalMaps[1]},
+    detailScale0: {value: 0.12},
+    detailScale1: {value: 0.04},
+    detailSpeed0: {value: new THREE.Vector2(0.03, 0.01)},
+    detailSpeed1: {value: new THREE.Vector2(-0.02, 0.04)},
+    // wave parameters (generated later)
+    swellAmplitudes: {value: []},
+    swellDirections: {value: []},
+    swellLengths: {value: []},
+    swellSpeeds: {value: []},
+    windAmplitudes: {value: []},
+    windDirections: {value: []},
+    windLengths: {value: []},
+    windSpeeds: {value: []},
+    // colours
+    deepColor: {value: new THREE.Color(0x001e3c)},
+    shallowColor: {value: new THREE.Color(0x0066aa)},
+    foamColor: {value: new THREE.Color(0xffffff)},
+    // misc
+    fresnelF0: {value: 0.02},
+    specularPower: {value: 64.0}
+};
+
+function randomWaveParams(count, minLen, maxLen, minAmp, maxAmp, speedFactor) {
+    const amps = [], dirs = [], lens = [], speeds = [];
+    for (let i = 0; i < count; i++) {
+        const length = THREE.MathUtils.lerp(minLen, maxLen, Math.random());
+        const amplitude = THREE.MathUtils.lerp(minAmp, maxAmp, Math.random()) / length; // keep height realistic
+        const direction = new THREE.Vector2(Math.cos(Math.random()*Math.PI*2), Math.sin(Math.random()*Math.PI*2));
+        const speed = Math.sqrt(9.81 / length) * speedFactor; // deep water dispersion
+        amps.push(amplitude);
+        dirs.push(direction);
+        lens.push(length);
+        speeds.push(speed);
+    }
+    return {amps, dirs, lens, speeds};
+}
+
+// Swell (large) waves
+const swell = randomWaveParams(SETTINGS.swellCount, 30, 80, 0.5, 2.0, 1.0);
+waterUniforms.swellAmplitudes.value = swell.amps;
+waterUniforms.swellDirections.value = swell.dirs;
+waterUniforms.swellLengths.value = swell.lens;
+waterUniforms.swellSpeeds.value = swell.speeds;
+
+// Wind (short) waves
+const wind = randomWaveParams(SETTINGS.windCount, 4, 12, 0.05, 0.2, 1.2);
+waterUniforms.windAmplitudes.value = wind.amps;
+waterUniforms.windDirections.value = wind.dirs;
+waterUniforms.windLengths.value = wind.lens;
+waterUniforms.windSpeeds.value = wind.speeds;
+
+// Water geometry (clip‑map style LOD)
+function createWaterGeometry() {
+    const size = 2000;
+    const segments = 256; // enough for near detail
+    const geometry = new THREE.PlaneGeometry(size, size, segments, segments);
+    geometry.rotateX(-Math.PI/2);
+    return geometry;
+}
+const waterGeometry = createWaterGeometry();
+
+const waterVertexShader = `
+uniform float time;
+uniform vec3 cameraPos;
+
+// Swell arrays
+uniform float swellAmplitudes[${SETTINGS.swellCount}];
+uniform vec2 swellDirections[${SETTINGS.swellCount}];
+uniform float swellLengths[${SETTINGS.swellCount}];
+uniform float swellSpeeds[${SETTINGS.swellCount}];
+
+// Wind arrays
+uniform float windAmplitudes[${SETTINGS.windCount}];
+uniform vec2 windDirections[${SETTINGS.windCount}];
+uniform float windLengths[${SETTINGS.windCount}];
+uniform float windSpeeds[${SETTINGS.windCount}];
+
+varying vec3 vWorldPos;
+varying vec3 vNormal;
+varying vec3 vViewDir;
+varying float vWaveHeight;
+
+vec3 gerstnerWave(vec2 dir, float wavelength, float amplitude, float speed, float phase, vec3 pos){
+    float k = 2.0 * 3.14159265 / wavelength;
+    float c = sqrt(9.81 / k);
+    float f = k * (dot(dir, pos.xz) - speed * time);
+    float a = amplitude;
+    vec3 displacement = vec3(
+        dir.x * (a * cos(f)),
+        a * sin(f),
+        dir.y * (a * cos(f))
+    );
+    return displacement;
+}
+
+// analytic normal from Gerstner sum
+vec3 gerstnerNormal(vec2 dir, float wavelength, float amplitude, float speed, vec3 pos){
+    float k = 2.0 * 3.14159265 / wavelength;
+    float f = k * (dot(dir, pos.xz) - speed * time);
+    float a = amplitude;
+    vec3 tangent = vec3(
+        -dir.x * a * k * sin(f),
+        a * k * cos(f),
+        -dir.y * a * k * sin(f)
+    );
+    return tangent;
+}
+
+void main(){
+    vec3 pos = position;
+    vec3 displaced = pos;
+    vec3 normal = vec3(0.0,1.0,0.0);
+    float height = 0.0;
+
+    // Swell contribution
+    for(int i=0;i<${SETTINGS.swellCount};i++){
+        vec2 d = normalize(swellDirections[i]);
+        float len = swellLengths[i];
+        float amp = swellAmplitudes[i];
+        float spd = swellSpeeds[i];
+        displaced += gerstnerWave(d, len, amp, spd, 0.0, pos);
+        normal += gerstnerNormal(d, len, amp, spd, pos);
+        height += amp * sin(2.0*3.14159265/len * (dot(d, pos.xz) - spd * time));
+    }
+
+    // Wind contribution
+    for(int i=0;i<${SETTINGS.windCount};i++){
+        vec2 d = normalize(windDirections[i]);
+        float len = windLengths[i];
+        float amp = windAmplitudes[i];
+        float spd = windSpeeds[i];
+        displaced += gerstnerWave(d, len, amp, spd, 0.0, pos);
+        normal += gerstnerNormal(d, len, amp, spd, pos);
+        height += amp * sin(2.0*3.14159265/len * (dot(d, pos.xz) - spd * time));
+    }
+
+    vWorldPos = displaced;
+    vNormal = normalize(normal);
+    vViewDir = normalize(cameraPos - displaced);
+    vWaveHeight = height;
+
+    gl_Position = projectionMatrix * viewMatrix * vec4(displaced,1.0);
+}
+`;
+
+const waterFragmentShader = `
+uniform vec3 sunDirection;
+uniform vec3 deepColor;
+uniform vec3 shallowColor;
+uniform vec3 foamColor;
+uniform float fresnelF0;
+uniform float specularPower;
+
+// detail normal maps
+uniform sampler2D detailNormal0;
+uniform sampler2D detailNormal1;
+uniform float detailScale0;
+uniform float detailScale1;
+uniform vec2 detailSpeed0;
+uniform vec2 detailSpeed1;
+uniform float time;
+
+varying vec3 vWorldPos;
+varying vec3 vNormal;
+varying vec3 vViewDir;
+varying float vWaveHeight;
+
+// ------------------------------------------------
+// Helper: Schlick Fresnel
+// ------------------------------------------------
+vec3 fresnelSchlick(float cosTheta, vec3 F0){
+    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
+}
+
+// ------------------------------------------------
+// GGX specular (single lobe)
+// ------------------------------------------------
+float DistributionGGX(vec3 N, vec3 H, float roughness){
+    float a = roughness*roughness;
+    float a2 = a*a;
+    float NdotH = max(dot(N,H),0.0);
+    float NdotH2 = NdotH*NdotH;
+
+    float denom = (NdotH2 * (a2 - 1.0) + 1.0);
+    denom = 3.14159265 * denom * denom;
+    return a2 / denom;
+}
+float GeometrySchlickGGX(float NdotV, float roughness){
+    float r = (roughness + 1.0);
+    float k = (r*r) / 8.0;
+    float denom = NdotV * (1.0 - k) + k;
+    return NdotV / denom;
+}
+float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness){
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotL = max(dot(N, L), 0.0);
+    float ggx2 = GeometrySchlickGGX(NdotV, roughness);
+    float ggx1 = GeometrySchlickGGX(NdotL, roughness);
+    return ggx1 * ggx2;
+}
+
+// ------------------------------------------------
+// Analytic sky colour (same as sky shader)
+// ------------------------------------------------
+vec3 getSkyColor(vec3 viewDir){
+    // reuse same simple sky model (no clouds) for reflection
+    float cosTheta = dot(viewDir, sunDirection);
+    float rayleighPhase = (3.0/(16.0*3.14159265)) * (1.0 + cosTheta*cosTheta);
+    float miePhase = (1.0/(4.0*3.14159265)) * ((1.0 - 0.8*0.8) / pow(1.0 + 0.8*0.8 - 2.0*0.8*cosTheta, 1.5));
+    vec3 rayleigh = vec3(5.8e-6,13.5e-6,33.1e-6) * rayleighPhase;
+    vec3 mie = vec3(21e-6) * miePhase;
+    vec3 col = pow(rayleigh + mie, vec3(0.5));
+    return col;
+}
+
+// ------------------------------------------------
+// Main
+// ------------------------------------------------
+void main(){
+    // base normal from Gerstner
+    vec3 N = normalize(vNormal);
+
+    // add detail normals (rotate UVs with time)
+    vec2 uv0 = vWorldPos.xz * detailScale0 + detailSpeed0 * time;
+    vec2 uv1 = vWorldPos.xz * detailScale1 + detailSpeed1 * time;
+    vec3 dn0 = texture2D(detailNormal0, uv0).xyz * 2.0 - 1.0;
+    vec3 dn1 = texture2D(detailNormal1, uv1).xyz * 2.0 - 1.0;
+    N = normalize(N + dn0 * 0.3 + dn1 * 0.2);
+
+    // view / light vectors
+    vec3 V = normalize(vViewDir);
+    vec3 L = normalize(sunDirection);
+    vec3 H = normalize(V + L);
+
+    // Fresnel
+    float cosThetaV = max(dot(N, V), 0.0);
+    vec3 F = fresnelSchlick(cosThetaV, vec3(fresnelF0));
+
+    // Specular (GGX)
+    float roughness = 0.04; // very smooth water
+    float D = DistributionGGX(N, H, roughness);
+    float G = GeometrySmith(N, V, L, roughness);
+    vec3 spec = (D * G * F) / (4.0 * max(dot(N, V), 0.001) * max(dot(N, L), 0.001));
+
+    // Secondary broader lobe (simple blur of specular)
+    vec3 specBroad = spec * 0.3;
+
+    // Sky reflection
+    vec3 R = reflect(-V, N);
+    vec3 skyRefl = getSkyColor(R);
+
+    // Water body colour (depth based)
+    float depthFactor = smoothstep(0.0, 5.0, vWorldPos.y);
+    vec3 waterCol = mix(shallowColor, deepColor, depthFactor);
+
+    // Subsurface scattering tint (sunlit crests)
+    float sunFacing = max(dot(N, L), 0.0);
+    vec3 scatterTint = mix(vec3(0.0), vec3(0.0,0.4,0.6), sunFacing);
+    waterCol += scatterTint * 0.2;
+
+    // Foam based on wave steepness (use wave height derivative approximation)
+    float foam = smoothstep(0.12, 0.2, abs(vWaveHeight));
+    vec3 foamCol = mix(vec3(0.0), foamColor, foam * 0.8);
+
+    // Combine everything
+    vec3 finalColor = waterCol * (1.0 - F) + skyRefl * F + spec + specBroad + foamCol;
+
+    // simple tone mapping (ACES already applied by renderer)
+    gl_FragColor = vec4(finalColor, 1.0);
+}
+`;
+
+const waterMaterial = new THREE.ShaderMaterial({
+    vertexShader: waterVertexShader,
+    fragmentShader: waterFragmentShader,
+    uniforms: waterUniforms,
+    transparent: false,
+    side: THREE.DoubleSide
+});
+const waterMesh = new THREE.Mesh(waterGeometry, waterMaterial);
+scene.add(waterMesh);
+
+// ------------------------------------------------------------
+// POST‑PROCESSING (bloom + SMAA)
+// ------------------------------------------------------------
+const composer = new EffectComposer(renderer);
+composer.setSize(window.innerWidth, window.innerHeight);
+composer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+const renderPass = new RenderPass(scene, camera);
+composer.addPass(renderPass);
+
+const bloomPass = new UnrealBloomPass(
+    new THREE.Vector2(window.innerWidth, window.innerHeight),
+    0.8, // strength
+    0.4, // radius
+    0.85 // threshold
+);
+bloomPass.renderToScreen = false;
+composer.addPass(bloomPass);
+
+const smaaPass = new SMAAPass(window.innerWidth * renderer.getPixelRatio(), window.innerHeight * renderer.getPixelRatio());
+composer.addPass(smaaPass);
+
+const outputPass = new OutputPass();
+composer.addPass(outputPass);
+
+// ------------------------------------------------------------
+// ANIMATION LOOP
+// ------------------------------------------------------------
+let clock = new THREE.Clock();
+
+function animate() {
+    const delta = clock.getDelta();
+    const elapsed = clock.elapsedTime;
+
+    // update uniforms
+    waterUniforms.time.value = elapsed;
+    waterUniforms.cameraPos.value.copy(camera.position);
+    skyUniforms.time.value = elapsed;
+
+    // subtle camera bobbing using wave height under camera
+    const camXZ = new THREE.Vector2(camera.position.x, camera.position.z);
+    let bob = 0.0;
+    for (let i = 0; i < SETTINGS.swellCount; i++) {
+        const dir = waterUniforms.swellDirections.value[i];
+        const len = waterUniforms.swellLengths.value[i];
+        const amp = waterUniforms.swellAmplitudes.value[i];
+        const spd = waterUniforms.swellSpeeds.value[i];
+        bob += amp * Math.sin(2.0 * Math.PI / len * (dir.x * camXZ.x + dir.y * camXZ.y - spd * elapsed));
+    }
+    for (let i = 0; i < SETTINGS.windCount; i++) {
+        const dir = waterUniforms.windDirections.value[i];
+        const len = waterUniforms.windLengths.value[i];
+        const amp = waterUniforms.windAmplitudes.value[i];
+        const spd = waterUniforms.windSpeeds.value[i];
+        bob += amp * Math.sin(2.0 * Math.PI / len * (dir.x * camXZ.x + dir.y * camXZ.y - spd * elapsed));
+    }
+    camera.position.y = 2.5 + bob * 0.2; // small vertical bob
+
+    // render
+    composer.render(delta);
+
+    requestAnimationFrame(animate);
+}
+animate();
+
+// ------------------------------------------------------------
+// RESIZE HANDLING
+// ------------------------------------------------------------
+window.addEventListener('resize', () => {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+
+    renderer.setSize(w, h);
+    composer.setSize(w, h);
+    smaaPass.setSize(w * renderer.getPixelRatio(), h * renderer.getPixelRatio());
+    bloomPass.setSize(new THREE.Vector2(w, h));
+});
+
+// ------------------------------------------------------------
+// DEBUG PANEL (optional, hidden)
+// ------------------------------------------------------------
+import('https://cdn.jsdelivr.net/npm/lil-gui@0.18/+esm').then(({GUI}) => {
+    const gui = new GUI({autoPlace: false});
+    document.getElementById('debug').appendChild(gui.domElement);
+    gui.add(SETTINGS, 'quality', ['low','high']).name('Quality').onChange(v => {
+        applyQuality();
+        // recreate wave uniforms
+        const newSwell = randomWaveParams(SETTINGS.swellCount, 30, 80, 0.5, 2.0, 1.0);
+        waterUniforms.swellAmplitudes.value = newSwell.amps;
+        waterUniforms.swellDirections.value = newSwell.dirs;
+        waterUniforms.swellLengths.value = newSwell.lens;
+        waterUniforms.swellSpeeds.value = newSwell.speeds;
+
+        const newWind = randomWaveParams(SETTINGS.windCount, 4, 12, 0.05, 0.2, 1.2);
+        waterUniforms.windAmplitudes.value = newWind.amps;
+        waterUniforms.windDirections.value = newWind.dirs;
+        waterUniforms.windLengths.value = newWind.lens;
+        waterUniforms.windSpeeds.value = newWind.speeds;
+
+        // bloom resolution
+        bloomPass.resolution.set(SETTINGS.bloomResolution, SETTINGS.bloomResolution);
+    });
+    gui.add(skyUniforms, 'turbidity', 1, 20, 0.1);
+    gui.add(skyUniforms, 'rayleigh', 0, 4, 0.01);
+    gui.add(skyUniforms, 'mieCoefficient', 0, 0.1, 0.001);
+    gui.add(skyUniforms, 'mieDirectionalG', 0, 1, 0.01);
+    gui.add(bloomPass, 'strength', 0, 2, 0.01);
+    gui.add(bloomPass, 'radius', 0, 1, 0.01);
+    gui.add(bloomPass, 'threshold', 0, 1, 0.01);
+    // expose panel with 'D' key
+    window.addEventListener('keydown', e => {
+        if (e.key === 'd' || e.key === 'D') {
+            const dbg = document.getElementById('debug');
+            dbg.style.display = dbg.style.display === 'none' ? 'block' : 'none';
+        }
+        if (e.key === 'l' || e.key === 'L') {
+            SETTINGS.quality = SETTINGS.quality === 'high' ? 'low' : 'high';
+            gui.__controllers[0].setValue(SETTINGS.quality);
+        }
+    });
+});
+</script>
+</html>
