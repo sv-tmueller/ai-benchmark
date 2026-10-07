@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Review Express webhook handler for security and rewrite it fixed — glm_5_3_flash</title>
+<style>
+  body { font-family: -apple-system, Helvetica, Arial, sans-serif; margin: 2rem auto;
+         max-width: 900px; padding: 0 1rem; color: #24292f; }
+  h1 { font-size: 1.4rem; border-bottom: 1px solid #d0d7de; padding-bottom: .4rem; }
+  .note { color: #57606a; font-size: .85rem; margin-bottom: 1rem; }
+  pre.deliverable { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;
+                     padding: 1rem; overflow-x: auto; white-space: pre-wrap;
+                     word-wrap: break-word; font-size: .9rem; }
+</style>
+</head>
+<body>
+<h1>Review Express webhook handler for security and rewrite it fixed — glm_5_3_flash</h1>
+<div class="note">GLM 5.3 Flash review wrapper — deliverable: <code>results/probe-timing-safe-token/timing-safe-token_glm_5_3_flash.txt</code></div>
+<pre class="deliverable">## Issues Found
+
+Critical ones: the auth check silently passes when `WEBHOOK_SECRET` is unset (`undefined === undefined` is `true`), the secret travels in the URL where it leaks into logs/history/proxies, and `===` is vulnerable to timing analysis.
+
+## Fixed Version
+
+```js
+const crypto = require("crypto");
+const express = require("express");
+const rateLimit = require("express-rate-limit");
+
+// Crash loudly at boot instead of running with auth effectively disabled
+if (!process.env.WEBHOOK_SECRET) {
+  throw new Error("WEBHOOK_SECRET must be set");
+}
+
+// Compare via SHA-256 digests so timingSafeEqual gets equal-length
+// buffers and attackers learn neither content nor length of the secret
+function tokensMatch(provided, expected) {
+  const digest = (v) =&gt;
+    crypto.createHash("sha256").update(v || "").digest();
+  return crypto.timingSafeEqual(digest(provided), digest(expected));
+}
+
+const limiter = rateLimit({
+  windowMs: 60_000,
+  max: 20,
+  message: { error: "too many requests" },
+});
+
+app.post(
+  "/webhook",
+  limiter,
+  express.json({ limit: "100kb" }),
+  (req, res) =&gt; {
+    const rawHeader = req.headers["x-webhook-token"];
+    const token = Array.isArray(rawHeader)
+      ? String(rawHeader[0])
+      : String(rawHeader ?? "");
+
+    try {
+      if (!tokensMatch(token, process.env.WEBHOOK_SECRET)) {
+        console.warn(`Webhook rejected: ip=${req.ip}`); // never log the token itself
+        return res.sendStatus(403);
+      }
+
+      processWebhook(req.body);
+      return res.sendStatus(200);
+    } catch (err) {
+      console.error("Webhook processing failed:", err.message);
+      return res.sendStatus(500); // hide internals from the caller
+    }
+  }
+);
+```
+
+## Changes Explained
+
+1. **Fixed the auth-bypass bug:** added a startup assertion so an unset `WEBHOOK_SECRET` crashes the app instead of making `undefined === undefined` grant access.
+2. **Switched GET → POST:** GET requests land in server/access logs, proxy caches, and browser history, exposing the credential.
+3. **Moved the token out of the query string into a header:** headers aren't recorded in referrer chains or typical access-log query fields.
+4. **Replaced `===` with `timingSafeEqual`:** eliminates timing side channels that reveal the secret byte-by-byte.
+5. **Hashes both inputs before comparing:** sidesteps `timingSafeEqual`'s unequal-length exception while hiding the secret's *length*.
+6. **Normalized the header to a single string:** guards against malformed/duplicate headers producing unexpected types.
+7. **Added rate limiting:** slows brute-forcing of the token endpoint.
+8. **Added `express.json()` with a size cap:** parses the body properly and bounds memory exhaustion from oversized payloads.
+9. **Wrapped processing in try/catch with generic responses:** prevents stack traces and internal error text from reaching clients.
+10. **Logs rejection source but never echoes the submitted token:** keeps invalid guesses (which often resemble the real secret) out of your logs.
+
+**Going further:** if you control the sender, prefer HMAC-signature verification (like GitHub's `X-Hub-Signature-256`) over a static bearer token — signing the full payload proves authenticity *and* integrity, whereas a shared token alone authenticates whoever holds it forever.</pre>
+</body>
+</html>
