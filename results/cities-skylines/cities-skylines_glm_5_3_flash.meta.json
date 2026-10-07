@@ -1,0 +1,59 @@
+{
+  "generated_utc": "2026-10-07T12:09:32.920453+00:00",
+  "toml": "game-cities-skylines.toml",
+  "prompt_id": "game-cities-skylines",
+  "name_suffix": null,
+  "title": "AAA Cities: Skylines II-class city builder via multi-agent critique loop",
+  "endpoint": "https://ai.noris.de/v1/chat/completions",
+  "model": "vllm/qsu/glm-5-3-flash",
+  "params": {
+    "temperature": 0.2,
+    "max_tokens_requested_initial": 65536,
+    "max_tokens_effective_last_attempt": 131072,
+    "reasoning_effort": null,
+    "stream": true,
+    "name_suffix": null
+  },
+  "finish_reason": "stop",
+  "truncated": false,
+  "usage": {
+    "prompt_tokens": 698,
+    "prompt_tokens_details": {
+      "cached_read_tokens": 697,
+      "cached_tokens": 697,
+      "cache_write_tokens": 0
+    },
+    "completion_tokens": 69024,
+    "completion_tokens_details": {
+      "reasoning_tokens": 24791
+    },
+    "total_tokens": 69722,
+    "reasoning_tokens": 24791
+  },
+  "retries": [
+    {
+      "attempt": 1,
+      "max_tokens": 65536,
+      "reasoning_effort": null,
+      "finish_reason": "length",
+      "elapsed_s": 258.1,
+      "done_sentinel": true,
+      "name_suffix": null
+    },
+    {
+      "attempt": 2,
+      "max_tokens": 131072,
+      "reasoning_effort": null,
+      "finish_reason": "stop",
+      "elapsed_s": 296.57,
+      "done_sentinel": true,
+      "name_suffix": null
+    }
+  ],
+  "num_retry_api_calls": 1,
+  "grading": null,
+  "outputs": {
+    "deliverable": "results/cities-skylines/cities-skylines_glm_5_3_flash.md",
+    "review_html": "results/cities-skylines/cities-skylines_glm_5_3_flash_review.html"
+  }
+}
