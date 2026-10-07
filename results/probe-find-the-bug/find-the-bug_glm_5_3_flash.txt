@@ -1,0 +1,43 @@
+## The bug
+
+The loop condition tests whether *another full page* exists past `start`, instead of whether *any items remain*. With `start + pageSize < total`, the final page — whether full or partial — can never satisfy the guard, so it's never pushed.
+
+Two tells confirm the intent mismatch:
+
+- Inside the body, `Math.min(start + pageSize, total)` anticipates a truncated final page — but under the current guard, `start + pageSize` is always `< total`, so the `Math.min` is dead code. It only matters if the condition allows `start + pageSize ≥ total`.
+- Consequently, for **every** `total ≥ 1`, the function returns exactly one page too few.
+
+## Triggering inputs
+
+Any call with `total ≥ 1` and `pageSize ≥ 1` misfires. Concrete demonstrations:
+
+| Call | Returns | Expected |
+|---|---|---|
+| `pageRanges(10, 5)` | `[[0,5]]` | `[[0,5],[5,10]]` |
+| `pageRanges(7, 5)` | `[[0,5]]` | `[[0,5],[5,7]]` |
+| `pageRanges(4, 5)` | `[]` | `[[0,4]]` |
+
+Trace for `(10, 5)`: at `start = 5`, the condition evaluates `5 + 5 < 10` → `false`, so the second page is skipped. In general, the loop exits precisely at the start offset of the last page. Worst case is `total ≤ pageSize`, where the very first check fails and the entire result set vanishes. Only `total = 0` behaves correctly.
+
+Count-wise: it returns `max(ceil(total/pageSize) − 1, 0)` pages instead of `ceil(total/pageSize)`.
+
+## Minimal fix
+
+Change the condition from "a full page remains ahead" to "items remain":
+
+```diff
+   const pages = [];
+-  for (let start = 0; start + pageSize < total; start += pageSize) {
++  for (let start = 0; start < total; start += pageSize) {
+     pages.push([start, Math.min(start + pageSize, total)]);
+   }
+```
+
+Verification with the fix:
+
+- `(10, 5)` → `[0,5], [5,10]` ✓
+- `(7, 5)` → `[0,5], [5,7]` ✓ (tail handled by the now-live `Math.min`)
+- `(4, 5)` → `[0,4]` ✓
+- `(0, 5)` → `[]` ✓
+
+One caveat unrelated to this bug: `pageSize ≤ 0` causes an infinite loop both before and after the fix (`start` never advances). Worth guarding separately if callers aren't trusted.
