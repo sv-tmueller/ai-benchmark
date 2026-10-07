@@ -1,0 +1,59 @@
+{
+  "generated_utc": "2026-10-07T16:32:35.753719+00:00",
+  "toml": "game-meridian-launch.toml",
+  "prompt_id": "game-meridian-launch",
+  "name_suffix": null,
+  "title": "Photoreal Three.js rocket launch scene as a single HTML file",
+  "endpoint": "https://ai.noris.de/v1/chat/completions",
+  "model": "vllm/release/glm-5-2",
+  "params": {
+    "temperature": 0.2,
+    "max_tokens_requested_initial": 65536,
+    "max_tokens_effective_last_attempt": 131072,
+    "reasoning_effort": null,
+    "stream": true,
+    "name_suffix": null
+  },
+  "finish_reason": "stop",
+  "truncated": false,
+  "usage": {
+    "prompt_tokens": 2715,
+    "prompt_tokens_details": {
+      "cached_read_tokens": 2624,
+      "cached_tokens": 2624,
+      "cache_write_tokens": 0
+    },
+    "completion_tokens": 63479,
+    "completion_tokens_details": {
+      "reasoning_tokens": 42760
+    },
+    "total_tokens": 66194,
+    "reasoning_tokens": 42760
+  },
+  "retries": [
+    {
+      "attempt": 1,
+      "max_tokens": 65536,
+      "reasoning_effort": null,
+      "finish_reason": "length",
+      "elapsed_s": 281.06,
+      "done_sentinel": true,
+      "name_suffix": null
+    },
+    {
+      "attempt": 2,
+      "max_tokens": 131072,
+      "reasoning_effort": null,
+      "finish_reason": "stop",
+      "elapsed_s": 239.33,
+      "done_sentinel": true,
+      "name_suffix": null
+    }
+  ],
+  "num_retry_api_calls": 1,
+  "grading": null,
+  "outputs": {
+    "deliverable": "results/meridian-launch/meridian-launch_glm_5_2.html",
+    "review_html": null
+  }
+}
