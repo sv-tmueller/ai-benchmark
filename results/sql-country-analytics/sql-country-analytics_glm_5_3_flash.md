@@ -1,0 +1,72 @@
+Here's a portable solution using CTEs and `ROW_NUMBER()` (ANSI SQL:2003 window functions — works on PostgreSQL, MySQL 8+, SQL Server, Oracle, SQLite 3.25+):
+
+```sql
+WITH country_metrics AS (
+    SELECT
+        c.country,
+        SUM(o.total_amount)  AS total_revenue,
+        COUNT(*)             AS num_orders,
+        AVG(o.total_amount)  AS avg_order_value
+    FROM orders o
+    JOIN customers c ON c.id = o.customer_id
+    GROUP BY c.country
+),
+product_revenue AS (
+    SELECT
+        c.country,
+        i.product_name,
+        SUM(i.quantity * i.unit_price) AS product_rev
+    FROM order_items i
+    JOIN orders o     ON o.id = i.order_id
+    JOIN customers c  ON c.id = o.customer_id
+    WHERE i.product_name IS NOT NULL          -- see NULL-handling note below
+    GROUP BY c.country, i.product_name
+),
+ranked_products AS (
+    SELECT
+        country,
+        product_name,
+        ROW_NUMBER() OVER (
+            PARTITION BY country
+            ORDER BY product_rev DESC, product_name ASC   -- deterministic tie-break
+        ) AS rn
+    FROM product_revenue
+)
+SELECT
+    m.country,
+    m.total_revenue,
+    m.num_orders,
+    m.avg_order_value,
+    r.product_name AS top_product
+FROM country_metrics m
+LEFT JOIN ranked_products r
+       ON r.country = m.country
+      AND r.rn = 1
+WHERE m.num_orders >= 10
+ORDER BY m.total_revenue DESC;
+```
+
+## Why this shape
+
+- You can't mix the order-level aggregates (`SUM/COUNT/AVG` over `total_amount`) with the product-level aggregate in one `GROUP BY`, so the two aggregations live in separate CTEs and are joined afterward.
+- `LEFT JOIN` (rather than inner) preserves a qualifying country even if it somehow has no usable line items — it gets a `NULL` top_product instead of disappearing.
+- Pushing `num_orders >= 10` into the `country_metrics` CTE as a `HAVING` clause is a small optimization if your planner doesn't do predicate pushdown well.
+
+## Assumptions
+
+**Top-product ties**
+- Tied product revenues are broken alphabetically by `product_name` so the result is deterministic run-to-run (important for tests/dashboards). Collation settings affect the alphabetization.
+- Business alternative: swap `ROW_NUMBER()` for `RANK()` to return *multiple* co-winning products — but then a country can produce several rows, changing the output grain. I chose one-row-per-country as the safer contract.
+
+**NULL handling**
+- `o.total_amount IS NULL`: assumed impossible (`NOT NULL`). If it can happen, `SUM`/`AVG` ignore those rows but `COUNT(*)` still counts the order, so `avg ≠ total/count`. Fix by adding `WHERE o.total_amount IS NOT NULL` to `country_metrics`.
+- `i.product_name IS NULL`: excluded from top-product consideration — a blank label topping a dashboard is misleading. Remove the `WHERE` if you'd rather rank `(unknown)` as a real candidate.
+- `c.country IS NULL`: assumed never null; otherwise all such rows pool into one `NULL` country group.
+- Referential integrity is assumed (every `order_item` maps to a valid order/customer); orphan rows are silently dropped by the inner joins.
+
+**Semantic caveats worth confirming with stakeholders**
+- `total_revenue` comes from `orders.total_amount`, but `top_product` ranks on `quantity * unit_price`. If `total_amount` includes discounts, tax, or shipping, the two won't reconcile — verify which basis the business considers authoritative.
+- All monetary values assumed to be in one currency (or normalized upstream); no FX logic here.
+- An order contributes to `num_orders` regardless of how many line items it has (including zero).
+
+If you need to target something ancient like MySQL 5.x (no CTEs/windows), the top product can be fetched with a correlated scalar subquery using `ORDER BY ... LIMIT 1` instead — happy to provide that variant.
