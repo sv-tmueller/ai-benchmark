@@ -171,6 +171,50 @@ Planned follow-up: re-running the same game/app tier on a
 frontier/non-flash model; results will extend this section with a
 direct comparison table.
 
+The re-run is packaged as a paste-ready dispatch prompt — canonical copy in #108, reproduced here for convenience:
+
+```
+# Frontier baseline sweep — dispatch prompt (paste-ready)
+
+Purpose: re-run the discriminating game/app tier against a frontier model to complete the flash-vs-frontier capability comparison documented in the README ("Flash vs. Frontier: single-shot capability envelope"). Fill in `<MODEL_ID>` before dispatch.
+
+---
+
+JOB: FRONTIER BASELINE SWEEP — re-run the game/app tier against `<MODEL_ID>` to complete the flash-vs-frontier capability comparison (extends the README section from #106).
+
+Scope: the 10 prompts that discriminated GLM 5.3 Flash:
+- game-melon-jelly.toml
+- game-lava-lamp.toml
+- game-minecraft.toml
+- game-meridian-launch.toml
+- game-sunset-ocean.toml
+- game-horror-house.toml
+- game-last-flight.toml
+- game-cities-skylines.toml
+- game-mario-kart.toml
+- app-stillwater.toml
+
+Model: `<MODEL_ID>` (owner chooses; endpoint-local options: vllm/release/gpt-oss-120b, vllm/release/glm-5-2 — or an external frontier API key).
+
+Rules inherited from batch #37 (unchanged):
+- One GitHub issue + one PR per prompt test; merge after CI green (owner mandate).
+- Storage mirrors existing layout: results/<family>/<prefix>_<model_tag>.<ext>; meta sidecar records model id, finish_reason, usage (incl. reasoning tokens), retries; grading check where a [grading] block exists.
+- Runner: /tmp/advisorscan/run_prompt.py — change ONLY the model parameter (adapt CLI flag --model). ALWAYS stream:true (gateway 504s non-streaming at ≥5 min). Unwrap markdown fences. Length-retry ladder (2× max_tokens → reasoning_effort low).
+- NEVER touch prompts/. Repo stays engineless (helper scripts outside the repo).
+- Verification bar RAISED per the #97 playability addendum: boot-paint is NOT enough. Per artifact verify: click-through transition, sustained animation (pixel-motion sampled over ≥3 s), per-script brace/paren balance, console capture across 10 s. Label PLAYABLE_VERIFIED / BOOTS_ONLY / BROKEN_AT_BOOT honestly in meta + PR body.
+- Truncation-watch: on finish_reason=length apply the ladder; if content ends mid-expression (brace imbalance), flag SCRIPT_TRUNCATED — this is the signature finding to compare against flash.
+
+Comparison deliverable: after all tests land, post a comparison table on issue #106 (per prompt: flash outcome vs frontier outcome, reasoning-token burn, truncation events, playability verdict) and propose the README comparison-table extension as a follow-up issue.
+
+---
+
+Usage: replace `<MODEL_ID>`, then run with the advisor (`hermes -s tm-advisor`) or paste into a session with the runner available. Issues/PRs follow the standard per-test pattern (see batch #37 for the exemplar).
+
+
+```
+Canonical copy: #108 (updates land there first; keep this quotation in sync when re-issuing).
+
+
 ## CI
 
 Lightweight validation only: every TOML must parse and every prompt TOML
