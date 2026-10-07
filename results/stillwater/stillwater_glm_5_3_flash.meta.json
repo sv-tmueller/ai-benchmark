@@ -1,0 +1,50 @@
+{
+  "generated_utc": "2026-10-07T13:04:43.946361+00:00",
+  "toml": "app-stillwater.toml",
+  "prompt_id": "app-stillwater",
+  "name_suffix": null,
+  "title": "Voice-first AI therapy companion app (React Native + NestJS + Postgres)",
+  "endpoint": "https://ai.noris.de/v1/chat/completions",
+  "model": "vllm/qsu/glm-5-3-flash",
+  "params": {
+    "temperature": 0.2,
+    "max_tokens_requested_initial": 65536,
+    "max_tokens_effective_last_attempt": 65536,
+    "reasoning_effort": null,
+    "stream": true,
+    "name_suffix": null
+  },
+  "finish_reason": "stop",
+  "truncated": false,
+  "usage": {
+    "prompt_tokens": 2436,
+    "prompt_tokens_details": {
+      "cached_read_tokens": 2435,
+      "cached_tokens": 2435,
+      "cache_write_tokens": 0
+    },
+    "completion_tokens": 38558,
+    "completion_tokens_details": {
+      "reasoning_tokens": 4160
+    },
+    "total_tokens": 40994,
+    "reasoning_tokens": 4160
+  },
+  "retries": [
+    {
+      "attempt": 1,
+      "max_tokens": 65536,
+      "reasoning_effort": null,
+      "finish_reason": "stop",
+      "elapsed_s": 154.91,
+      "done_sentinel": true,
+      "name_suffix": null
+    }
+  ],
+  "num_retry_api_calls": 0,
+  "grading": null,
+  "outputs": {
+    "deliverable": "results/stillwater/stillwater_glm_5_3_flash.md",
+    "review_html": "results/stillwater/stillwater_glm_5_3_flash_review.html"
+  }
+}
