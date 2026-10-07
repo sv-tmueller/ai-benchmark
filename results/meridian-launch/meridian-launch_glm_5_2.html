@@ -1,0 +1,1607 @@
+Looking at this brief, I need to architect a complete cinematic launch simulator in a single HTML file. Key engineering decisions I'm making upfront:
+
+- **Plume**: layered additive-blended shader meshes (core with shock diamonds via sinusoidal axial modulation + sheath) with altitude-driven expansion curves
+- **Soft particles**: quarter-res depth prepass feeding the smoke shader for proper occlusion-softening (the spec calls this out specifically)
+- **Sky/Lighting**: `THREE.Sky` + PMREM env capture for PBR correctness, single shadow-casting directional sun low on the horizon
+- **Post**: ACES + UnrealBloom (high threshold) + custom heat-distortion ShaderPass masked to plume screen region + grain/vignette
+- **Camera**: phase-keyframed broadcast path with exponential-smoothed operator lag and Perlin micro-shake, hard cuts between setups
+- **Audio**: Web Audio synth (brown noise → lowpass rumble + bandpassed crackle bursts + sub osc) with doppler-style filter sweeps
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MERIDIAN-9 // HALCYON AEROSPACE</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html,body{height:100%;overflow:hidden;background:#000;color:#fff;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Roboto Mono",monospace;
+    -webkit-font-smoothing:antialiased;}
+  canvas{display:block;width:100vw;height:100vh;}
+  #hud{position:fixed;inset:0;pointer-events:none;z-index:10;}
+  .wordmark{position:absolute;top:24px;left:50%;transform:translateX(-50%);
+    text-align:center;letter-spacing:.42em;text-transform:uppercase;
+    font-weight:600;font-size:13px;color:#dbe4f0;
+    text-shadow:0 1px 8px rgba(0,0,0,.7);}
+  .wordmark span{display:block;font-size:9px;letter-spacing:.56em;
+    color:#88a0bf;margin-top:5px;font-weight:400;}
+  .telemetry{position:absolute;left:28px;bottom:26px;display:flex;
+    flex-direction:column;gap:7px;font-size:12px;line-height:1.4;}
+  .tl-row{font-size:24px;font-weight:700;letter-spacing:.08em;color:#fff;
+    text-shadow:0 1px 6px rgba(0,0,0,.75);font-variant-numeric:tabular-nums;}
+  .tl-row.neg{color:#ffd27a;}
+  .tl-label{font-size:9px;letter-spacing:.34em;color:#86a0bd;text-transform:uppercase;}
+  .tl-value{font-size:16px;color:#dde7f5;font-weight:500;letter-spacing:.04em;
+    font-variant-numeric:tabular-nums;}
+  .tl-cell{display:flex;align-items:baseline;gap:12px;}
+  .status-pill{position:absolute;right:28px;bottom:26px;text-align:right;}
+  .pill{display:inline-block;padding:5px 11px;border-radius:2px;
+    background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.18);
+    font-size:10px;letter-spacing:.36em;text-transform:uppercase;color:#cfe0f5;}
+  .vbar{margin-top:8px;font-size:10px;letter-spacing:.28em;color:#9fb6cf;
+    text-transform:uppercase;}
+  .start-overlay{position:fixed;inset:0;
+    background:radial-gradient(circle at 50% 60%,rgba(16,20,28,.92),rgba(0,0,0,.98));
+    z-index:50;display:flex;align-items:center;justify-content:center;cursor:pointer;
+    transition:opacity .6s ease;}
+  .start-card{text-align:center;}
+  .start-card h1{font-size:42px;letter-spacing:.46em;font-weight:300;
+    color:#fff;margin-bottom:8px;}
+  .start-card p{font-size:11px;letter-spacing:.48em;color:#7890ad;
+    text-transform:uppercase;}
+  .start-btn{margin-top:36px;padding:14px 38px;border:1px solid rgba(232,239,255,.4);
+    background:transparent;color:#e8efff;letter-spacing:.42em;font-size:11px;
+    text-transform:uppercase;cursor:pointer;font-family:inherit;transition:.3s;}
+  .start-btn:hover{background:rgba(232,239,255,.08);border-color:#e8efff;}
+  #debug{position:fixed;right:14px;top:14px;width:280px;
+    background:rgba(8,12,18,.85);border:1px solid rgba(140,170,210,.22);
+    padding:14px;font-size:10px;letter-spacing:.06em;color:#bcd0ea;z-index:30;
+    display:none;border-radius:3px;max-height:calc(100vh - 28px);overflow-y:auto;}
+  #debug.open{display:block;}
+  #debug h3{font-size:9px;letter-spacing:.4em;color:#7fa0c8;text-transform:uppercase;
+    margin:12px 0 8px;border-bottom:1px solid rgba(140,170,210,.18);padding-bottom:6px;}
+  #debug h3:first-child{margin-top:0;}
+  #debug label{display:flex;justify-content:space-between;align-items:center;
+    margin:6px 0;gap:8px;font-size:10px;letter-spacing:.18em;text-transform:uppercase;}
+  #debug input[type=range]{flex:1;height:2px;background:#2a3744;appearance:none;-webkit-appearance:none;}
+  #debug input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
+    width:10px;height:10px;background:#9fc3ec;border-radius:50%;}
+  #debug input[type=checkbox]{accent-color:#9fc3ec;}
+  #debug button{background:#1a2530;color:#cde;border:1px solid #345;border-radius:2px;
+    padding:6px 8px;font-family:inherit;font-size:9px;letter-spacing:.2em;cursor:pointer;
+    text-transform:uppercase;margin-right:4px;margin-top:4px;}
+  #debug button:hover{background:#243340;}
+  .hint{position:fixed;left:14px;top:14px;font-size:9px;letter-spacing:.3em;
+    color:#586e89;text-transform:uppercase;z-index:20;}
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<div id="hud">
+  <div class="wordmark">MERIDIAN-9<span>HALCYON AEROSPACE · LC-09</span></div>
+  <div class="telemetry">
+    <div class="tl-row neg" id="tclock">T−00:10.0</div>
+    <div class="tl-cell"><span class="tl-label">ALT</span><span class="tl-value" id="altval">0.00 KM</span></div>
+    <div class="tl-cell"><span class="tl-label">VEL</span><span class="tl-value" id="velval">0 M/S</span></div>
+    <div class="tl-cell"><span class="tl-label">STAGE</span><span class="tl-value" id="stageval">PRE-LAUNCH</span></div>
+  </div>
+  <div class="status-pill">
+    <span class="pill" id="phasepill">HOLDDOWN</span>
+    <div class="vbar" id="eventlog">SYSTEM NOMINAL</div>
+  </div>
+</div>
+<div class="hint">[H] DEBUG · [SPACE] PAUSE · [R] RESTART</div>
+<div id="debug">
+  <h3>RANGE CONTROL</h3>
+  <label>TIME SCALE <span id="tslbl">1.00×</span><input type="range" id="ts" min="0.1" max="3" step="0.05" value="1"></label>
+  <label>SCRUB <span id="scrubLbl">T−10.0</span><input type="range" id="scrub" min="-10" max="162" step="0.1" value="-10"></label>
+  <h3>EFFECTS</h3>
+  <label>BLOOM <input type="checkbox" id="tg_bloom" checked></label>
+  <label>HEAT DISTORTION <input type="checkbox" id="tg_heat" checked></label>
+  <label>PLUME LIGHT <input type="checkbox" id="tg_plumelight" checked></label>
+  <label>FILM GRAIN <input type="checkbox" id="tg_grain" checked></label>
+  <h3>QUALITY</h3>
+  <button data-q="low">LOW</button><button data-q="med">MED</button><button data-q="high">HIGH</button>
+  <h3>ACTIONS</h3>
+  <button id="restartBtn">RESTART</button><button id="audioToggle">AUDIO</button>
+</div>
+<div class="start-overlay" id="overlay">
+  <div class="start-card">
+    <h1>MERIDIAN·9</h1>
+    <p>Dawn Orbital Insertion · LC-09</p>
+    <button class="start-btn" id="startBtn">INITIATE COUNTDOWN</button>
+  </div>
+</div>
+
+<script type="importmap">
+{"imports":{"three":"https://unpkg.com/three@0.161.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.161.0/examples/jsm/"}}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { Sky } from 'three/addons/objects/Sky.js';
+
+/* =========================================================
+   SECTION 0 — CONFIG, UTILITIES, GLOBAL STATE
+========================================================= */
+const CFG = {
+  quality: 'high',
+  paused: false,
+  showDebug: false,
+  flags: { bloom:true, heat:true, plumeLight:true, grain:true },
+};
+const QSET = {
+  low :{particles:140, plumeSegs:24, smokeRes:64 , dprMax:1.25},
+  med :{particles:340, plumeSegs:48, smokeRes:128, dprMax:1.5 },
+  high:{particles:680, plumeSegs:80, smokeRes:192, dprMax:2.0 },
+};
+const q = () => QSET[CFG.quality];
+
+const clamp = (v,a,b) => v<a?a:(v>b?b:v);
+const lerp  = (a,b,t) => a+(b-a)*t;
+const smoothstep = (e0,e1,x) => { const t=clamp((x-e0)/Math.max(1e-6,(e1-e0)),0,1); return t*t*(3-2*t); };
+
+// Hashing & value noise for procedural variation
+function hash(n){ const s=Math.sin(n*127.1)*43758.5453; return s-Math.floor(s); }
+function noise1(x){ const i=Math.floor(x), f=x-i, u=f*f*(3-2*f); return lerp(hash(i),hash(i+1),u); }
+function fbm(x,y,s){
+  let v=0,f=2,a=0.5;
+  for(let i=0;i<4;i++){ v += a*Math.sin(x*f+s*1.7)*Math.cos(y*f-s*2.3); f*=2; a*=0.5; }
+  return v*0.5+0.5;
+}
+
+/* =========================================================
+   SECTION 1 — TIMELINE
+========================================================= */
+const TL = {
+  start: -10, end: 162,
+  events: [
+    {t:-10 ,name:'HOLDDOWN'},
+    {t:-3  ,name:'SPINUP'},
+    {t:-2.5,name:'IGNITION'},
+    {t:0   ,name:'LIFTOFF'},
+    {t:3   ,name:'CLEARED_TOWER'},
+    {t:14  ,name:'GROUND_CLOUD_END'},
+    {t:38  ,name:'PITCH_OVER'},
+    {t:68  ,name:'MAX_Q'},
+    {t:74  ,name:'POST_MAXQ'},
+    {t:146 ,name:'MECO'},
+    {t:147.5,name:'SEPARATION'},
+    {t:149 ,name:'SES1_IGNITION'},
+    {t:156 ,name:'BEGIN_FADE'},
+    {t:162 ,name:'LOOP_RESET'},
+  ],
+};
+let simTime = TL.start;
+let timeScale = 1.0;
+let activePhaseIdx = 0;
+
+function tickTimeline(realDt){
+  if(!CFG.paused) simTime += realDt * timeScale;
+  if(simTime >= TL.end) triggerReset();
+  while(activePhaseIdx+1<TL.events.length && simTime>=TL.events[activePhaseIdx+1].t) activePhaseIdx++;
+  while(activePhaseIdx>0 && simTime<TL.events[activePhaseIdx].t) activePhaseIdx--;
+}
+const curPhaseName = () => TL.events[activePhaseIdx].name;
+
+/* =========================================================
+   SECTION 2 — RENDERER, SCENE, CAMERA
+========================================================= */
+const canvas = document.getElementById('scene');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias:false, powerPreference:'high-performance' });
+renderer.setClearColor(0x0a0e14, 1);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 0.95;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0xaab8cb, 0.00012);
+
+const camera = new THREE.PerspectiveCamera(46, innerWidth/innerHeight, 0.5, 60000);
+camera.position.set(-185, 38, 235);
+camera.lookAt(0, 35, 0);
+
+/* =========================================================
+   SECTION 3 — SKY + PMREM ENV CAPTURE
+   Capture sky into PMREM *before* adding anything else to scene,
+   so the env map is purely the dawn sky for PBR reflections.
+========================================================= */
+const sky = new Sky();
+sky.scale.setScalar(45000);
+scene.add(sky);
+const su = sky.material.uniforms;
+su.turbidity.value = 9;
+su.rayleigh.value = 2.6;
+su.mieCoefficient.value = 0.012;
+su.mieDirectionalG.value = 0.86;
+
+const SUN_ELEV = 3.6, SUN_AZIM = 118;
+const sunDir = new THREE.Vector3();
+(() => {
+  const phi = THREE.MathUtils.degToRad(90 - SUN_ELEV);
+  const theta = THREE.MathUtils.degToRad(SUN_AZIM);
+  sunDir.setFromSphericalCoords(1, phi, theta);
+  su.sunPosition.value.copy(sunDir);
+})();
+
+const pmrem = new THREE.PMREMGenerator(renderer);
+pmrem.compileEquirectangularShader();
+const envRT = pmrem.fromScene(scene, 0.02);
+scene.environment = envRT.texture;
+
+/* =========================================================
+   SECTION 4 — LIGHTS
+========================================================= */
+const sunLight = new THREE.DirectionalLight(0xffcaa0, 2.6);
+sunLight.position.copy(sunDir.clone().multiplyScalar(900)).add(new THREE.Vector3(0,40,-30));
+sunLight.target.position.set(0, 40, 0);
+sunLight.castShadow = true;
+sunLight.shadow.mapSize.set(2048, 2048);
+sunLight.shadow.camera.near = 1;
+sunLight.shadow.camera.far = 1400;
+sunLight.shadow.camera.left = -260; sunLight.shadow.camera.right = 260;
+sunLight.shadow.camera.top = 420;   sunLight.shadow.camera.bottom = -40;
+sunLight.shadow.bias = -0.0004;
+sunLight.shadow.normalBias = 0.6;
+scene.add(sunLight, sunLight.target);
+
+const hemi = new THREE.HemisphereLight(0xc8dcff, 0x4a3a2a, 0.35);
+scene.add(hemi);
+
+const plumeLight = new THREE.PointLight(0xfff0c8, 0, 380, 1.8);
+plumeLight.position.set(0, 1.5, 0);
+scene.add(plumeLight);
+
+const sepFlashLight = new THREE.PointLight(0xffffff, 0, 240, 2);
+sepFlashLight.visible = false;
+scene.add(sepFlashLight);
+
+/* =========================================================
+   SECTION 5 — PROCEDURAL TEXTURE FACTORY
+========================================================= */
+function makeCanvas(w,h){ const c=document.createElement('canvas'); c.width=w; c.height=h; return c; }
+
+function makeSmokeSprite(size){
+  const c = makeCanvas(size,size), ctx = c.getContext('2d');
+  const img = ctx.createImageData(size,size);
+  for(let y=0;y<size;y++) for(let x=0;x<size;x++){
+    const nx=x/size, ny=y/size, dx=nx-0.5, dy=ny-0.5;
+    const r = Math.sqrt(dx*dx+dy*dy)*2;
+    const n = fbm(nx*8, ny*8, 3.7) + fbm(nx*16, ny*16, 7.3)*0.5;
+    const rim = Math.pow(Math.max(0, 1-r*r), 1.4);
+    const a = clamp(rim*n*1.4, 0, 1) * 255 | 0;
+    const idx = (y*size+x)*4;
+    img.data[idx]=245; img.data[idx+1]=245; img.data[idx+2]=250; img.data[idx+3]=a;
+  }
+  ctx.putImageData(img,0,0);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.NoColorSpace;
+  return t;
+}
+
+function makeSootStreak(w,h){
+  const c = makeCanvas(w,h), ctx = c.getContext('2d');
+  ctx.clearRect(0,0,w,h);
+  for(let i=0;i<70;i++){
+    const x = Math.random()*w;
+    const len = Math.random()*h*0.55 + h*0.05;
+    const y = h - len;
+    const grad = ctx.createLinearGradient(0,y,0,y+len);
+    const op = Math.random()*0.18 + 0.03;
+    grad.addColorStop(0, 'rgba(20,18,16,0)');
+    grad.addColorStop(0.4, `rgba(30,28,26,${op})`);
+    grad.addColorStop(1, 'rgba(15,14,13,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(x, y, Math.random()*4+1, len);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+
+function makeGroundTex(){
+  const c = makeCanvas(512,512), ctx = c.getContext('2d');
+  const img = ctx.createImageData(512,512);
+  for(let y=0;y<512;y++) for(let x=0;x<512;x++){
+    const n = fbm(x/64, y/64, 1.3) + fbm(x/16, y/16, 2.7)*0.4;
+    const g = 80 + n*60;
+    const idx = (y*512+x)*4;
+    img.data[idx]=g*0.9; img.data[idx+1]=g*0.95; img.data[idx+2]=g*0.7; img.data[idx+3]=255;
+  }
+  ctx.putImageData(img,0,0);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(40,40);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+function makeWordmarkDecal(){
+  const c = makeCanvas(512,128), ctx = c.getContext('2d');
+  ctx.clearRect(0,0,512,128);
+  ctx.fillStyle = '#1a2030';
+  ctx.font = 'bold 64px Arial, Helvetica, sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('MERIDIAN', 256, 50);
+  ctx.font = 'normal 26px Arial';
+  ctx.fillStyle = '#5a6478';
+  ctx.fillText('HALCYON AEROSPACE', 256, 96);
+  return new THREE.CanvasTexture(c);
+}
+
+/* =========================================================
+   SECTION 6 — VEHICLE ASSEMBLY (PROCEDURAL)
+========================================================= */
+const VEH = { R:1.85, S1_H:44, IS_H:2, S2_H:12, FAIR_H:13, TOTAL:71 };
+const vehicleRoot = new THREE.Group();
+const lifterGroup = new THREE.Group();
+vehicleRoot.add(lifterGroup);
+scene.add(vehicleRoot);
+
+const matWhiteBody = new THREE.MeshStandardMaterial({
+  color:0xfafafa, roughness:0.55, metalness:0.05, envMapIntensity:0.85,
+});
+matWhiteBody.map = makeSootStreak(256, 1024);
+matWhiteBody.transparent = true; matWhiteBody.alphaTest = 0.02;
+
+const matBlackBand = new THREE.MeshStandardMaterial({ color:0x14161a, roughness:0.7, metalness:0.2 });
+const matBell      = new THREE.MeshStandardMaterial({ color:0x202225, roughness:0.35, metalness:0.85, envMapIntensity:1.2 });
+const matLeg       = new THREE.MeshStandardMaterial({ color:0x18191c, roughness:0.6, metalness:0.4 });
+const matFin       = new THREE.MeshStandardMaterial({ color:0x22252a, roughness:0.5, metalness:0.6 });
+
+const cylGeo = (rt,rb,h,seg=48) => new THREE.CylinderGeometry(rt,rb,h,seg,1,true);
+
+// --- Stage 1 body ---
+const s1 = new THREE.Mesh(cylGeo(VEH.R,VEH.R,VEH.S1_H,64), matWhiteBody);
+s1.position.y = VEH.S1_H/2;
+lifterGroup.add(s1);
+
+// Base & top rings
+const s1BaseRing = new THREE.Mesh(new THREE.TorusGeometry(VEH.R,0.18,12,64),
+  new THREE.MeshStandardMaterial({color:0x303236,roughness:0.5,metalness:0.7}));
+s1BaseRing.rotation.x = Math.PI/2; s1BaseRing.position.y = 0.05;
+lifterGroup.add(s1BaseRing);
+
+const s1TopRing = new THREE.Mesh(new THREE.TorusGeometry(VEH.R,0.12,10,64),
+  new THREE.MeshStandardMaterial({color:0x404448,roughness:0.4,metalness:0.7}));
+s1TopRing.rotation.x = Math.PI/2; s1TopRing.position.y = VEH.S1_H-0.05;
+lifterGroup.add(s1TopRing);
+
+// Raceways (vertical piping)
+for(const ang of [-Math.PI/2, Math.PI/2]){
+  const rw = new THREE.Mesh(new THREE.CylinderGeometry(0.07,0.07,VEH.S1_H-1,8),
+    new THREE.MeshStandardMaterial({color:0x888a8e,roughness:0.4,metalness:0.8}));
+  rw.position.set(Math.cos(ang)*(VEH.R+0.05), VEH.S1_H/2, Math.sin(ang)*(VEH.R+0.05));
+  lifterGroup.add(rw);
+}
+
+// Panel-line rings
+for(let y=4; y<VEH.S1_H; y+=6){
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(VEH.R+0.005,0.025,6,64),
+    new THREE.MeshStandardMaterial({color:0xd0d2d4,roughness:0.6,metalness:0.2}));
+  ring.rotation.x = Math.PI/2; ring.position.y = y;
+  lifterGroup.add(ring);
+}
+
+// Umbilical plate
+const umbPlate = new THREE.Mesh(new THREE.BoxGeometry(0.6,1.2,0.15),
+  new THREE.MeshStandardMaterial({color:0x33363a,roughness:0.5,metalness:0.6}));
+umbPlate.position.set(-(VEH.R+0.08), VEH.S1_H*0.55, 0);
+lifterGroup.add(umbPlate);
+
+// RCS thruster ports near top of stage 1
+for(let i=0;i<4;i++){
+  const a = i*Math.PI/2 + Math.PI/4;
+  const port = new THREE.Mesh(new THREE.CylinderGeometry(0.08,0.1,0.18,8),
+    new THREE.MeshStandardMaterial({color:0x2a2c30,roughness:0.4,metalness:0.7}));
+  port.position.set(Math.cos(a)*(VEH.R+0.05), VEH.S1_H-1.5, Math.sin(a)*(VEH.R+0.05));
+  port.lookAt(port.position.x*2, port.position.y, port.position.z*2);
+  lifterGroup.add(port);
+}
+
+// --- Octaweb engine bay ---
+const engBay = new THREE.Group();
+engBay.position.y = -0.4;
+lifterGroup.add(engBay);
+
+const octawebPlate = new THREE.Mesh(
+  new THREE.CylinderGeometry(VEH.R*0.96, VEH.R*0.94, 0.5, 48),
+  new THREE.MeshStandardMaterial({color:0x1a1c20,roughness:0.6,metalness:0.5}));
+octawebPlate.position.y = 0.25;
+engBay.add(octawebPlate);
+
+const BELL_RT = 0.32, BELL_RB = 0.62, BELL_LEN = 1.4;
+const bellPositions = [{x:0,z:0}];
+for(let i=0;i<8;i++){
+  const a = i*Math.PI/4;
+  bellPositions.push({x:Math.cos(a)*VEH.R*0.62, z:Math.sin(a)*VEH.R*0.62});
+}
+bellPositions.forEach(p => {
+  const bell = new THREE.Mesh(new THREE.CylinderGeometry(BELL_RB,BELL_RT,BELL_LEN,24,1,false), matBell);
+  bell.position.set(p.x, -BELL_LEN/2, p.z);
+  engBay.add(bell);
+  // Heat-tinted throat ring
+  const tint = new THREE.Mesh(
+    new THREE.CylinderGeometry(BELL_RT+0.02, BELL_RT+0.05, 0.4, 24, 1, true),
+    new THREE.MeshStandardMaterial({color:0xaa6638, roughness:0.6, metalness:0.4,
+      emissive:0x552010, emissiveIntensity:0.4}));
+  tint.position.set(p.x, -BELL_LEN+0.2, p.z);
+  engBay.add(tint);
+});
+
+// --- Stowed landing legs (4) ---
+for(let i=0;i<4;i++){
+  const a = i*Math.PI/2 + Math.PI/4;
+  const grp = new THREE.Group();
+  grp.position.set(Math.cos(a)*VEH.R, 0.4, Math.sin(a)*VEH.R);
+  grp.rotation.y = -a + Math.PI/2;
+  const arm = new THREE.Mesh(new THREE.BoxGeometry(0.18,1.6,0.4), matLeg);
+  arm.position.set(0.4,-0.4,0); arm.rotation.z = -0.35;
+  grp.add(arm);
+  const foot = new THREE.Mesh(new THREE.CylinderGeometry(0.18,0.22,0.1,12),
+    new THREE.MeshStandardMaterial({color:0x111214,roughness:0.7,metalness:0.3}));
+  foot.position.set(0.9,-1.1,0);
+  grp.add(foot);
+  lifterGroup.add(grp);
+}
+
+// --- Grid fins (4) at top of stage 1 ---
+for(let i=0;i<4;i++){
+  const a = i*Math.PI/2;
+  const grp = new THREE.Group();
+  grp.position.set(Math.cos(a)*(VEH.R+0.05), VEH.S1_H-0.4, Math.sin(a)*(VEH.R+0.05));
+  grp.rotation.y = -a;
+  const finBox = new THREE.Mesh(new THREE.BoxGeometry(0.7,1.1,0.12), matFin);
+  finBox.position.set(0.35,0.2,0);
+  grp.add(finBox);
+  for(let j=0;j<6;j++){
+    const slat = new THREE.Mesh(new THREE.BoxGeometry(0.7,0.02,0.14),
+      new THREE.MeshStandardMaterial({color:0x3a3d42,roughness:0.5,metalness:0.7}));
+    slat.position.set(0.35, j*0.17-0.3, 0);
+    grp.add(slat);
+  }
+  lifterGroup.add(grp);
+}
+
+// --- Black interstage band ---
+const interstage = new THREE.Mesh(cylGeo(VEH.R+0.02,VEH.R+0.02,VEH.IS_H,64), matBlackBand);
+interstage.position.y = VEH.S1_H + VEH.IS_H/2;
+lifterGroup.add(interstage);
+
+// Pusher hints
+for(let i=0;i<4;i++){
+  const a = i*Math.PI/2 + Math.PI/4;
+  const dot = new THREE.Mesh(new THREE.CylinderGeometry(0.08,0.08,0.1,8),
+    new THREE.MeshStandardMaterial({color:0x666,roughness:0.4,metalness:0.7}));
+  dot.position.set(Math.cos(a)*VEH.R*0.7, VEH.S1_H+VEH.IS_H-0.05, Math.sin(a)*VEH.R*0.7);
+  lifterGroup.add(dot);
+}
+
+// --- Stage 2 ---
+const s2 = new THREE.Mesh(cylGeo(VEH.R,VEH.R,VEH.S2_H,64), matWhiteBody);
+s2.position.y = VEH.S1_H + VEH.IS_H + VEH.S2_H/2;
+lifterGroup.add(s2);
+
+for(let y=VEH.S1_H+VEH.IS_H+2; y<VEH.S1_H+VEH.IS_H+VEH.S2_H; y+=4){
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(VEH.R+0.005,0.02,6,64),
+    new THREE.MeshStandardMaterial({color:0xcccccc,roughness:0.6,metalness:0.2}));
+  ring.rotation.x = Math.PI/2; ring.position.y = y;
+  lifterGroup.add(ring);
+}
+
+// Vacuum bell on stage 2
+const s2Bell = new THREE.Mesh(new THREE.CylinderGeometry(0.95,0.55,1.6,32,1,false), matBell);
+s2Bell.position.y = VEH.S1_H + VEH.IS_H - 0.8;
+lifterGroup.add(s2Bell);
+
+// --- Payload fairing (tangent-ogive) ---
+const fairProfile = [new THREE.Vector2(0.001, 0)];
+const FH = VEH.FAIR_H, FR = VEH.R, NSTEPS = 24;
+for(let i=1;i<=NSTEPS;i++){
+  const t = i/NSTEPS;
+  const x = FR * Math.sin(t * Math.PI * 0.5);
+  const y = FH * (1 - Math.cos(t * Math.PI * 0.5)) * 0.97;
+  fairProfile.push(new THREE.Vector2(x, y));
+}
+fairProfile.push(new THREE.Vector2(0.001, FH));
+const fairing = new THREE.Mesh(
+  new THREE.LatheGeometry(fairProfile, 48),
+  new THREE.MeshStandardMaterial({color:0xfdfdfd, roughness:0.45, metalness:0.08, envMapIntensity:0.9}));
+fairing.position.y = VEH.S1_H + VEH.IS_H + VEH.S2_H;
+lifterGroup.add(fairing);
+
+// Split seams
+for(const z of [VEH.R+0.002, -(VEH.R+0.002)]){
+  const seam = new THREE.Mesh(new THREE.PlaneGeometry(0.04, FH),
+    new THREE.MeshBasicMaterial({color:0x999999, side:THREE.DoubleSide}));
+  seam.position.set(0, VEH.S1_H+VEH.IS_H+VEH.S2_H+FH/2, z);
+  lifterGroup.add(seam);
+}
+
+// Wordmark decal
+const wmPlane = new THREE.Mesh(
+  new THREE.PlaneGeometry(VEH.R*1.4, VEH.R*0.35),
+  new THREE.MeshBasicMaterial({map:makeWordmarkDecal(), transparent:true, depthWrite:false}));
+wmPlane.position.set(0, VEH.S1_H*0.62, VEH.R+0.01);
+lifterGroup.add(wmPlane);
+
+// Frost band on LOX section
+const frost = new THREE.Mesh(
+  cylGeo(VEH.R+0.005, VEH.R+0.005, VEH.S1_H*0.4, 48),
+  new THREE.MeshStandardMaterial({color:0xeef2f8, roughness:0.85, metalness:0.0,
+    transparent:true, opacity:0.35}));
+frost.position.y = VEH.S1_H*0.7;
+lifterGroup.add(frost);
+
+// Shadows
+[s1, s2, interstage, fairing, octawebPlate].forEach(m => { m.castShadow = m.receiveShadow = true; });
+lifterGroup.traverse(o => { if(o.isMesh && o !== s1 && o !== s2 && o !== interstage && o !== fairing && o !== octawebPlate){
+  o.castShadow = true; o.receiveShadow = true;
+}});
+
+/* =========================================================
+   SECTION 7 — EXHAUST PLUME (CORE + SHEATH SHADERS)
+========================================================= */
+const plumeRoot = new THREE.Group();
+lifterGroup.add(plumeRoot);
+
+const plumeU = {
+  uTime:{value:0},
+  uThrottle:{value:0},
+  uCoreLen:{value:1},
+  uExpansion:{value:0.4},
+  uShockStrength:{value:1.0},
+  uShockSpacing:{value:1.6},
+  uSeed:{value:0},
+  uHotColor:{value:new THREE.Color(0xfff4d0)},
+  uMidColor:{value:new THREE.Color(0xff8a3a)},
+  uEdgeColor:{value:new THREE.Color(0x4a2010)},
+};
+
+const CORE_SX = 24, CORE_SY = q().plumeSegs;
+const coreGeo = new THREE.CylinderGeometry(0.6, 1.4, 1, CORE_SX, CORE_SY, true);
+coreGeo.translate(0, -0.5, 0);
+
+const coreMat = new THREE.ShaderMaterial({
+  uniforms: Object.assign({}, plumeU),
+  transparent:true, depthWrite:false, blending:THREE.AdditiveBlending, side:THREE.DoubleSide,
+  vertexShader: `
+    uniform float uTime, uThrottle, uCoreLen, uExpansion, uSeed;
+    varying float vAxial;
+    varying vec2 vUv;
+    void main(){
+      vec3 p = position;
+      float ax = clamp(-p.y, 0.0, 1.0);
+      vAxial = ax; vUv = uv;
+      float ang = atan(p.z, p.x);
+      // Turbulent radial displacement
+      float nz = sin(p.y*8.0 + uTime*4.0 + ang*3.0 + uSeed)*0.5
+               + sin(p.y*22.0 - uTime*7.0 + ang*5.0)*0.18;
+      float tip = pow(ax, 3.0);
+      float disp = (nz * 0.18 * (1.0 - tip)) * uThrottle;
+      float widen = mix(0.6, 2.4, uExpansion) * ax;
+      float radius = (length(p.xz) + disp) * (1.0 + widen*ax*0.9) * (1.0 - tip*0.4);
+      p.x = cos(ang) * radius;
+      p.z = sin(ang) * radius;
+      p.y *= uCoreLen * (0.6 + uThrottle*1.4);
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+    }
+  `,
+  fragmentShader: `
+    uniform float uTime, uThrottle, uShockStrength, uShockSpacing;
+    uniform vec3 uHotColor, uMidColor, uEdgeColor;
+    varying float vAxial;
+    varying vec2 vUv;
+    void main(){
+      float ax = vAxial;
+      vec3 col = mix(uHotColor, uMidColor, smoothstep(0.0, 0.55, ax));
+      col = mix(col, uEdgeColor, smoothstep(0.55, 1.0, ax));
+      // Shock diamonds: bright nodal bands along axis, fading with expansion
+      float sh = sin(ax * 18.0 / uShockSpacing);
+      sh = pow(max(sh, 0.0), 6.0);
+      float shocks = sh * uShockStrength * (1.0 - smoothstep(0.0, 0.85, ax));
+      col += vec3(1.0, 0.93, 0.78) * shocks * 1.4;
+      // Turbulent stripes
+      float stripe = sin(vUv.x*40.0 + uTime*6.0)*0.5 + 0.5;
+      col *= (0.85 + stripe*0.25);
+      float a = uThrottle * (1.0 - smoothstep(0.7, 1.0, ax)) * 1.2;
+      a = clamp(a, 0.0, 1.0);
+      col *= 4.5; // pre-tonemap boost for bloom pickup
+      gl_FragColor = vec4(col*a, a);
+    }
+  `,
+});
+const coreMesh = new THREE.Mesh(coreGeo, coreMat);
+coreMesh.frustumCulled = false;
+plumeRoot.add(coreMesh);
+
+// Sheath: wider, softer, additive
+const sheathGeo = new THREE.CylinderGeometry(1.0, 2.6, 1, 24, 32, true);
+sheathGeo.translate(0, -0.5, 0);
+const sheathMat = new THREE.ShaderMaterial({
+  uniforms: Object.assign({}, plumeU),
+  transparent:true, depthWrite:false, blending:THREE.AdditiveBlending, side:THREE.BackSide,
+  vertexShader: `
+    uniform float uTime, uThrottle, uCoreLen, uExpansion, uSeed;
+    varying float vAxial;
+    varying vec2 vUv;
+    void main(){
+      vec3 p = position;
+      float ax = clamp(-p.y, 0.0, 1.0);
+      vAxial = ax; vUv = uv;
+      float ang = atan(p.z, p.x);
+      float nz = sin(p.y*4.0 + uTime*2.0 + ang*2.0) + sin(p.y*9.0 - uTime*3.0 + ang*4.0)*0.5;
+      float widen = mix(0.8, 3.2, uExpansion) * ax;
+      float tip = pow(ax, 2.5);
+      float radius = length(p.xz) * (1.0 + widen*0.7) + nz*0.15*(1.0-tip);
+      radius *= (1.0 - tip*0.5);
+      p.x = cos(ang)*radius; p.z = sin(ang)*radius;
+      p.y *= uCoreLen * (0.7 + uThrottle*1.6);
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+    }
+  `,
+  fragmentShader: `
+    uniform float uThrottle, uExpansion;
+    uniform vec3 uHotColor, uMidColor, uEdgeColor;
+    varying float vAxial;
+    varying vec2 vUv;
+    void main(){
+      float ax = vAxial;
+      vec3 col = mix(vec3(0.7, 0.85, 1.0), uMidColor, smoothstep(0.0, 0.4, ax));
+      col = mix(col, vec3(0.35, 0.18, 0.08), smoothstep(0.4, 1.0, ax));
+      float a = uThrottle * (1.0 - smoothstep(0.4, 1.0, ax)) * 0.55;
+      col *= 2.2;
+      gl_FragColor = vec4(col*a, a);
+    }
+  `,
+});
+const sheathMesh = new THREE.Mesh(sheathGeo, sheathMat);
+sheathMesh.frustumCulled = false;
+plumeRoot.add(sheathMesh);
+
+plumeRoot.position.y = -1.8; // sit at engine bell exits
+
+/* =========================================================
+   SECTION 8 — PARTICLE POOL (SOFT-PARTICLE SMOKE)
+   Strategy: quarter-res depth prepass feeds the smoke shader
+   for proper occlusion-softening without feedback hazards.
+========================================================= */
+const MAX_P = q().particles;
+const smokeTex = makeSmokeSprite(q().smokeRes);
+
+const smokeGeom = new THREE.BufferGeometry();
+const s_pos  = new Float32Array(MAX_P*3);
+const s_age  = new Float32Array(MAX_P);
+const s_life = new Float32Array(MAX_P);
+const s_size = new Float32Array(MAX_P);
+const s_seed = new Float32Array(MAX_P);
+const s_vel  = new Float32Array(MAX_P*3);
+const s_emis = new Float32Array(MAX_P);
+smokeGeom.setAttribute('position', new THREE.BufferAttribute(s_pos, 3));
+smokeGeom.setAttribute('aAge',  new THREE.BufferAttribute(s_age, 1));
+smokeGeom.setAttribute('aLife', new THREE.BufferAttribute(s_life, 1));
+smokeGeom.setAttribute('aSize', new THREE.BufferAttribute(s_size, 1));
+smokeGeom.setAttribute('aSeed', new THREE.BufferAttribute(s_seed, 1));
+smokeGeom.setAttribute('aEmis', new THREE.BufferAttribute(s_emis, 1));
+smokeGeom.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e6);
+
+const smokeMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uTime:{value:0},
+    uTex:{value:smokeTex},
+    uSunCol:{value:new THREE.Color(0xffd9a0)},
+    uAmb:{value:new THREE.Color(0x495a78)},
+    tDiffuse:{value:null},                // depth texture from prepass
+    uViewport:{value:new THREE.Vector2(innerWidth, innerHeight)},
+    uCamNear:{value:camera.near},
+    uCamFar:{value:camera.far},
+  },
+  transparent:true, depthWrite:false, depthTest:true, blending:THREE.NormalBlending,
+  vertexShader: `
+    attribute float aAge; attribute float aLife; attribute float aSize;
+    attribute float aSeed; attribute float aEmis;
+    uniform float uTime;
+    uniform vec2 uViewport;
+    varying float vAgeN;
+    varying float vSeed;
+    varying float vEmis;
+    void main(){
+      float t = clamp(aAge/aLife, 0.0, 1.0);
+      vAgeN = t; vSeed = aSeed; vEmis = aEmis;
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      float persp = 1.0 / -mv.z;
+      gl_PointSize = aSize * persp * uViewport.y * 0.5;
+      gl_Position = projectionMatrix * mv;
+    }
+  `,
+  fragmentShader: `
+    uniform sampler2D uTex;
+    uniform sampler2D tDiffuse;
+    uniform vec3 uSunCol, uAmb;
+    uniform vec2 uViewport;
+    uniform float uCamNear, uCamFar;
+    varying float vAgeN;
+    varying float vSeed;
+    varying float vEmis;
+
+    float linearize(float d){
+      float n = uCamNear, f = uCamFar;
+      return (2.0*n*f) / (f + n - d*(f-n));
+    }
+    void main(){
+      vec2 uv = gl_PointCoord;
+      vec4 tex = texture2D(uTex, uv);
+      if(tex.a < 0.01) discard;
+
+      // Soft-particle depth fade against prepass depth
+      vec2 screenuv = gl_FragCoord.xy / uViewport;
+      float sceneDepth = texture2D(tDiffuse, screenuv).r;
+      float fragDepth = gl_FragCoord.z;
+      float linScene = linearize(sceneDepth);
+      float linFrag  = linearize(fragDepth);
+      float soft = 1.0;
+      if(linFrag > linScene){
+        soft = 0.0;                          // occluded by opaque surface
+      } else {
+        float dz = linScene - linFrag;        // how far in front of surface
+        soft = smoothstep(0.0, 3.0, dz);      // graze zone = 3 m
+      }
+
+      float aIn  = smoothstep(0.0, 0.08, vAgeN);
+      float aOut = 1.0 - smoothstep(0.55, 1.0, vAgeN);
+      float lifeA = aIn * aOut;
+
+      vec3 base = mix(vec3(0.92,0.94,0.97), vec3(0.55,0.50,0.46), vAgeN);
+      vec3 lit = base * (uAmb + uSunCol * 0.55);
+      vec3 emisCol = vec3(1.0, 0.7, 0.35) * vEmis * 1.6;
+      vec3 col = lit + emisCol;
+
+      float alpha = tex.a * lifeA * 0.85 * soft;
+      gl_FragColor = vec4(col, alpha);
+    }
+  `,
+});
+
+const smokePoints = new THREE.Points(smokeGeom, smokeMat);
+smokePoints.frustumCulled = false;
+scene.add(smokePoints);
+
+let nextSpawnSlot = 0;
+function spawnParticle(o){
+  const i = nextSpawnSlot;
+  s_pos[i*3]   = o.x;  s_pos[i*3+1] = o.y;  s_pos[i*3+2] = o.z;
+  s_vel[i*3]   = o.vx; s_vel[i*3+1] = o.vy; s_vel[i*3+2] = o.vz;
+  s_age[i] = 0;
+  s_life[i] = o.life;
+  s_size[i] = o.size;
+  s_seed[i] = Math.random()*100;
+  s_emis[i] = o.emis ?? 1.0;
+  nextSpawnSlot = (nextSpawnSlot+1) % MAX_P;
+}
+for(let i=0;i<MAX_P;i++){ s_life[i]=0.001; s_age[i]=1; s_size[i]=0; }
+
+/* =========================================================
+   SECTION 9 — FLAME-TRENCH SIDEWAYS JET
+========================================================= */
+const trenchJet = new THREE.Mesh(
+  new THREE.CylinderGeometry(1.2, 2.4, 1, 16, 8, true),
+  new THREE.ShaderMaterial({
+    uniforms: Object.assign({}, plumeU, {uOpacity:{value:0}}),
+    transparent:true, depthWrite:false, blending:THREE.AdditiveBlending, side:THREE.DoubleSide,
+    vertexShader: `
+      uniform float uTime, uThrottle;
+      varying vec2 vUv;
+      void main(){
+        vec3 p = position;
+        p.x += sin(p.y*8.0 + uTime*5.0) * 0.2 * p.y;
+        p.z += cos(p.y*6.0 + uTime*4.0) * 0.2 * p.y;
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform float uThrottle, uOpacity;
+      varying vec2 vUv;
+      void main(){
+        float ax = vUv.y;
+        vec3 c = mix(vec3(1.0, 0.85, 0.5), vec3(0.5, 0.2, 0.08), ax);
+        float a = uThrottle * uOpacity * (1.0 - ax) * 0.9;
+        gl_FragColor = vec4(c*a*3.0, a);
+      }
+    `,
+  }));
+trenchJet.rotation.z = Math.PI/2;
+trenchJet.position.set(-6, 1.5, 0);
+trenchJet.scale.set(1, 6, 1);
+scene.add(trenchJet);
+
+/* =========================================================
+   SECTION 10 — PAD ENVIRONMENT
+========================================================= */
+// Ground
+const ground = new THREE.Mesh(
+  new THREE.CircleGeometry(8000, 64),
+  new THREE.MeshStandardMaterial({color:0x6a6a4e, roughness:0.95, metalness:0.0,
+    map: makeGroundTex()}));
+ground.rotation.x = -Math.PI/2;
+ground.position.y = -2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// Concrete pad slab
+const slab = new THREE.Mesh(
+  new THREE.CylinderGeometry(28, 28, 0.6, 48),
+  new THREE.MeshStandardMaterial({color:0x9a978f, roughness:0.85}));
+slab.position.y = -1.4;
+slab.receiveShadow = true;
+scene.add(slab);
+
+// Launch mount
+const mount = new THREE.Mesh(
+  new THREE.CylinderGeometry(4, 5, 2, 16),
+  new THREE.MeshStandardMaterial({color:0x4a4a4a, roughness:0.7, metalness:0.5}));
+mount.position.y = -0.5;
+mount.castShadow = mount.receiveShadow = true;
+scene.add(mount);
+
+// Flame trench opening
+const trenchCap = new THREE.Mesh(
+  new THREE.RingGeometry(2, 4, 24),
+  new THREE.MeshStandardMaterial({color:0x1a1a1a, roughness:0.9, side:THREE.DoubleSide}));
+trenchCap.rotation.x = -Math.PI/2;
+trenchCap.position.y = -0.4;
+scene.add(trenchCap);
+
+// Strongback tower
+const strongback = new THREE.Group();
+const sbMat = new THREE.MeshStandardMaterial({color:0x6a6e74, roughness:0.6, metalness:0.5});
+const trussMat = new THREE.MeshStandardMaterial({color:0x4a4e54, roughness:0.7, metalness:0.4});
+const col = new THREE.Mesh(new THREE.BoxGeometry(1.4, 50, 1.4), sbMat);
+col.position.set(8, 25, 0); col.castShadow = true;
+strongback.add(col);
+for(let y=2; y<50; y+=3){
+  const t1 = new THREE.Mesh(new THREE.BoxGeometry(0.2,3,1.4), trussMat);
+  t1.position.set(8, y, 0); t1.rotation.z = Math.PI/4;
+  strongback.add(t1);
+  const t2 = t1.clone(); t2.rotation.z = -Math.PI/4; strongback.add(t2);
+}
+const arm = new THREE.Mesh(new THREE.BoxGeometry(4, 0.5, 0.5), sbMat);
+arm.position.set(5, 30, 0); arm.rotation.z = Math.PI/2 - 0.15;
+strongback.add(arm);
+for(let y=5; y<48; y+=4){
+  const w = new THREE.Mesh(new THREE.BoxGeometry(1.6,0.1,1.6), sbMat);
+  w.position.set(8, y, 0); strongback.add(w);
+}
+scene.add(strongback);
+
+// Lightning towers
+for(const [dx,dz] of [[-22,-22],[22,-22],[-22,22],[22,22]]){
+  const tw = new THREE.Mesh(new THREE.CylinderGeometry(0.3,0.4,75,8), sbMat);
+  tw.position.set(dx, 36, dz); tw.castShadow = true;
+  scene.add(tw);
+  for(let k=0;k<3;k++){
+    const ca = new THREE.Mesh(new THREE.BoxGeometry(8,0.2,0.2), sbMat);
+    ca.position.set(dx, 73-k*2, dz);
+    scene.add(ca);
+  }
+}
+
+// Water tower
+const wtTank = new THREE.Mesh(new THREE.SphereGeometry(5, 16, 12),
+  new THREE.MeshStandardMaterial({color:0x8a8a8a, roughness:0.6, metalness:0.4}));
+wtTank.position.set(-30, 12, -25); wtTank.castShadow = true;
+scene.add(wtTank);
+const wtSup = new THREE.Mesh(new THREE.CylinderGeometry(0.4,0.4,12,8),
+  new THREE.MeshStandardMaterial({color:0x555, roughness:0.6, metalness:0.5}));
+wtSup.position.set(-30, 6, -25);
+scene.add(wtSup);
+
+// Distant ocean horizon
+const ocean = new THREE.Mesh(
+  new THREE.RingGeometry(900, 30000, 64),
+  new THREE.MeshStandardMaterial({color:0x39506b, roughness:0.4, metalness:0.6, side:THREE.DoubleSide}));
+ocean.rotation.x = -Math.PI/2;
+ocean.position.y = -3.5;
+scene.add(ocean);
+
+// Coastline silhouettes
+for(let i=0;i<8;i++){
+  const a = i/8 * Math.PI*2;
+  const r = 1500 + Math.random()*800;
+  const cl = new THREE.Mesh(
+    new THREE.ConeGeometry(80+Math.random()*120, 30+Math.random()*40, 6),
+    new THREE.MeshStandardMaterial({color:0x2a3a3a, roughness:1.0}));
+  cl.position.set(Math.cos(a)*r, 12, Math.sin(a)*r);
+  scene.add(cl);
+}
+
+/* =========================================================
+   SECTION 11 — CAMERA DIRECTOR (BROADCAST PATH)
+========================================================= */
+const camDirector = {
+  target: new THREE.Vector3(0, 35, 0),
+  _pos: new THREE.Vector3().copy(camera.position),
+  _look: new THREE.Vector3(0, 35, 0),
+  _fovCur: 46,
+  shakeAmt: 0,
+  shakeFreq: 1.0,
+  lagTau: 0.35,
+  cutFlag: true,
+};
+
+const CAM_PHASES = [
+  { until:-3,   pos:(t,v)=>new THREE.Vector3(-185,38,235),                       look:(t,v)=>new THREE.Vector3(0,38,0),                  fov:46 },
+  { until:3,    pos:(t,v)=>{const k=smoothstep(-3,3,t);return new THREE.Vector3(-185-k*-30, 38+k*8, 235-k*15);},
+              look:(t,v)=>{const k=smoothstep(-3,3,t);return new THREE.Vector3(0, lerp(38,42,k), 0);},             fov:lerp(46,52,0.5) },
+  { until:14,   pos:(t,v)=>new THREE.Vector3(-130, (v?.y||0)+15, 165),           look:(t,v)=>new THREE.Vector3(0,(v?.y||0)+5,0),         fov:60 },
+  { until:38,   pos:(t,v)=>new THREE.Vector3(-260, (v?.y||0)+25, 360),           look:(t,v)=>new THREE.Vector3(0,v?.y||0,0),             fov:24 },
+  { until:75,   pos:(t,v)=>new THREE.Vector3(-380, (v?.y||0)+60, 520),           look:(t,v)=>new THREE.Vector3(0,v?.y||0,0),             fov:38 },
+  { until:148,  pos:(t,v)=>new THREE.Vector3(-220, (v?.y||0)+30, 290),           look:(t,v)=>new THREE.Vector3(0,v?.y||0,0),             fov:30 },
+  { until:162,  pos:(t,v)=>{const k=smoothstep(148,162,t);return new THREE.Vector3(-220-k*120, (v?.y||0)+30+k*40, 290+k*120);},
+              look:(t,v)=>new THREE.Vector3(0,v?.y||0,0),                                                       fov:lerp(30,46,0.5) },
+];
+let curPhase = CAM_PHASES[0];
+
+function pickPhase(t){
+  for(let i=0;i<CAM_PHASES.length;i++) if(t < CAM_PHASES[i].until) return CAM_PHASES[i];
+  return CAM_PHASES[CAM_PHASES.length-1];
+}
+
+function updateCamera(dt){
+  const ph = pickPhase(simTime);
+  if(ph !== curPhase){ curPhase = ph; camDirector.cutFlag = true; }
+  const vehY = lifterGroup.position.y;
+  const vref = {y:vehY};
+  const desPos  = ph.pos(simTime, vref);
+  const desLook = ph.look(simTime, vref);
+  const k = 1 - Math.exp(-dt / Math.max(0.001, camDirector.lagTau));
+  if(camDirector.cutFlag){
+    camDirector._pos.copy(desPos);
+    camDirector._look.copy(desLook);
+    camDirector._fovCur = ph.fov;
+    camDirector.cutFlag = false;
+  } else {
+    camDirector._pos.lerp(desPos, k);
+    camDirector._look.lerp(desLook, k);
+    camDirector._fovCur = lerp(camDirector._fovCur, ph.fov, k*1.5);
+  }
+  // Handheld micro-shake
+  const sh = camDirector.shakeAmt;
+  const tt = performance.now()*0.001;
+  const sx = (noise1(tt*camDirector.shakeFreq) - 0.5) * sh;
+  const sy = (noise1(tt*camDirector.shakeFreq + 99) - 0.5) * sh;
+  const sz = (noise1(tt*camDirector.shakeFreq + 199) - 0.5) * sh;
+  camera.position.copy(camDirector._pos).add(new THREE.Vector3(sx, sy, sz));
+  camera.lookAt(camDirector._look);
+  camera.fov = camDirector._fovCur;
+  camera.updateProjectionMatrix();
+}
+
+/* =========================================================
+   SECTION 12 — FLIGHT DYNAMICS
+========================================================= */
+const flight = {
+  altitude:0, velocity:0, downrange:0,
+  pitch:0, yaw:0, roll:0,
+  separated:false,
+};
+
+function updateFlight(dt){
+  if(simTime < 0){
+    flight.altitude=0; flight.velocity=0; flight.downrange=0;
+    flight.pitch=0; flight.roll=0; flight.separated=false;
+    lifterGroup.position.set(0,0,0);
+    lifterGroup.rotation.set(0,0,0);
+    return;
+  }
+  let acc;
+  if(simTime < 70)       acc = 1.2 * 9.81;
+  else if(simTime < 146) acc = 3.0 * 9.81;
+  else                   acc = 0;
+  if(simTime >= 146 && simTime < 149) acc = -1; // coast
+  if(simTime >= 149 && flight.separated) acc = 2.5 * 9.81;
+  flight.velocity = Math.max(0, flight.velocity + acc*dt);
+  flight.altitude += flight.velocity * dt;
+  if(simTime > 38) flight.pitch = Math.min(0.55, (simTime-38)*0.012);
+  flight.downrange += Math.sin(flight.pitch) * flight.velocity * dt;
+  flight.roll = (simTime < 8) ? lerp(0, 0.4, smoothstep(0, 8, simTime)) : 0.4;
+  if(simTime >= 147.5 && !flight.separated){
+    flight.separated = true;
+    triggerSeparation();
+  }
+  lifterGroup.position.set(
+    -flight.downrange * Math.cos(0.3),
+    flight.altitude,
+     flight.downrange * Math.sin(0.3)
+  );
+  lifterGroup.rotation.set(flight.pitch, 0, flight.roll);
+}
+
+function triggerSeparation(){
+  sepFlashLight.visible = true;
+  sepFlashLight.intensity = 8;
+  sepFlashLight.position.copy(lifterGroup.position).add(new THREE.Vector3(0, VEH.S1_H, 0));
+  setTimeout(() => { sepFlashLight.intensity = 0; }, 120);
+  for(let i=0;i<70;i++){
+    spawnParticle({
+      x: lifterGroup.position.x + (Math.random()-0.5)*2,
+      y: lifterGroup.position.y + VEH.S1_H + VEH.IS_H + (Math.random()-0.5)*2,
+      z: lifterGroup.position.z + (Math.random()-0.5)*2,
+      vx:(Math.random()-0.5)*8, vy:(Math.random()-0.5)*8, vz:(Math.random()-0.5)*8,
+      life:1.5 + Math.random()*1.5, size:0.6 + Math.random()*0.8, emis:2.5
+    });
+  }
+}
+
+/* =========================================================
+   SECTION 13 — EFFECTS UPDATE (PLUME UNIFORMS, SPAWN, PHYSICS)
+========================================================= */
+const wind = new THREE.Vector3(0.6, 0, 0.3);
+
+function updateEffects(dt){
+  const t = simTime;
+
+  // ---- Throttle schedule ----
+  let throttle = 0;
+  if(t < -2.5)      throttle = 0;
+  else if(t < -2)   throttle = smoothstep(-2.5, -2, t) * 0.4;
+  else if(t < 0)    throttle = lerp(0.4, 1.0, smoothstep(-2, 0, t));
+  else if(t < 70)   throttle = 1.0;
+  else if(t < 80)   throttle = lerp(1.0, 0.7, smoothstep(70, 80, t));
+  else if(t < 146)  throttle = 0.85;
+  else if(t < 147)  throttle = lerp(0.85, 0, smoothstep(145.5, 147, t));
+  else if(t < 149)  throttle = 0;
+  else if(t < 156)  throttle = lerp(0, 0.9, smoothstep(149, 150.5, t));
+  else              throttle = 0.9;
+
+  plumeU.uThrottle.value = throttle;
+  plumeU.uTime.value += dt;
+
+  // Altitude-driven expansion (vacuum bell widening)
+  const altKm = flight.altitude / 1000;
+  plumeU.uExpansion.value = clamp(0.15 + altKm*0.06, 0.15, 1.0);
+  // Velocity-driven length
+  plumeU.uCoreLen.value = lerp(1.0, 4.5, clamp(flight.velocity/1500, 0, 1)) *
+                         (throttle > 0 ? (0.6 + throttle*0.6) : 0);
+  // Shock diamonds prominent at low alt, fade with expansion
+  plumeU.uShockStrength.value = clamp(1.5 - plumeU.uExpansion.value*1.4, 0, 1.5) * throttle;
+  plumeU.uShockSpacing.value  = lerp(1.6, 3.2, plumeU.uExpansion.value);
+
+  // Plume light
+  if(CFG.flags.plumeLight){
+    plumeLight.intensity = throttle * (180 + Math.sin(performance.now()*0.04)*30);
+    plumeLight.position.copy(lifterGroup.position).add(new THREE.Vector3(0, -2, 0));
+  } else {
+    plumeLight.intensity = 0;
+  }
+
+  // Camera shake tied to throttle & proximity
+  camDirector.shakeAmt = throttle * 0.5 * (simTime < 12 ? 1.0 : 0.3);
+
+  // Trench jet opacity (first ~14 s)
+  const trenchOp = clamp(1 - smoothstep(8, 14, t), 0, 1) * throttle;
+  trenchJet.material.uniforms.uOpacity.value = trenchOp;
+  trenchJet.material.uniforms.uThrottle.value = throttle;
+  trenchJet.material.uniforms.uTime.value = plumeU.uTime.value;
+
+  // ----- Particle spawning -----
+  // Pre-launch venting
+  if(t > -9 && t < 0 && Math.random() < 0.6){
+    spawnParticle({
+      x:(Math.random()-0.5)*2 + lifterGroup.position.x,
+      y:lifterGroup.position.y + VEH.S1_H*0.7 + (Math.random()-0.5)*4,
+      z:VEH.R + lifterGroup.position.z + (Math.random()-0.5)*0.5,
+      vx:wind.x*0.3 + (Math.random()-0.5)*0.3,
+      vy:0.2 + Math.random()*0.3,
+      vz:wind.z*0.3 + (Math.random()-0.5)*0.3,
+      life:3 + Math.random()*2, size:1.5 + Math.random()*1.5, emis:0.0
+    });
+  }
+  // Ground cloud (ignition → ~14 s)
+  if(t > -2 && t < 14){
+    const rate = t < 3 ? 8 : 4;
+    for(let kk=0;kk<rate;kk++){
+      const dir = -1;
+      spawnParticle({
+        x:lifterGroup.position.x + dir*(4 + Math.random()*8),
+        y:lifterGroup.position.y - 1 + Math.random()*1.5,
+        z:lifterGroup.position.z + (Math.random()-0.5)*6,
+        vx:dir*(6 + Math.random()*8),
+        vy:1 + Math.random()*3,
+        vz:(Math.random()-0.5)*4,
+        life:5 + Math.random()*4, size:4 + Math.random()*5, emis: t<3 ? 1.5 : 0.6
+      });
+    }
+    if(Math.random() < 0.7){
+      spawnParticle({
+        x:lifterGroup.position.x + (Math.random()-0.5)*8,
+        y:lifterGroup.position.y + Math.random()*2,
+        z:lifterGroup.position.z + (Math.random()-0.5)*8,
+        vx:wind.x*0.5 + (Math.random()-0.5)*1,
+        vy:2 + Math.random()*3,
+        vz:wind.z*0.5 + (Math.random()-0.5)*1,
+        life:6 + Math.random()*4, size:5 + Math.random()*6, emis:0.4
+      });
+    }
+  }
+  // Contrail during ascent
+  if(t > 0 && t < 156){
+    for(let kk=0;kk<3;kk++){
+      spawnParticle({
+        x:lifterGroup.position.x + (Math.random()-0.5)*1.5,
+        y:lifterGroup.position.y - 2 + (Math.random()-0.5)*1,
+        z:lifterGroup.position.z + (Math.random()-0.5)*1.5,
+        vx:wind.x*0.3 + (Math.random()-0.5)*0.5,
+        vy:-1 - Math.random()*1,
+        vz:wind.z*0.3 + (Math.random()-0.5)*0.5,
+        life:8 + Math.random()*6, size:3 + Math.random()*4, emis:0.3
+      });
+    }
+  }
+  // Max-Q condensation
+  if(t > 65 && t < 75){
+    for(let kk=0;kk<4;kk++){
+      spawnParticle({
+        x:lifterGroup.position.x + (Math.random()-0.5)*6,
+        y:lifterGroup.position.y + VEH.S1_H*0.5 + (Math.random()-0.5)*8,
+        z:lifterGroup.position.z + (Math.random()-0.5)*6,
+        vx:(Math.random()-0.5)*2, vy:(Math.random()-0.5)*2, vz:(Math.random()-0.5)*2,
+        life:2 + Math.random()*1.5, size:5 + Math.random()*5, emis:0.2
+      });
+    }
+  }
+
+  // Integrate particle physics
+  for(let i=0;i<MAX_P;i++){
+    if(s_age[i] >= s_life[i]) continue;
+    s_age[i] += dt;
+    s_pos[i*3]   += s_vel[i*3]   * dt;
+    s_pos[i*3+1] += s_vel[i*3+1] * dt;
+    s_pos[i*3+2] += s_vel[i*3+2] * dt;
+    s_vel[i*3]   *= (1 - 0.4*dt);
+    s_vel[i*3+1] *= (1 - 0.2*dt);
+    s_vel[i*3+2] *= (1 - 0.4*dt);
+    s_vel[i*3+1] += 0.5*dt;                    // hot buoyancy
+    s_vel[i*3]   += wind.x * 0.3 * dt;
+    s_vel[i*3+2] += wind.z * 0.3 * dt;
+    s_size[i] = Math.min(s_size[i] * (1 + 0.05*dt), 25);
+    s_emis[i] *= (1 - 0.5*dt);
+  }
+  smokeGeom.attributes.position.needsUpdate = true;
+  smokeGeom.attributes.aAge.needsUpdate = true;
+  smokeGeom.attributes.aSize.needsUpdate = true;
+  smokeGeom.attributes.aEmis.needsUpdate = true;
+
+  smokeMat.uniforms.uTime.value = plumeU.uTime.value;
+}
+
+/* =========================================================
+   SECTION 14 — POST PROCESSING
+========================================================= */
+const composer = new EffectComposer(renderer);
+composer.setPixelRatio(Math.min(devicePixelRatio||1, q().dprMax));
+composer.setSize(innerWidth, innerHeight);
+
+composer.addPass(new RenderPass(scene, camera));
+
+const bloomPass = new UnrealBloomPass(
+  new THREE.Vector2(innerWidth, innerHeight),
+  0.7, 0.7, 0.92);
+composer.addPass(bloomPass);
+
+// Heat distortion: UV displacement masked to plume screen region
+const HeatShader = {
+  uniforms: {
+    tDiffuse:{value:null},
+    uTime:{value:0},
+    uAmount:{value:0.0},
+    uCenter:{value:new THREE.Vector2(0.5, 0.65)},
+    uRadius:{value:0.28},
+  },
+  vertexShader: `varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+  fragmentShader: `
+    uniform sampler2D tDiffuse; uniform float uTime, uAmount, uRadius; uniform vec2 uCenter;
+    varying vec2 vUv;
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+    float noise(vec2 p){
+      vec2 i=floor(p), f=fract(p); vec2 u=f*f*(3.0-2.0*f);
+      return mix(mix(hash(i), hash(i+vec2(1,0)), u.x),
+                 mix(hash(i+vec2(0,1)), hash(i+vec2(1,1)), u.x), u.y);
+    }
+    void main(){
+      vec2 uv = vUv;
+      float d = distance(uv, uCenter);
+      float mask = smoothstep(uRadius, 0.0, d) * uAmount;
+      vec2 disp = vec2(noise(uv*8.0 + uTime*1.5) - 0.5,
+                      noise(uv*8.0 + uTime*1.5 + 99.0) - 0.5) * mask * 0.012;
+      gl_FragColor = texture2D(tDiffuse, uv + disp);
+    }
+  `,
+};
+const heatPass = new ShaderPass(HeatShader);
+composer.addPass(heatPass);
+
+// Grain + vignette
+const FinalShader = {
+  uniforms: {
+    tDiffuse:{value:null},
+    uTime:{value:0},
+    uGrain:{value:1.0},
+    uVig:{value:0.35},
+  },
+  vertexShader: `varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+  fragmentShader: `
+    uniform sampler2D tDiffuse; uniform float uTime, uGrain, uVig;
+    varying vec2 vUv;
+    float rand(vec2 c){ return fract(sin(dot(c, vec2(12.9898, 78.233))) * 43758.5453); }
+    void main(){
+      vec4 c = texture2D(tDiffuse, vUv);
+      vec2 d = vUv - 0.5;
+      float vig = 1.0 - dot(d, d) * uVig * 2.0;
+      c.rgb *= vig;
+      float g = rand(vUv*1000.0 + uTime) - 0.5;
+      c.rgb += g * 0.04 * uGrain;
+      gl_FragColor = c;
+    }
+  `,
+};
+const fxPass = new ShaderPass(FinalShader);
+composer.addPass(fxPass);
+
+composer.addPass(new OutputPass());
+
+/* =========================================================
+   SECTION 15 — QUARTER-RES DEPTH PREPASS FOR SOFT PARTICLES
+========================================================= */
+let depthRT = null;
+function setupDepthRT(){
+  const w = Math.max(2, Math.ceil(innerWidth/4));
+  const h = Math.max(2, Math.ceil(innerHeight/4));
+  if(depthRT) depthRT.dispose();
+  depthRT = new THREE.WebGLRenderTarget(w, h);
+  depthRT.depthTexture = new THREE.DepthTexture(w, h);
+  depthRT.depthTexture.format = THREE.DepthFormat;
+  depthRT.depthTexture.type = THREE.UnsignedShortType;
+  smokeMat.uniforms.tDiffuse.value = depthRT.depthTexture;
+}
+setupDepthRT();
+
+function renderDepthPrepass(){
+  smokePoints.visible = false;
+  const prev = scene.overrideMaterial;
+  // No override needed — depth is captured natively by depthTexture
+  renderer.setRenderTarget(depthRT);
+  renderer.setClearColor(0x000000, 1.0);
+  renderer.clear();
+  renderer.render(scene, camera);
+  scene.overrideMaterial = prev;
+  smokePoints.visible = true;
+  renderer.setRenderTarget(null);
+}
+
+/* =========================================================
+   SECTION 16 — HUD
+========================================================= */
+const hudEl = {
+  tclock: document.getElementById('tclock'),
+  alt:    document.getElementById('altval'),
+  vel:    document.getElementById('velval'),
+  stage:  document.getElementById('stageval'),
+  pill:   document.getElementById('phasepill'),
+  log:    document.getElementById('eventlog'),
+};
+function fmtClock(t){
+  const sign = t < 0 ? '−' : '+';
+  const a = Math.abs(t);
+  const mm = Math.floor(a/60);
+  const ss = a - mm*60;
+  return `T${sign}${String(mm).padStart(2,'0')}:${ss.toFixed(1).padStart(4,'0')}`;
+}
+function fmtAlt(m){ return m < 1000 ? `${m.toFixed(0)} M` : `${(m/1000).toFixed(2)} KM`; }
+function fmtVel(ms){ return ms < 1000 ? `${ms.toFixed(0)} M/S` : `${(ms/1000).toFixed(2)} KM/S`; }
+let lastLoggedPhase = '';
+function updateHUD(){
+  hudEl.tclock.textContent = fmtClock(simTime);
+  hudEl.tclock.classList.toggle('neg', simTime < 0);
+  hudEl.alt.textContent = fmtAlt(flight.altitude);
+  hudEl.vel.textContent = fmtVel(flight.velocity);
+  let stageLabel = 'PRE-LAUNCH';
+  if(simTime >= 0 && simTime < 147)      stageLabel = 'BOOSTER · STAGE 1';
+  else if(simTime >= 147 && simTime < 149) stageLabel = 'MECO · COAST';
+  else if(simTime >= 149)                  stageLabel = 'UPPER STAGE · S2';
+  hudEl.stage.textContent = stageLabel;
+  hudEl.pill.textContent = curPhaseName();
+  if(curPhaseName() !== lastLoggedPhase){
+    lastLoggedPhase = curPhaseName();
+    hudEl.log.textContent = lastLoggedPhase.replace(/_/g, ' ');
+  }
+}
+
+/* =========================================================
+   SECTION 17 — WEB AUDIO SYNTH ENGINE
+========================================================= */
+class AudioEngine {
+  constructor(){
+    this.ctx = null; this.master = null; this.running = false;
+    this.noiseBuf = null; this.rumbleGain = null; this.crackleGain = null;
+    this.subGain = null; this.lowpass = null; this.bandpass = null;
+    this.lastCrackle = 0; this.enabled = true;
+  }
+  async start(){
+    if(this.running) return;
+    this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    await this.ctx.resume();
+    this.master = this.ctx.createGain(); this.master.gain.value = 0;
+    this.master.connect(this.ctx.destination);
+
+    const sr = this.ctx.sampleRate, dur = 4;
+    const buf = this.ctx.createBuffer(1, sr*dur, sr);
+    const ch = buf.getChannelData(0);
+    let last = 0;
+    for(let i=0;i<ch.length;i++){
+      const w = Math.random()*2 - 1;
+      last = (last + w*0.02) * 0.99;
+      ch[i] = last * 3.5;
+    }
+    this.noiseBuf = buf;
+
+    const ns = this.ctx.createBufferSource();
+    ns.buffer = buf; ns.loop = true;
+
+    this.lowpass = this.ctx.createBiquadFilter();
+    this.lowpass.type = 'lowpass'; this.lowpass.frequency.value = 180; this.lowpass.Q.value = 0.7;
+
+    this.bandpass = this.ctx.createBiquadFilter();
+    this.bandpass.type = 'bandpass'; this.bandpass.frequency.value = 600; this.bandpass.Q.value = 1.5;
+
+    this.rumbleGain = this.ctx.createGain();  this.rumbleGain.gain.value = 0;
+    this.crackleGain = this.ctx.createGain(); this.crackleGain.gain.value = 0;
+
+    this.subOsc = this.ctx.createOscillator(); this.subOsc.type = 'triangle'; this.subOsc.frequency.value = 28;
+    this.subGain = this.ctx.createGain(); this.subGain.gain.value = 0;
+    this.subOsc.connect(this.subGain); this.subGain.connect(this.master);
+
+    ns.connect(this.lowpass); this.lowpass.connect(this.rumbleGain); this.rumbleGain.connect(this.master);
+    ns.connect(this.bandpass); this.bandpass.connect(this.crackleGain); this.crackleGain.connect(this.master);
+    ns.start(); this.subOsc.start();
+    this.running = true;
+  }
+  update(dt){
+    if(!this.running || !this.enabled) return;
+    const t = simTime;
+    let rumble = 0, crackle = 0, sub = 0;
+    if(t < -3){ rumble = 0; crackle = 0; }
+    else if(t < 0){
+      const k = smoothstep(-3, 0, t);
+      rumble = k*0.4; crackle = k*0.15; sub = k*0.3;
+    } else if(t < 146){
+      const prox = clamp(1 - flight.altitude/30000, 0, 1);
+      rumble = 0.6*prox + 0.2; crackle = 0.4*prox; sub = 0.5*prox + 0.2;
+    } else if(t < 149){ rumble = 0.05; crackle = 0; sub = 0; }
+    else {
+      const k = smoothstep(149, 153, t);
+      rumble = k*0.3; crackle = k*0.1; sub = k*0.2;
+    }
+    this.rumbleGain.gain.setTargetAtTime(rumble, this.ctx.currentTime, 0.1);
+    this.crackleGain.gain.setTargetAtTime(crackle, this.ctx.currentTime, 0.1);
+    this.subGain.gain.setTargetAtTime(sub, this.ctx.currentTime, 0.1);
+    let mast = 1.0;
+    if(simTime > 156) mast = 1 - smoothstep(156, 162, simTime);
+    this.master.gain.setTargetAtTime(mast * 0.7 * (this.enabled ? 1 : 0), this.ctx.currentTime, 0.1);
+    // Doppler-style filter sweeps
+    const altFactor = clamp(1 - flight.altitude/40000, 0, 1);
+    this.lowpass.frequency.setTargetAtTime(80 + altFactor*220, this.ctx.currentTime, 0.2);
+    this.bandpass.frequency.setTargetAtTime(300 + altFactor*900, this.ctx.currentTime, 0.2);
+    // Crackle bursts
+    if(t > 0 && t < 146 && performance.now() - this.lastCrackle > (40 + Math.random()*120)){
+      this.lastCrackle = performance.now();
+      const burst = this.ctx.createBufferSource();
+      burst.buffer = this.noiseBuf; burst.loop = false;
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass'; bp.frequency.value = 400 + Math.random()*1500; bp.Q.value = 4;
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0, this.ctx.currentTime);
+      g.gain.linearRampToValueAtTime(0.5*altFactor, this.ctx.currentTime + 0.005);
+      g.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.08);
+      burst.connect(bp); bp.connect(g); g.connect(this.master);
+      burst.playbackRate.value = 0.8 + Math.random()*0.6;
+      burst.start(); burst.stop(this.ctx.currentTime + 0.1);
+    }
+  }
+  speak(text){
+    if(!('speechSynthesis' in window) || !this.enabled) return;
+    try {
+      const u = new SpeechSynthesisUtterance(text);
+      u.rate = 0.95; u.pitch = 0.9; u.volume = 0.5;
+      speechSynthesis.cancel(); speechSynthesis.speak(u);
+    } catch(e){}
+  }
+}
+const audio = new AudioEngine();
+const spokenEvents = new Set();
+function maybeSpeak(){
+  if(!audio.running) return;
+  const miles = [
+    [-10, 'T minus 10'], [-5, 'T minus 5'], [-1, 'T minus 1'],
+    [0, 'Liftoff'], [70, 'Maximum Q'], [146, 'Main engine cutoff'],
+    [149, 'Stage separation']
+  ];
+  for(const [tt, msg] of miles){
+    if(simTime >= tt && !spokenEvents.has(tt)){ spokenEvents.add(tt); audio.speak(msg); }
+  }
+}
+
+/* =========================================================
+   SECTION 18 — MAIN LOOP
+========================================================= */
+let lastReal = performance.now()/1000;
+let started = false;
+
+function animate(){
+  requestAnimationFrame(animate);
+  const now = performance.now()/1000;
+  const realDt = Math.min(now - lastReal, 0.05);
+  lastReal = now;
+
+  if(started && !CFG.paused){
+    tickTimeline(realDt);
+    updateFlight(realDt * timeScale);
+    updateEffects(realDt * timeScale);
+    updateCamera(realDt);
+    updateHUD();
+    audio.update(realDt);
+    maybeSpeak();
+  } else {
+    updateCamera(realDt); // keep camera alive even when paused (for scrub preview)
+  }
+
+  heatPass.uniforms.uTime.value = now;
+  fxPass.uniforms.uTime.value = now;
+
+  // Drive heat distortion from plume proximity
+  if(CFG.flags.heat){
+    const proj = lifterGroup.position.clone().project(camera);
+    heatPass.uniforms.uCenter.value.set(proj.x*0.5 + 0.5, proj.y*0.5 + 0.5);
+    const distToCam = camera.position.distanceTo(lifterGroup.position);
+    heatPass.uniforms.uAmount.value = clamp(plumeU.uThrottle.value * (1 - distToCam/400), 0, 1);
+  } else {
+    heatPass.uniforms.uAmount.value = 0;
+  }
+  fxPass.uniforms.uGrain.value = CFG.flags.grain ? 1.0 : 0.0;
+  bloomPass.enabled = CFG.flags.bloom;
+
+  // Depth prepass for soft particles, then composer
+  renderDepthPrepass();
+  composer.render();
+}
+requestAnimationFrame(animate);
+
+/* =========================================================
+   SECTION 19 — LOOP RESET
+========================================================= */
+function triggerReset(){
+  simTime = TL.start;
+  activePhaseIdx = 0;
+  spokenEvents.clear();
+  flight.altitude = 0; flight.velocity = 0; flight.downrange = 0;
+  flight.pitch = 0; flight.roll = 0; flight.separated = false;
+  lifterGroup.position.set(0, 0, 0);
+  lifterGroup.rotation.set(0, 0, 0);
+  for(let i=0;i<MAX_P;i++){ s_age[i] = s_life[i] + 1; s_size[i] = 0; }
+  smokeGeom.attributes.aAge.needsUpdate = true;
+  smokeGeom.attributes.aSize.needsUpdate = true;
+  curPhase = CAM_PHASES[0];
+  camDirector.cutFlag = true;
+}
+
+/* =========================================================
+   SECTION 20 — UI EVENT BINDINGS
+========================================================= */
+const overlay = document.getElementById('overlay');
+const startBtn = document.getElementById('startBtn');
+startBtn.addEventListener('click', async () => {
+  overlay.style.opacity = '0';
+  setTimeout(() => overlay.remove(), 700);
+  await audio.start();
+  started = true;
+  lastReal = performance.now()/1000;
+});
+
+document.addEventListener('keydown', (e) => {
+  if(e.code === 'KeyH'){
+    CFG.showDebug = !CFG.showDebug;
+    document.getElementById('debug').classList.toggle('open', CFG.showDebug);
+  }
+  if(e.code === 'Space'){ e.preventDefault(); CFG.paused = !CFG.paused; }
+  if(e.code === 'KeyR'){ triggerReset(); }
+});
+
+const tsSlider = document.getElementById('ts');
+const tsLbl = document.getElementById('tslbl');
+tsSlider.addEventListener('input', () => {
+  timeScale = parseFloat(tsSlider.value);
+  tsLbl.textContent = timeScale.toFixed(2) + '×';
+});
+const scrubSlider = document.getElementById('scrub');
+const scrubLbl = document.getElementById('scrubLbl');
+scrubSlider.addEventListener('input', () => {
+  simTime = parseFloat(scrubSlider.value);
+  // Clear future-spoken events when scrubbing backward
+  for(const tt of [...spokenEvents]){ if(tt > simTime) spokenEvents.delete(tt); }
+  camDirector.cutFlag = true;
+});
+document.getElementById('tg_bloom').addEventListener('change', e => CFG.flags.bloom = e.target.checked);
+document.getElementById('tg_heat').addEventListener('change', e => CFG.flags.heat = e.target.checked);
+document.getElementById('tg_plumelight').addEventListener('change', e => CFG.flags.plumeLight = e.target.checked);
+document.getElementById('tg_grain').addEventListener('change', e => CFG.flags.grain = e.target.checked);
+document.querySelectorAll('#debug button[data-q]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    CFG.quality = btn.dataset.q;
+    applyQuality();
+  });
+});
+document.getElementById('restartBtn').addEventListener('click', triggerReset);
+document.getElementById('audioToggle').addEventListener('click', () => {
+  audio.enabled = !audio.enabled;
+  if(audio.running){
+    audio.master.gain.setTargetAtTime(audio.enabled ? 0.7 : 0, audio.ctx.currentTime, 0.1);
+  }
+});
+
+// Live scrubber sync
+setInterval(() => {
+  if(document.activeElement !== scrubSlider){
+    scrubSlider.value = simTime;
+  }
+  scrubLbl.textContent = (simTime < 0 ? 'T−' : 'T+') + Math.abs(simTime).toFixed(1);
+}, 100);
+
+/* =========================================================
+   SECTION 21 — APPLY QUALITY + RESIZE
+========================================================= */
+function applyQuality(){
+  const qq = q();
+  renderer.setPixelRatio(Math.min(devicePixelRatio || 1, qq.dprMax));
+  renderer.setSize(innerWidth, innerHeight, false);
+  composer.setPixelRatio(Math.min(devicePixelRatio || 1, qq.dprMax));
+  composer.setSize(innerWidth, innerHeight);
+  bloomPass.setSize(innerWidth, innerHeight);
+  smokeMat.uniforms.uViewport.value.set(innerWidth, innerHeight);
+}
+applyQuality();
+
+function onResize(){
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight, false);
+  composer.setSize(innerWidth, innerHeight);
+  bloomPass.setSize(innerWidth, innerHeight);
+  smokeMat.uniforms.uViewport.value.set(innerWidth, innerHeight);
+  setupDepthRT();
+}
+window.addEventListener('resize', onResize);
+</script>
+</body>
+</html>
+```
+
+A few notes on the engineering choices worth surfacing:
+
+**Why the depth prepass at quarter-res:** Soft particles need to compare their depth against the opaque scene to fade where they graze surfaces. Doing this naively (binding the composer's own depth texture while still rendering into it) risks a feedback hazard on some drivers. A separate quarter-resolution depth-only target is essentially free on a mid-range GPU and gives clean occlusion semantics — `if (linFrag > linScene) soft = 0` for occluded, else `smoothstep(0, 3m, dz)` for the graze zone.
+
+**Why additive blending on the plume layers:** Fire radiates light, not reflects it. Additive accumulation of the core + sheath gives the overdriven blowout near the nozzle that bloom then pushes into a believable glare. The shock diamonds are a `pow(sin(...), 6)` axial modulation gated by `(1 - expansion)` so they vanish as the plume bell widens with altitude — physically motivated by underexpanded flow regimes.
+
+**Why the camera uses exponential smoothing with hard cuts:** Broadcast cameras don't lerp between setups — they cut. Within a setup, the operator has neuromuscular lag (~τ=350ms here) plus micro-shake. The `cutFlag` snaps instantly on phase change, then smoothing resumes. FOV changes are also smoothed so a zoom feels like a human operating a lens, not a tween.
+
+**Why ACES + bloom threshold 0.92:** ACES preserves highlight rolloff so the white vehicle holds detail while the plume core (multiplied by 4.5 in-shader) sails past 1.0 and gets picked off by bloom. Threshold 0.92 keeps the white painted body from blooming while letting the plume and separation flash through.
+
+Open the file directly in any modern browser. Click INITIATE COUNTDOWN to begin audio + timeline. Press H for the debug panel (time-scale slider, scrubber, effect toggles, quality presets). The sequence loops seamlessly at T+162s.
