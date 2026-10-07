@@ -1,0 +1,40 @@
+#!/usr/bin/env node
+
+'use strict';
+
+const fs = require('node:fs');
+
+function countLines(content) {
+  if (content === '') return 0;
+  // Treat a trailing newline as terminating the last line,
+  // while a missing trailing newline still leaves a final line.
+  const normalized = content.endsWith('\n') ? content.slice(0, -1) : content;
+  return normalized.split('\n').length;
+}
+
+function main() {
+  const args = process.argv.slice(2);
+
+  if (args.length === 0) {
+    console.error('usage: count-lines <file...>');
+    process.exit(2);
+  }
+
+  let failed = false;
+
+  for (const filePath of args) {
+    try {
+      const content = fs.readFileSync(filePath, 'utf8');
+      console.log(String(countLines(content)) + '\t' + filePath);
+    } catch {
+      console.error('error: ' + filePath);
+      failed = true;
+    }
+  }
+
+  if (failed) {
+    process.exitCode = 1;
+  }
+}
+
+main();
