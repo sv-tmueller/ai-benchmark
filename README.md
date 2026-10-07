@@ -34,13 +34,13 @@ what it delivers, what it needs at runtime, and which harness-only features
 | `game-horror-house.toml` | Multi-file project (Vite + Three.js) | Node + npm, dev server / build | None |
 | `game-last-flight.toml` | Multi-file project (Vite + TypeScript + Three.js) | Node 20+ and npm; Vitest for tests | None |
 | `game-cities-skylines.toml` | Multi-file project (Vite, one folder per subsystem) | Node + Vite; multi-agent orchestration; optional internet for CC0 assets | None |
-| `game-mario-kart.toml` | Web game (structure unspecified) | Model-specific — launches five "Fable 5.1" sub-agents | None |
+| `game-mario-kart.toml` | Web game (Mario Kart clone) | Three.js (3JS), no questions asked | None |
 
 ### Apps
 
 | Prompt | Deliverable | Runtime needs | Harness features |
 |---|---|---|---|
-| `app-stillwater.toml` | Multi-file monorepo (Expo/RN mobile app + NestJS API + Postgres) | pnpm + Turborepo, Docker Compose, OpenAI Realtime API (WebRTC), physical phone or emulator | None |
+| `app-stillwater.toml` | Multi-file monorepo (Expo/RN mobile app + NestJS API + Postgres) | pnpm + Turborepo, Docker Compose, any realtime voice-model API (WebRTC), physical phone or emulator | None |
 
 ### Domain probes
 

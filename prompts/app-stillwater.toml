@@ -32,8 +32,8 @@ Core loop: **open → sign in → start session → speak and listen in real tim
 end session → summary saved → history builds over time.**
 
 Priority order (non-negotiable):
-1. **THE CONVERSATION WORKS** — real, low-latency voice in and out via the
-   OpenAI Realtime API, on a physical phone
+1. **THE CONVERSATION WORKS** — real, low-latency voice in and out via a
+   realtime voice model API of your choice, on a physical phone
 2. **SAFETY** — a crisis path that does not depend on the model behaving
 3. **PERSISTENCE** — sessions, transcripts and summaries in Postgres
 4. **POLISH** — a calm, considered UI built with NativeWind
@@ -74,10 +74,10 @@ stillwater/
   listening, pulses with the therapist's voice level while speaking, and
   goes still when muted. Live captions of both sides under the orb. A single
   large end-session control. No chat bubbles, no keyboard — this is voice.
-- Realtime audio via **WebRTC** (`react-native-webrtc`) to the OpenAI
-  Realtime API using a **short-lived ephemeral client secret** minted by the
-  API. The OpenAI API key never ships in the app bundle, never appears in
-  logs, never crosses to the client.
+- Realtime audio via **WebRTC** (`react-native-webrtc`) to the chosen
+  realtime voice API using a **short-lived ephemeral credential** minted by
+  the API. The voice-provider API key never ships in the app bundle, never
+  appears in logs, never crosses to the client.
 - Handles the real world: microphone permission denied, no network, token
   expiry mid-session (silent refresh), the app backgrounding (pause, then
   resume or end gracefully), and a dropped connection (clear state + retry).
@@ -86,13 +86,13 @@ stillwater/
 - **NestJS 10**, TypeScript, modules: `auth`, `users`, `sessions`,
   `realtime`, `safety`, `health`. Global validation via zod pipes using
   schemas from `packages/shared`.
-- `POST /realtime/token` — authenticated; mints an ephemeral Realtime client
-  secret with the therapist system instructions, chosen voice, turn-detection
+- `POST /realtime/token` — authenticated; mints an ephemeral credential with
+  the therapist system instructions, chosen voice, turn-detection
   settings and the user's memory context baked in server-side. This is the
   one place the model's persona is defined.
 - `POST /sessions`, `PATCH /sessions/:id`, `GET /sessions`,
   `GET /sessions/:id` — create on start; the client streams finalised
-  transcript turns to `POST /sessions/:id/turns` as the Realtime API emits
+  transcript turns to `POST /sessions/:id/turns` as the voice API emits
   them; on end, the API generates a **summary, 3–5 themes, and a mood
   estimate** with a standard chat completion and stores them.
 - **Memory:** before each session, the API builds a compact context from the
@@ -144,8 +144,9 @@ This is the part a careless build gets wrong. Required:
 - pnpm workspaces + Turborepo · TypeScript strict everywhere
 - Expo (React Native) + expo-router + NativeWind v4 + react-native-webrtc
 - NestJS 10 + zod · Prisma + PostgreSQL 16 (docker-compose for local)
-- OpenAI Realtime API (WebRTC transport, ephemeral client secrets) for the
-  conversation; a standard chat completion for post-session summaries
+- A realtime voice model API of your choice (WebRTC transport, ephemeral
+  credentials) for the conversation; a standard chat completion from the
+  same or any provider for post-session summaries
 - Vitest for unit tests (API + shared), one Playwright/Detox-free smoke path
   documented for the phone
 - No Firebase, no Supabase, no Expo Go for the session screen (WebRTC needs a
@@ -178,8 +179,9 @@ This is the part a careless build gets wrong. Required:
 - T7 Saying a crisis phrase triggers the 988 card and records a
      `SafetyEvent`; the persona audibly shifts; the card cannot be swiped away
      unacknowledged
-- T8 The OpenAI API key is absent from the app bundle, network traces and
-     logs; the ephemeral secret expires and is refreshed without a dropped call
+- T8 The voice-provider API key is absent from the app bundle, network traces
+     and logs; the ephemeral credential expires and is refreshed without a
+     dropped call
 - T9 Kill the network mid-session → clear state, no crash, session marked
      `interrupted`, resumable or endable
 - T10 "Delete my data" removes the user, sessions, turns, notes and events;
