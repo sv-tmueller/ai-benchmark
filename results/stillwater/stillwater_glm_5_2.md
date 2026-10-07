@@ -1,0 +1,1301 @@
+// package.json
+{
+  "name": "stillwater",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "db:migrate": "pnpm --filter @stillwater/db migrate",
+    "db:seed": "pnpm --filter @stillwater/db seed",
+    "mobile:ios": "pnpm --filter mobile ios",
+    "mobile:android": "pnpm --filter mobile android"
+  },
+  "devDependencies": {
+    "turbo": "^2.0.0",
+    "typescript": "^5.4.0"
+  },
+  "packageManager": "pnpm@9.0.0"
+}
+```
+
+```yaml
+# pnpm-workspace.yaml
+packages:
+  - 'apps/*'
+  - 'packages/*'
+```
+
+```json
+// turbo.json
+{
+  "$schema": "https://turbo.build/schema.json",
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**", ".next/**", "!.next/cache/**"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "lint": {},
+    "typecheck": {},
+    "test": {}
+  }
+}
+```
+
+```yaml
+# docker-compose.yml
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: stillwater-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: stillwater
+      POSTGRES_PASSWORD: stillwater_dev
+      POSTGRES_DB: stillwater_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - stillwater_data:/var/lib/postgresql/data
+volumes:
+  stillwater_data:
+```
+
+```bash
+# .env.example
+# Database
+DATABASE_URL="postgresql://stillwater:stillwater_dev@localhost:5432/stillwater_dev"
+
+# Auth
+JWT_ACCESS_SECRET="replace_with_super_secret_access_string"
+JWT_REFRESH_SECRET="replace_with_super_secret_refresh_string"
+ARGON2_SALT_ROUNDS=12
+
+# Data Encryption (AES-256-GCM)
+DATA_ENCRYPTION_KEY="replace_with_64_char_hex_string_for_aes_256_gcm"
+
+# Voice Provider (e.g., OpenAI Realtime API)
+VOICE_PROVIDER_API_KEY="replace_with_real_api_key"
+VOICE_MODEL="gpt-4o-realtime-preview"
+VOICE_THERAPIST_VOICE="alloy"
+
+# Chat Provider (for summaries)
+CHAT_PROVIDER_API_KEY="replace_with_real_api_key"
+CHAT_MODEL="gpt-4o-mini"
+
+# API
+PORT=3000
+CORS_ORIGIN="http://localhost:8081"
+```
+
+```markdown
+<!-- README.md -->
+# Stillwater
+
+A voice-first AI therapy companion. 
+
+## Quickstart
+
+1. Install dependencies:
+   ```bash
+   pnpm install
+   ```
+2. Set up environment variables:
+   ```bash
+   cp .env.example .env
+   # Fill in the required keys in .env
+   ```
+3. Start the database:
+   ```bash
+   docker compose up -d
+   ```
+4. Run migrations and seed the database:
+   ```bash
+   pnpm db:migrate
+   pnpm db:seed
+   ```
+5. Start the development servers (API + Mobile):
+   ```bash
+   pnpm dev
+   ```
+
+## Running on a Physical Device
+
+Because the session screen uses WebRTC, Expo Go is not supported. You must build a dev client.
+
+For iOS:
+```bash
+pnpm mobile:ios
+```
+
+For Android:
+```bash
+pnpm mobile:android
+```
+```
+
+```json
+// packages/config/package.json
+{
+  "name": "@stillwater/config",
+  "version": "0.0.0",
+  "private": true,
+  "files": [
+    "tsconfig.base.json"
+  ]
+}
+```
+
+```json
+// packages/config/tsconfig.base.json
+{
+  "compilerOptions": {
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "jsx": "react-jsx",
+    "moduleResolution": "node",
+    "resolveJsonModule": true,
+    "declaration": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
+  }
+}
+```
+
+```json
+// packages/shared/package.json
+{
+  "name": "@stillwater/shared",
+  "version": "0.0.0",
+  "private": true,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "dependencies": {
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}
+```
+
+```typescript
+// packages/shared/src/index.ts
+export * from './schemas/user.schema';
+export * from './schemas/session.schema';
+
+import { z } from 'zod';
+
+export const SignInSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(8),
+});
+
+export const SignUpSchema = SignInSchema.extend({
+  name: z.string().min(2).optional(),
+  dob: z.string(), // ISO string, validated server side for >18
+});
+
+export const CreateSessionSchema = z.object({});
+
+export const UpdateSessionSchema = z.object({
+  status: z.enum(['active', 'completed', 'interrupted']).optional(),
+});
+
+export const CreateTurnSchema = z.object({
+  role: z.enum(['user', 'assistant']),
+  text: z.string(),
+  startedAtMs: z.number()
+});
+```
+
+*(Correction: Splitting schemas properly for clarity)*
+
+```typescript
+// packages/shared/src/schemas/user.schema.ts
+import { z } from 'zod';
+
+export const SignInSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(8),
+});
+
+export const SignUpSchema = SignInSchema.extend({
+  name: z.string().min(2).optional(),
+  dob: z.string().datetime(),
+});
+
+export type SignInDto = z.infer<typeof SignInSchema>;
+export type SignUpDto = z.infer<typeof SignUpSchema>;
+```
+
+```typescript
+// packages/shared/src/schemas/session.schema.ts
+import { z } from 'zod';
+
+export const CreateSessionSchema = z.object({});
+export type CreateSessionDto = z.infer<typeof CreateSessionSchema>;
+
+export const UpdateSessionSchema = z.object({
+  status: z.enum(['active', 'completed', 'interrupted']).optional(),
+});
+export type UpdateSessionDto = z.infer<typeof UpdateSessionSchema>;
+
+export const CreateTurnSchema = z.object({
+  role: z.enum(['user', 'assistant']),
+  text: z.string(),
+  startedAtMs: z.number()
+});
+export type CreateTurnDto = z.infer<typeof CreateTurnSchema>;
+```
+
+```json
+// packages/db/package.json
+{
+  "name": "@stillwater/db",
+  "version": "0.0.0",
+  "private": true,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "migrate": "prisma migrate dev --name init",
+    "generate": "prisma generate",
+    "seed": "tsx prisma/seed.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.14.0"
+  },
+  "devDependencies": {
+    "prisma": "^5.14.0",
+    "tsx": "^4.9.0"
+  }
+}
+```
+
+```prisma
+// packages/db/prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String         @id @default(uuid())
+  email         String         @unique
+  passwordHash  String
+  name          String?
+  dob           DateTime
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  deletedAt     DateTime?
+
+  refreshTokens RefreshToken[]
+  sessions      Session[]
+  memoryNotes   MemoryNote[]
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  revoked   Boolean  @default(false)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Session {
+  id          String   @id @default(uuid())
+  userId      String
+  startedAt   DateTime @default(now())
+  endedAt     DateTime?
+  durationSec Int      @default(0)
+  
+  // Encrypted at rest
+  summary     String?
+  themes      String[] @default([])
+  mood        String?
+  
+  status      Status   @default(ACTIVE)
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  turns       Turn[]
+  safetyEvents SafetyEvent[]
+
+  @@enum(Status) {
+    ACTIVE
+    COMPLETED
+    INTERRUPTED
+  }
+}
+
+model Turn {
+  id          String @id @default(uuid())
+  sessionId   String
+  role        Role
+  
+  // Encrypted at rest with AES-256-GCM
+  text        String 
+  
+  startedAtMs BigInt
+  createdAt   DateTime @default(now())
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@enum(Role) {
+    USER
+    ASSISTANT
+  }
+}
+
+model MemoryNote {
+  id        String   @id @default(uuid())
+  userId    String
+  content   String
+  source    String   @default("manual") // manual | auto_summary
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model SafetyEvent {
+  id          String   @id @default(uuid())
+  sessionId   String
+  trigger     String
+  actionTaken String
+  createdAt   DateTime @default(now())
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+}
+```
+
+```typescript
+// packages/db/src/index.ts
+export { PrismaClient } from '@prisma/client';
+```
+
+```typescript
+// packages/db/prisma/seed.ts
+import { PrismaClient } from '../src/generated/client'; // Assuming standard prisma output or direct import
+import bcrypt from 'bcryptjs';
+
+const prisma = new PrismaClient();
+
+async function main() {
+  const passwordHash = await bcrypt.hash('Password123!', 12);
+  
+  const user = await prisma.user.upsert({
+    where: { email: 'demo@stillwater.app' },
+    update: {},
+    create: {
+      email: 'demo@stillwater.app',
+      passwordHash,
+      name: 'Demo User',
+      dob: new Date('1990-01-01'),
+    },
+  });
+
+  console.log(`Seeded user: ${user.email}`);
+
+  // Add some mock sessions
+  const session1 = await prisma.session.create({
+    data: {
+      userId: user.id,
+      status: 'COMPLETED',
+      startedAt: new Date(Date.now() - 86400000 * 2), // 2 days ago
+      endedAt: new Date(Date.now() - 86400000 * 2 + 600000),
+      durationSec: 600,
+      summary: "EncryptedSummaryPlaceholder1", 
+      themes: ["Work stress", "Sleep issues"],
+      mood: "Anxious",
+      turns: {
+        create: [
+          { role: 'USER', text: 'EncryptedTurn1', startedAtMs: BigInt(Date.now()) },
+          { role: 'ASSISTANT', text: 'EncryptedTurn2', startedAtMs: BigInt(Date.now() + 5000) }
+        ]
+      }
+    }
+  });
+  
+  console.log(`Seeded session: ${session1.id}`);
+}
+
+main()
+  .catch((e) => {
+    console.error(e);
+    process.exit(1);
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
+  });
+```
+
+```json
+// apps/api/package.json
+{
+  "name": "@stillwater/api",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "nest start --watch",
+    "build": "nest build",
+    "start": "node dist/main",
+    "lint": "eslint \"src/**/*.ts\" --fix",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@nestjs/common": "^10.3.0",
+    "@nestjs/core": "^10.3.0",
+    "@nestjs/platform-express": "^10.3.0",
+    "@nestjs/jwt": "^10.2.0",
+    "@nestjs/passport": "^10.0.3",
+    "@nestjs/throttler": "^5.1.2",
+    "@prisma/client": "^5.14.0",
+    "@stillwater/db": "workspace:*",
+    "@stillwater/shared": "workspace:*",
+    "argon2": "^0.40.1",
+    "passport-jwt": "^4.0.1",
+    "reflect-metadata": "^0.2.1",
+    "rxjs": "^7.8.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^10.3.0",
+    "@nestjs/testing": "^10.3.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  }
+}
+```
+
+```json
+// apps/api/nest-cli.json
+{
+  "$schema": "https://json.schemastore.org/nest-cli",
+  "collection": "@nestjs/schematics",
+  "sourceRoot": "src",
+  "compilerOptions": {
+    "deleteOutDir": true
+  }
+}
+```
+
+```json
+// apps/api/tsconfig.json
+{
+  "extends": "../../packages/config/tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "baseUrl": "./",
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "target": "ES2021"
+  },
+  "include": ["src/**/*"]
+}
+```
+
+```typescript
+// apps/api/src/main.ts
+import { NestFactory } from '@nestjs/core';
+import { ValidationPipe } from '@nestjs/common';
+import AppModule from './app.module';
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+  app.useGlobalPipes(new ValidationPipe());
+  app.enableCors({
+    origin: process.env.CORS_ORIGIN || '*',
+  });
+  await app.listen(process.env.PORT || 3000);
+}
+bootstrap();
+```
+
+```typescript
+// apps/api/src/app.module.ts
+import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { PrismaModule } from './prisma/prisma.module';
+import { HealthModule } from './health/health.module';
+import { AuthModule } from './auth/auth.module';
+import { SessionsModule } from './sessions/sessions.module';
+import { RealtimeModule } from './realtime/realtime.module';
+import { SafetyModule } from './safety/safety.module';
+
+@Module({
+  imports: [
+    ThrottlerModule.forRoot([{ ttl: 60000, limit: 60 }]),
+    PrismaModule,
+    HealthModule,
+    AuthModule,
+    SessionsModule,
+    RealtimeModule,
+    SafetyModule,
+  ],
+  providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
+})
+export default class AppModule {}
+```
+
+```typescript
+// apps/api/src/prisma/prisma.module.ts
+import { Module } from '@nestjs/common';
+import { PrismaService } from './prisma.service';
+
+@Module({
+  providers: [PrismaService],
+  exports: [PrismaService],
+})
+export class PrismaModule {}
+```
+
+```typescript
+// apps/api/src/prisma/prisma.service.ts
+import { Injectable, OnModuleInit } from '@nestjs/common';
+import { PrismaClient } from '@prisma/client';
+
+@Injectable()
+export class PrismaService extends PrismaClient implements OnModuleInit {
+  async onModuleInit() {
+    await this.$connect();
+  }
+}
+```
+
+```typescript
+// apps/api/src/health/health.module.ts
+import { Module } from '@nestjs/common';
+import { HealthController } from './health.controller';
+
+@Module({
+  controllers: [HealthController],
+})
+export class HealthModule {}
+```
+
+```typescript
+// apps/api/src/health/health.controller.ts
+import { Controller, Get } from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service';
+
+@Controller('health')
+export class HealthController {
+  constructor(private readonly prisma: PrismaService) {}
+
+  @Get()
+  async check() {
+    try {
+      await this.prisma.$queryRaw`SELECT 1`;
+      return { status: 'ok', db: 'connected' };
+    } catch (e) {
+      return { status: 'error', db: 'disconnected' };
+    }
+  }
+}
+```
+
+```typescript
+// apps/api/src/common/crypto.util.ts
+import crypto from 'crypto';
+
+const ALGORITHM = 'aes-256-gcm';
+const KEY = Buffer.from(process.env.DATA_ENCRYPTION_KEY!, 'hex');
+
+export function encrypt(text: string): string {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv(ALGORITHM, KEY, iv);
+  let encrypted = cipher.update(text, 'utf8', 'base64');
+  encrypted += cipher.final('base64');
+  const authTag = cipher.getAuthTag().toString('base64');
+  return `${iv.toString('base64')}:${authTag}:${encrypted}`;
+}
+
+export function decrypt(encryptedString: string): string {
+  const [ivStr, authTagStr, encrypted] = encryptedString.split(':');
+  const iv = Buffer.from(ivStr, 'base64');
+  const authTag = Buffer.from(authTagStr, 'base64');
+  const decipher = crypto.createDecipheriv(ALGORITHM, KEY, iv);
+  decipher.setAuthTag(Buffer.from(authTag));
+  let decrypted = decipher.update(encrypted, 'base64', 'utf8');
+  decrypted += decipher.final('utf8');
+  return decrypted;
+}
+```
+
+```typescript
+// apps/api/src/auth/auth.module.ts
+import { Module } from '@nestjs/common';
+import { JwtModule } from '@nestjs/jwt';
+import { AuthService } from './auth.service';
+import { AuthController } from './auth.controller';
+
+@Module({
+  imports: [
+    JwtModule.register({
+      secret: process.env.JWT_ACCESS_SECRET,
+      signOptions: { expiresIn: '15m' },
+    }),
+  ],
+  controllers: [AuthController],
+  providers: [AuthService],
+  exports: [AuthService],
+})
+export class AuthModule {}
+```
+
+```typescript
+// apps/api/src/auth/auth.controller.ts
+import { Body, Controller, Post } from '@nestjs/common';
+import { AuthService } from './auth.service';
+import { SignInSchema, SignUpSchema } from '@stillwater/shared';
+
+@Controller('auth')
+export class AuthController {
+  constructor(private readonly authService: AuthService) {}
+
+  @Post('signup')
+  signup(@Body() body: unknown) {
+    const dto = SignUpSchema.parse(body);
+    return this.authService.signup(dto);
+  }
+
+  @Post('signin')
+  signin(@Body() body: unknown) {
+    const dto = SignInSchema.parse(body);
+    return this.authService.signin(dto);
+  }
+}
+```
+
+```typescript
+// apps/api/src/auth/auth.service.ts
+import { Injectable, UnauthorizedException, BadRequestException } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
+import { PrismaService } from '../prisma/prisma.service';
+import argon2 from 'argon2';
+import { SignInDto, SignUpDto } from '@stillwater/shared';
+
+@Injectable()
+export class AuthService {
+  constructor(
+    private prisma: PrismaService,
+    private jwt: JwtService,
+  ) {}
+
+  async signup(dto: SignUpDto) {
+    const dob = new Date(dto.dob);
+    const ageDiff = Date.now() - dob.getTime();
+    const ageDate = new Date(ageDiff);
+    const age = Math.abs(ageDate.getUTCFullYear() - 1970);
+
+    if (age < 18) throw new BadRequestException('Must be 18 or older.');
+
+    const hash = await argon2.hash(dto.password);
+    
+    const user = await this.prisma.user.create({
+      data: {
+        email: dto.email,
+        passwordHash: hash,
+        name: dto.name,
+        dob,
+      },
+    });
+
+    return this.generateTokens(user.id);
+  }
+
+  async signin(dto: SignInDto) {
+    const user = await this.prisma.user.findUnique({ where: { email: dto.email } });
+    if (!user) throw new UnauthorizedException();
+
+    const valid = await argon2.verify(user.passwordHash, dto.password);
+    if (!valid) throw new UnauthorizedException();
+
+    return this.generateTokens(user.id);
+  }
+
+  private async generateTokens(userId: string) {
+    const accessToken = await this.jwt.sign({ sub: userId });
+    const refreshToken = await this.jwt.sign({ sub: userId }, { secret: process.env.JWT_REFRESH_SECRET, expiresIn: '7d' });
+    
+    await this.prisma.refreshToken.create({
+      data: {
+        userId,
+        token: refreshToken,
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      }
+    });
+
+    return { accessToken, refreshToken };
+  }
+}
+```
+
+```typescript
+// apps/api/src/sessions/sessions.module.ts
+import { Module } from '@nestjs/common';
+import { SessionsController } from './sessions.controller';
+import { SessionsService } from './sessions.service';
+
+@Module({
+  controllers: [SessionsController],
+  providers: [SessionsService],
+})
+export class SessionsModule {}
+```
+
+```typescript
+// apps/api/src/sessions/sessions.service.ts
+import { Injectable } from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service';
+import { encrypt, decrypt } from '../common/crypto.util';
+
+@Injectable()
+export class SessionsService {
+  constructor(private prisma: PrismaService) {}
+
+  async createSession(userId: string) {
+    return this.prisma.session.create({
+      data: { userId, status: 'ACTIVE' }
+    });
+  }
+
+  async addTurn(sessionId: string, role: string, text: string, startedAtMs: number) {
+    const encText = encrypt(text);
+    return this.prisma.turn.create({
+      data: { sessionId, role: role.toUpperCase() as any, text: encText, startedAtMs: BigInt(startedAtMs) }
+    });
+  }
+
+  async completeSession(sessionId: string) {
+    const session = await this.prisma.session.update({
+      where: { id: sessionId },
+      data: { status: 'COMPLETED', endedAt: new Date() },
+      include: { turns: true }
+    });
+
+    // Mock LLM Call for Summary
+    const summary = "Mock summary of session.";
+    const themes = ["Theme 1", "Theme 2"];
+    const mood = "Reflective";
+
+    const updated = await this.prisma.session.update({
+      where: { id: sessionId },
+      data: {
+        summary: encrypt(summary),
+        themes,
+        mood,
+        durationSec: Math.floor((session.endedAt!.getTime() - session.startedAt.getTime()) / 1000)
+      }
+    });
+
+    return updated;
+  }
+
+  async getHistory(userId: string) {
+    const sessions = await this.prisma.session.findMany({
+      where: { userId, status: 'COMPLETED' },
+      orderBy: { startedAt: 'desc' }
+    });
+    
+    return sessions.map(s => ({
+      ...s,
+      summary: s.summary ? decrypt(s.summary) : null
+    }));
+  }
+}
+```
+
+```typescript
+// apps/api/src/sessions/sessions.controller.ts
+import { Body, Controller, Get, Param, Patch, Post, Req } from '@nestjs/common';
+import { SessionsService } from './sessions.service';
+import { CreateTurnSchema } from '@stillwater/shared';
+import { SafetyService } from '../safety/safety.service';
+
+@Controller('sessions')
+export class SessionsController {
+  constructor(
+    private sessionsService: SessionsService,
+    private safetyService: SafetyService
+  ) {}
+
+  @Post()
+  create(@Req() req: any) {
+    return this.sessionsService.createSession(req.user.sub);
+  }
+
+  @Post(':id/turns')
+  async addTurn(@Param('id') id: string, @Body() body: unknown) {
+    const dto = CreateTurnSchema.parse(body);
+    
+    // Deterministic safety check
+    if (dto.role === 'user') {
+      await this.safetyService.checkAndFlag(id, dto.text);
+    }
+
+    return this.sessionsService.addTurn(id, dto.role, dto.text, dto.startedAtMs);
+  }
+
+  @Patch(':id/end')
+  end(@Param('id') id: string) {
+    return this.sessionsService.completeSession(id);
+  }
+
+  @Get()
+  findAll(@Req() req: any) {
+    return this.sessionsService.getHistory(req.user.sub);
+  }
+}
+```
+
+```typescript
+// apps/api/src/safety/safety.module.ts
+import { Module } from '@nestjs/common';
+import { SafetyService } from './safety.service';
+
+@Module({
+  providers: [SafetyService],
+  exports: [SafetyService]
+})
+export class SafetyModule {}
+```
+
+```typescript
+// apps/api/src/safety/safety.service.ts
+import { Injectable, Logger } from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service';
+
+@Injectable()
+export class SafetyService {
+  private readonly logger = new Logger(SafetyService.name);
+  private readonly crisisKeywords = [
+    /\bsuicide\b/i, /\bsuicidal\b/i, /\bkill myself\b/i, 
+    /\bhurt myself\b/i, /\bend my life\b/i, /\bdie tonight\b/i
+  ];
+
+  constructor(private prisma: PrismaService) {}
+
+  async checkAndFlag(sessionId: string, text: string) {
+    const triggered = this.crisisKeywords.some(regex => regex.test(text));
+
+    if (triggered) {
+      this.logger.warn(`CRISIS TRIGGER DETECTED IN SESSION ${sessionId}`);
+      
+      await this.prisma.safetyEvent.create({
+        data: {
+          sessionId,
+          trigger: text.substring(0, 50) + "...",
+          actionTaken: "988 Card Displayed"
+        }
+      });
+
+      // In a real impl, we'd send a websocket event to the client here
+      // or flag the realtime session to alter its behavior.
+      return true;
+    }
+    return false;
+  }
+}
+```
+
+```typescript
+// apps/api/src/realtime/realtime.module.ts
+import { Module } from '@nestjs/common';
+import { RealtimeController } from './realtime.controller';
+import { RealtimeService } from './realtime.service';
+
+@Module({
+  controllers: [RealtimeController],
+  providers: [RealtimeService],
+})
+export class RealtimeModule {}
+```
+
+```typescript
+// apps/api/src/realtime/realtime.service.ts
+import { Injectable } from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service';
+
+@Injectable()
+export class RealtimeService {
+  constructor(private prisma: PrismaService) {}
+
+  async mintEphemeralKey(userId: string, sessionId: string) {
+    // 1. Fetch user memory context
+    const memories = await this.prisma.memoryNote.findMany({ where: { userId } });
+    const recentSessions = await this.prisma.session.findMany({
+      where: { userId, status: 'COMPLETED' },
+      take: 3,
+      orderBy: { startedAt: 'desc' }
+    });
+
+    // 2. Build System Instructions
+    const instructions = `
+      You are Stillwater, a supportive AI companion. You are not a licensed therapist.
+      Never diagnose. Never discuss medication dosages.
+      If the user mentions self-harm or suicide, encourage them to reach out to 988.
+      Keep responses brief and conversational.
+      Context: ${JSON.stringify(memories)} \n Recent Summaries: ${JSON.stringify(recentSessions)}
+    `;
+
+    // 3. Mint ephemeral token from Voice Provider (OpenAI Realtime API example)
+    // We bypass actual HTTP call for scaffolding, returning mock structure
+    const mockEphemeralKey = "ek_live_mock_" + Math.random().toString(36).substring(7);
+
+    return {
+      clientSecret: mockEphemeralKey,
+      instructions,
+      voice: process.env.VOICE_THERAPIST_VOICE || "alloy",
+      model: process.env.VOICE_MODEL || "gpt-4o-realtime-preview"
+    };
+  }
+}
+```
+
+```typescript
+// apps/api/src/realtime/realtime.controller.ts
+import { Controller, Post, Req } from '@nestjs/common';
+import { RealtimeService } from './realtime.service';
+
+@Controller('realtime')
+export class RealtimeController {
+  constructor(private realtimeService: RealtimeService) {}
+
+  @Post('token')
+  mintToken(@Req() req: any, @Body('sessionId') sessionId: string) {
+    return this.realtimeService.mintEphemeralKey(req.user.sub, sessionId);
+  }
+}
+```
+
+```json
+// apps/mobile/package.json
+{
+  "name": "@stillwater/mobile",
+  "version": "0.0.0",
+  "private": true,
+  "main": "index.ts",
+  "scripts": {
+    "dev": "expo start --dev-client",
+    "ios": "expo run:ios",
+    "android": "expo run:android",
+    "lint": "eslint . --fix",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@react-navigation/native": "^6.1.17",
+    "expo": "~51.0.0",
+    "expo-dev-client": "~4.0.0",
+    "expo-router": "~3.5.0",
+    "expo-status-bar": "~1.12.1",
+    "nativewind": "^4.0.21",
+    "phosphor-react-native": "^2.0.0",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "react-native": "0.74.0",
+    "react-native-reanimated": "~3.10.0",
+    "react-native-safe-area-context": "4.10.1",
+    "react-native-screens": "3.31.1",
+    "react-native-webrtc": "^118.0.0",
+    "zustand": "^4.5.2"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.20.0",
+    "@types/react": "~18.2.45",
+    "tailwindcss": "^3.4.0",
+    "typescript": "^5.4.0"
+  }
+}
+```
+
+```javascript
+// apps/mobile/babel.config.js
+module.exports = function(api) {
+  api.cache(true);
+  return {
+    presets: ['babel-preset-expo'],
+    plugins: ['nativewind/babel', 'react-native-reanimated/plugin'],
+  };
+};
+```
+
+```javascript
+// apps/mobile/metro.config.js
+const { getDefaultConfig } = require('expo/metro-config');
+const { withNativeWind } = require('nativewind/metro');
+
+const config = getDefaultConfig(__dirname);
+
+module.exports = withNativeWind(config, { input: './global.css' });
+```
+
+```javascript
+// apps/mobile/tailwind.config.js
+module.exports = {
+  content: ['./app/**/*.{ts,tsx}', './components/**/*.{ts,tsx}'],
+  theme: {
+    extend: {
+      colors: {
+        primary: '#0f172a',
+        accent: '#38bdf8',
+        danger: '#ef4444'
+      }
+    },
+  },
+  plugins: [],
+};
+```
+
+```css
+/* apps/mobile/global.css */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+```
+
+```typescript
+// apps/mobile/app.config.ts
+import { ExpoConfig, ConfigContext } from 'expo/config';
+
+export default ({ config }: ConfigContext): ExpoConfig => ({
+  ...config,
+  name: 'Stillwater',
+  slug: 'stillwater',
+  version: '1.0.0',
+  scheme: 'stillwater',
+  plugins: [
+    [
+      'expo-build-properties',
+      {
+        ios: {
+          deploymentTarget: '15.1',
+        },
+        android: {
+          minSdkVersion: 26,
+        },
+      },
+    ],
+  ],
+  permissions: ['microphone'],
+});
+```
+
+```typescript
+// apps/mobile/App.tsx
+import 'expo-router/entry';
+import './global.css';
+```
+
+```typescript
+// apps/mobile/app/_layout.tsx
+import { Stack } from 'expo-router';
+import { SafeAreaView } from 'react-native-safe-area-context';
+
+export default function Layout() {
+  return (
+    <SafeAreaView className="flex-1 bg-primary">
+      <Stack screenOptions={{ headerShown: false }} />
+    </SafeAreaView>
+  );
+}
+```
+
+```typescript
+// apps/mobile/app/index.tsx
+import { Link } from 'expo-router';
+import { View, Text, Pressable } from 'react-native';
+
+export default function HomeScreen() {
+  return (
+    <View className="flex-1 items-center justify-center gap-4 px-6">
+      <Text className="text-white text-3xl font-bold">Welcome to Stillwater</Text>
+      <Link href="/session" asChild>
+        <Pressable className="bg-accent rounded-full w-32 h-32 flex items-center justify-center absolute bottom-10">
+          {/* Placeholder for BreathingOrb */}
+          <Text className="text-black font-semibold">Tap to talk</Text>
+        </Pressable>
+      </Link>
+    </View>
+  );
+}
+```
+
+```typescript
+// apps/mobile/app/session.tsx
+import React, { useState, useEffect } from 'react';
+import { View, Text, ActivityIndicator } from 'react-native';
+import { useRouter } from 'expo-router';
+import useRealtimeVoice from '../hooks/useRealtimeVoice';
+import BreathingOrb from '../components/BreathingOrb';
+import SafetyOverlay from '../components/SafetyOverlay';
+
+export default function SessionScreen() {
+  const router = useRouter();
+  const { isConnected, captions, showSafetyCard, toggleMute, endCall } = useRealtimeVoice();
+  
+  useEffect(() => {
+    if(!isConnected) {
+      // Simulate ending after 10 seconds for scaffold purposes
+      // setTimeout(() => router.push('/summary'), 10000);
+    }
+  }, []);
+
+  return (
+    <View className="flex-1 items-center justify-between py-10 bg-primary">
+      <View className="mt-10">
+        <Text className="text-gray-400 uppercase tracking-wider">{isConnected ? 'Listening...' : 'Connecting...'}</Text>
+      </View>
+
+      <BreathingOrb isActive={isConnected} />
+
+      <View className="w-full px-6 mb-10 space-y-2">
+        {captions.slice(-3).map(c => (
+          <Text key={c.id} className={`text-lg ${c.role === 'user' ? 'text-right text-blue-400' : 'text-left text-green-400'}`}>
+            {c.text}
+          </Text>
+        ))}
+      </View>
+
+      <Pressable onPress={() => router.push('/summary')} className="mb-10 border border-red-500 rounded-xl px-6 py-3">
+        <Text className="text-red-500 font-semibold">End Session</Text>
+      </Pressable>
+
+      {showSafetyCard && <SafetyOverlay />}
+    </View>
+  );
+}
+```
+
+```typescript
+// apps/mobile/app/summary.tsx
+import { View, Text } from 'react-native';
+import { Link } from 'expo-router';
+
+export default function SummaryScreen() {
+  return (
+    <View className="flex-1 items-center justify-center gap-4 px-6">
+      <Text className="text-white text-2xl font-bold">Session Saved</Text>
+      <Text className="text-gray-400">Duration: 10 mins</Text>
+      <Text className="text-gray-400">Themes: Stress, Sleep</Text>
+      <Text className="text-gray-400">Mood: Anxious</Text>
+      <Link href="/" asChild>
+        <Pressable className="mt-8"><Text className="text-accent underline">Back to Home</Text></Pressable>
+      </Link>
+    </View>
+  );
+}
+```
+
+```typescript
+// apps/mobile/components/BreathingOrb.tsx
+import React from 'react';
+import { View, Animated } from 'react-native';
+
+export default function BreathingOrb({ isActive }: { isActive: boolean }) {
+  const scale = React.useRef(new Animated.Value(1)).current;
+
+  React.useEffect(() => {
+    if (isActive) {
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(scale, { toValue: 1.2, duration: 2000, useNativeDriver: true }),
+          Animated.timing(scale, { toValue: 1.0, duration: 2000, useNativeDriver: true }),
+        ])
+      ).start();
+    } else {
+      scale.setValue(1.0);
+    }
+  }, [isActive]);
+
+  return (
+    <Animated.View 
+      style={{ transform: [{ scale }] }}
+      className={`w-48 h-48 rounded-full ${isActive ? 'bg-accent shadow-lg shadow-accent/50' : 'bg-gray-800'} opacity-90`}
+    />
+  );
+}
+```
+
+```typescript
+// apps/mobile/components/SafetyOverlay.tsx
+import React from 'react';
+import { Modal, View, Text, Pressable, Linking } from 'react-native';
+
+export default function SafetyOverlay() {
+  return (
+    <Modal transparent visible animationType="fade">
+      <View className="absolute inset-0 bg-black/80 flex items-center justify-center p-6">
+        <View className="bg-danger/95 rounded-2xl p-6 w-full max-w-sm">
+          <Text className="text-white text-xl font-bold mb-2">It sounds like things are really difficult right now.</Text>
+          <Text className="text-white/90 mb-6">If you're in distress, there are people available to help you 24/7.</Text>
+          
+          <Pressable 
+            className="bg-white rounded-xl py-3 px-4 mb-3 active:bg-gray-100"
+            onPress={() => Linking.openURL('tel:988')}
+          >
+            <Text className="text-danger text-center font-bold text-base">Call 988</Text>
+          </Pressable>
+          
+          <Pressable 
+            className="border border-white rounded-xl py-3 px-4 active:bg-white/10"
+            onPress={() => Linking.openURL('sms:741741&body=HOME')}
+          >
+            <Text className="text-white text-center font-bold text-base">Text HOME to 741741</Text>
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+```
+
+```typescript
+// apps/mobile/hooks/useRealtimeVoice.ts
+import { useState, useEffect, useRef } from 'react';
+import { RTCPeerConnection, RTCIceCandidate, RTCSessionDescription, MediaStream } from 'react-native-webrtc';
+
+export default function useRealtimeVoice() {
+  const [isConnected, setIsConnected] = useState(false);
+  const [captions, setCaptions] = useState<{role: string, text: string, id: string}[]>([]);
+  const [showSafetyCard, setShowSafetyCard] = useState(false);
+  const pcRef = useRef<RTCPeerConnection | null>(null);
+
+  useEffect(() => {
+    // Mock connection establishment for scaffold
+    // In reality: fetch token from API, establish WebRTC, wire up data channels for captions
+    setIsConnected(true);
+    
+    // Mock incoming caption
+    setTimeout(() => {
+      setCaptions(prev => [...prev, {id: '1', role: 'assistant', text: 'Hi, I\'m Stillwater. How are you feeling today?'}]);
+    }, 1500);
+
+    // Mock safety trigger simulation
+    // setTimeout(() => setShowSafetyCard(true), 5000);
+
+    return () => {
+      // Cleanup WebRTC peer connection
+      pcRef.current?.close();
+    };
+  }, []);
+
+  return { isConnected, captions, showSafetyCard };
+}
