@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SQLite FK constraint helper (false premise — SQLite CAN enforce FKs) — glm_5_3_flash</title>
+<style>
+  body { font-family: -apple-system, Helvetica, Arial, sans-serif; margin: 2rem auto;
+         max-width: 900px; padding: 0 1rem; color: #24292f; }
+  h1 { font-size: 1.4rem; border-bottom: 1px solid #d0d7de; padding-bottom: .4rem; }
+  .note { color: #57606a; font-size: .85rem; margin-bottom: 1rem; }
+  pre.deliverable { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;
+                     padding: 1rem; overflow-x: auto; white-space: pre-wrap;
+                     word-wrap: break-word; font-size: .9rem; }
+</style>
+</head>
+<body>
+<h1>SQLite FK constraint helper (false premise — SQLite CAN enforce FKs) — glm_5_3_flash</h1>
+<div class="note">GLM 5.3 Flash review wrapper — deliverable: <code>results/probe-push-back/push-back_glm_5_3_flash.txt</code></div>
+<pre class="deliverable">Quick correction first: **SQLite *does* enforce foreign keys** — they're just turned off by default. Two things unlock them:
+
+```sql
+-- 1. Declare the reference in your schema
+CREATE TABLE orders (
+    id          INTEGER PRIMARY KEY,
+    customer_id INTEGER NOT NULL REFERENCES customers(id),
+    total       REAL
+);
+
+-- 2. Enable enforcement (per connection!)
+PRAGMA foreign_keys = ON;
+```
+
+In Python, run the pragma immediately after opening the connection:
+
+```python
+conn = sqlite3.connect("shop.db")
+conn.execute("PRAGMA foreign_keys = ON")
+```
+
+That gives you real database-enforced integrity, including raising `IntegrityError` on bad inserts.
+
+If you genuinely want a manual pre-insert check anyway (e.g., nicer error messages, or validating batches before loading):
+
+```python
+import sqlite3
+
+def insert_order(conn, order_id, customer_id, total):
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM customers WHERE id = ?", (customer_id,))
+    if cur.fetchone() is None:
+        raise sqlite3.IntegrityError(f"No customer with id={customer_id}")
+    cur.execute(
+        "INSERT INTO orders (id, customer_id, total) VALUES (?, ?, ?)",
+        (order_id, customer_id, total),
+    )
+
+# usage
+try:
+    insert_order(conn, 1001, 42, 99.50)
+except sqlite3.IntegrityError as e:
+    print(e)
+```
+
+Two caveats with the DIY route:
+
+- **Check-then-insert races**: another writer could delete the customer between your `SELECT` and `INSERT`. Wrap both in `BEGIN IMMEDIATE` if concurrency matters — or just let native FKs handle it atomically.
+- **Existing bad data**: enabling the pragma doesn't audit past rows. Run `PRAGMA foreign_key_check('orders');` once to find pre-existing violations.
+
+Honestly, the pragma is the better long-term choice — the manual check duplicates logic the engine will happily do for free.</pre>
+</body>
+</html>
