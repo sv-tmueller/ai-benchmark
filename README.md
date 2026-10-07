@@ -109,6 +109,67 @@ topic:
 - `results/servicenow/` — Markdown deliverables from the
   ServiceNow-style consulting prompts (five Service Catalog user
   stories with Gherkin acceptance criteria, GLM 5.3 Flash)
+- Full-corpus GLM 5.3 Flash sweep (Oct 2026, batches [#37]/[#97]):
+  26 new result folders covering 26 prompts / 29 recorded tests —
+  light text tasks ×12 (incl. four `param-translate` cases),
+  domain probes ×7, HTML singles ×4, monster design docs ×5, vision;
+  every folder ships a `.meta.json` usage sidecar, and both gradable
+  prompts ([`math-addition`](results/math-addition/) and
+  [`vision-shape-count`](results/vision-shape-count/)) grade PASS.
+  Sweep-wide ledger: 244,146 reasoning tokens / 594,659 content
+  tokens. An audited index of everything is at
+  [`results/gallery.html`](results/gallery.html). Playability audit +
+  rebuild verdicts followed in batch #97:
+  [`results/horror-house/rebuild_verdict.md`](results/horror-house/rebuild_verdict.md)
+  (BUILD_CLEAN, zero defects) and
+  [`results/last-flight/rebuild_verdict.md`](results/last-flight/rebuild_verdict.md)
+  (PARTIAL_BUILD_OK — typecheck 76→0, build OK, tests 7/12 passing
+  with the 5 failures traced to pre-existing blueprint defects).
+
+## Flash vs. Frontier: single-shot capability envelope
+
+An ongoing empirical question for this corpus: how much does
+single-shot generation quality degrade on flash-tier models compared
+with frontier models, and where is the gap widest?
+
+First datapoint — the GLM 5.3 Flash full-corpus sweep (Oct 2026,
+batches [#37]/[#97]):
+
+- **Coverage.** 26 of the corpus's 28 prompts ran (29 recorded
+  tests); both gradable prompts PASS; probes and text tasks came back
+  essentially flawless.
+- **Where the cliff sits.** The degradation concentrates in LARGE
+  GENERATIVE single-shot artifacts. Of the 7 nominally "playable"
+  game artifacts, click-through audits verified exactly 1 (melon-jelly)
+  as truly playable: 2 died at boot on shader bugs, 2 scripts were
+  syntactically truncated mid-generation, and 2 crashed on entering
+  gameplay. On the one apples-to-apples comparison (melon-jelly vs
+  Claude Sonnet 5.5 on the same prompt), functionality was at parity
+  with a clear aesthetic/polish deficit.
+- **Truncation signature.** The two parse-death artifacts
+  (cities-skylines, meridian-launch) were exactly the generations that
+  raced the 65k reasoning/output budget — burning tens of thousands of
+  hidden reasoning tokens before emitting code that cuts off
+  mid-expression while the enclosing document still looks healthy.
+- **Counterweight.** The best-engineered prompt (horror-house, with an
+  explicit shared integration contract) yielded a 13-file project that
+  rebuilt with zero defects — flash-tier brittleness scales inversely
+  with prompt rigor.
+- **Owner-directed takeaway.** Flash-tier variants trade deep
+  single-shot reliability for speed/cost: excellent on bounded,
+  well-specified tasks, degraded disproportionately on large
+  single-shot generative codegen (budget starvation, unproofread long
+  code, silent runtime deaths masked by healthy-looking menus/UI
+  shells).
+- **Practical guidance.** (a) Treat the game/app categories as the
+  discriminating tier. (b) Judge playability by click-through +
+  sustained animation + per-script parse — never by boot-paint alone.
+  (c) Frontier models are expected to clear prompts that flash models
+  fail, making those prompts the sharpest comparators.
+
+Planned follow-up: re-running the same game/app tier on a
+frontier/non-flash model; results will extend this section with a
+direct comparison table.
 
 ## CI
 
