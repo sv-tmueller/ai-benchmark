@@ -1,9 +1,10 @@
 # Source: #19. One substitution from the original prompt: the sentence
-# "Output only the complete file in one code block." was replaced with
-# "Output only the raw HTML, starting with <!DOCTYPE html>, no markdown
-# fences." The runner writes the raw response straight to the .html
-# artifact, so a fenced code-block answer would produce a file that does
-# not open in a browser.
+# "Output only the complete file in one code block." was replaced with the
+# harness-neutral deliverable sentence "The deliverable is one file,
+# melon-jelly.html, starting with <!DOCTYPE html>, no markdown fences,
+# no explanations." (#23). Whether a harness captures the raw response
+# straight into the .html artifact or an agent writes the file itself, the
+# result is a file that opens in a browser.
 id          = "game-melon-jelly"
 title       = "Melon Jelly: XPBD soft-body watermelon slice"
 category    = "game-generation"
@@ -15,7 +16,7 @@ file_prefix = "melon-jelly"
 
 [user]
 text = '''
-Build "Melon Jelly": a single, self-contained HTML file (no CDN, no external assets, no build step). Use plain JavaScript with JSDoc types; do not use TypeScript unless it runs without a compiler. Output only the raw HTML, starting with <!DOCTYPE html>, no markdown fences.
+Build "Melon Jelly": a single, self-contained HTML file (no CDN, no external assets, no build step). Use plain JavaScript with JSDoc types; do not use TypeScript unless it runs without a compiler. The deliverable is one file, melon-jelly.html, starting with <!DOCTYPE html>, no markdown fences, no explanations.
 
 GOAL
 A physically convincing, jelly-like watermelon slice that the user can squish, pinch, drag, drop, cut and recolor in real time. Physical realism and interaction feel are the primary quality criteria.

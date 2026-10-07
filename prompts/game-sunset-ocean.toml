@@ -182,5 +182,5 @@ say "that's beautiful". Every parameter you choose should serve that image.
 
 [user]
 text = '''
-Build the scene described in the system prompt above. Output a single self-contained HTML file that runs by opening it. No explanations.
+The deliverable is one file, sunset-ocean.html, starting with <!DOCTYPE html>, no markdown fences, no explanations.
 '''
