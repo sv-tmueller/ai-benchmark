@@ -53,5 +53,5 @@ seed must reproduce the same scene at the same elapsed time. Follow the
 shared BridgeBench manifest and API contract. destroy() stops rendering,
 removes event listeners, and releases renderer and render-target resources.
 
-Output a single self-contained HTML file that runs by opening it. No explanations.
+The deliverable is one file, lava-lamp.html, starting with <!DOCTYPE html>, no markdown fences, no explanations.
 '''

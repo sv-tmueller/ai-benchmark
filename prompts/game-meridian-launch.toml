@@ -212,5 +212,5 @@ at a glance — and a space fan should just say "play it again".
 
 [user]
 text = '''
-Build the scene described in the system prompt above. Output a single self-contained HTML file that runs by opening it. No explanations.
+The deliverable is one file, meridian-launch.html, starting with <!DOCTYPE html>, no markdown fences, no explanations.
 '''
