@@ -1,0 +1,50 @@
+{
+  "generated_utc": "2026-10-07T10:50:35.613173+00:00",
+  "toml": "sql-country-analytics.toml",
+  "prompt_id": "sql-write-query",
+  "name_suffix": null,
+  "title": "Write a SQL query joining 3 tables with aggregation",
+  "endpoint": "https://ai.noris.de/v1/chat/completions",
+  "model": "vllm/qsu/glm-5-3-flash",
+  "params": {
+    "temperature": 0.0,
+    "max_tokens_requested_initial": 65536,
+    "max_tokens_effective_last_attempt": 65536,
+    "reasoning_effort": null,
+    "stream": true,
+    "name_suffix": null
+  },
+  "finish_reason": "stop",
+  "truncated": false,
+  "usage": {
+    "prompt_tokens": 151,
+    "prompt_tokens_details": {
+      "cached_read_tokens": 150,
+      "cached_tokens": 150,
+      "cache_write_tokens": 0
+    },
+    "completion_tokens": 3151,
+    "completion_tokens_details": {
+      "reasoning_tokens": 2273
+    },
+    "total_tokens": 3302,
+    "reasoning_tokens": 2273
+  },
+  "retries": [
+    {
+      "attempt": 1,
+      "max_tokens": 65536,
+      "reasoning_effort": null,
+      "finish_reason": "stop",
+      "elapsed_s": 13.65,
+      "done_sentinel": true,
+      "name_suffix": null
+    }
+  ],
+  "num_retry_api_calls": 0,
+  "grading": null,
+  "outputs": {
+    "deliverable": "results/sql-country-analytics/sql-country-analytics_glm_5_3_flash.md",
+    "review_html": "results/sql-country-analytics/sql-country-analytics_glm_5_3_flash_review.html"
+  }
+}
