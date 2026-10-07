@@ -1,0 +1,23 @@
+There is **exactly one** valid deployment order:
+
+**A → B → D → E → C**
+
+Checks:
+- B is after A and before D ✅
+- E is neither first nor last ✅
+- C is immediately after E ✅
+- D is not last ✅
+
+Why other placements fail:
+
+| Candidate pattern | Rejected because |
+|---|---|
+| `... E C ...` with E/C starting at position 2 (`E C _ _ _`) | Forces remaining A, B, D into positions 1, 4, 5 as `A B D`, making D last — violates “D is not last.” |
+| `... E C ...` with E/C starting at position 3 (`_ _ E C _`) | Forces remaining A, B, D into positions 1, 2, 5 as `A B D`, again violating “D is not last.” |
+| Any arrangement without `EC` adjacent | Violates “C must deploy immediately after E.” |
+| Any arrangement with E first or fifth | Violates “E cannot be deployed first or last.” |
+| Any arrangement where B is not strictly between A and D | Violates “B must deploy after A but before D.” |
+
+Therefore, the single valid order is:
+
+**A, B, D, E, C**
