@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Lava Lamp</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#111;}
+  canvas{display:block;width:100%;height:100%;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.162/build/three.module.js';
+
+let renderer, scene, camera, material, mesh, startTime, animId;
+let uniformData = {
+    iResolution: {value: new THREE.Vector2()},
+    iTime: {value: 0},
+    heat: {value: 0.65},
+    paletteIndex: {value: 0},
+    seed: {value: 0}
+};
+
+const manifest = {
+    controls: []
+};
+
+function init() {
+    const canvas = document.getElementById('c');
+    renderer = new THREE.WebGLRenderer({canvas, antialias:true});
+    renderer.setPixelRatio(window.devicePixelRatio);
+    resize();
+
+    scene = new THREE.Scene();
+    camera = new THREE.Camera();
+
+    const geometry = new THREE.PlaneGeometry(2,2);
+    material = new THREE.ShaderMaterial({
+        uniforms: uniformData,
+        vertexShader: `
+            void main(){ gl_Position = vec4(position,1.0); }
+        `,
+        fragmentShader: `
+            uniform vec2 iResolution;
+            uniform float iTime;
+            uniform float heat;
+            uniform int paletteIndex;
+            uniform float seed;
+
+            // pseudo random based on seed
+            float hash(float n){return fract(sin(n)*43758.5453123);}
+            vec3 rand3(float n){
+                return vec3(hash(n),hash(n+1.0),hash(n+2.0));
+            }
+
+            // Signed distance for tapered bottle (vertical axis Y)
+            float sdBottle(vec3 p){
+                // bottle height from -1 to 1
+                float h = p.y + 1.0; // 0..2
+                // radius varies linearly from top (0.2) to bottom (0.4)
+                float r = mix(0.2,0.4, h/2.0);
+                float d = length(p.xz)-r;
+                // clamp top and bottom caps
+                d = max(d, -p.y-1.0); // bottom
+                d = max(d, p.y-1.0);  // top
+                return d;
+            }
+
+            // Metaball field for wax blobs
+            float waxField(vec3 p, float t){
+                float sum = 0.0;
+                const int N = 12;
+                for(int i=0;i<N;i++){
+                    float id = float(i);
+                    // deterministic seed per blob
+                    vec3 off = rand3(seed + id*10.0);
+                    // orbiting motion
+                    float a = t*heat*0.5 + id*6.2831;
+                    vec3 pos = vec3(
+                        sin(a*0.7+off.x*6.28)*0.3,
+                        cos(a*0.9+off.y*6.28)*0.5,
+                        sin(a*1.1+off.z*6.28)*0.3
+                    );
+                    // vertical bias
+                    pos.y = pos.y*0.6 + 0.0;
+                    float r = 0.12 + 0.05*off.x;
+                    float d = length(p - pos) - r;
+                    sum += 1.0/ (d*d + 0.01);
+                }
+                return sum;
+            }
+
+            // Wax surface as iso-level of field
+            float sdWax(vec3 p, float t){
+                float f = waxField(p,t);
+                // iso value chosen experimentally
+                return 1.0/f - 0.5;
+            }
+
+            // Glass material
+            vec3 refractRay(vec3 rd, vec3 n, float eta){
+                float cosi = dot(-rd,n);
+                float k = 1.0 - eta*eta*(1.0 - cosi*cosi);
+                return k<0.0 ? vec3(0.0) : eta*rd + (eta*cosi - sqrt(k))*n;
+            }
+
+            // Simple palette (Ember)
+            vec3 emberPalette(float t){
+                return mix(vec3(1.0,0.4,0.1), vec3(0.9,0.2,0.0), t);
+            }
+
+            // Main ray marching
+            vec3 render(vec2 uv){
+                // camera setup
+                vec3 ro = vec3(0.0,0.0,3.0);
+                vec3 rd = normalize(vec3(uv, -1.5));
+
+                // march inside scene bounds
+                float t = 0.0;
+                float maxDist = 6.0;
+                bool hitGlass = false;
+                bool hitWax = false;
+                vec3 hitPos;
+                for(int i=0;i<200;i++){
+                    vec3 p = ro + rd*t;
+                    float dGlass = sdBottle(p);
+                    float dWax = sdWax(p,iTime);
+                    float d = min(dGlass, dWax);
+                    if(d<0.001){
+                        if(dWax<dGlass){
+                            hitWax = true;
+                        }else{
+                            hitGlass = true;
+                        }
+                        hitPos = p;
+                        break;
+                    }
+                    t += d;
+                    if(t>maxDist) break;
+                }
+
+                vec3 col = vec3(0.0);
+                if(hitWax){
+                    // wax emission
+                    float glow = smoothstep(0.0,0.2,length(hitPos));
+                    col = emberPalette(glow);
+                }else if(hitGlass){
+                    // simple glass shading with refraction
+                    vec3 n = normalize(vec3(
+                        length(hitPos.xz)-mix(0.2,0.4, (hitPos.y+1.0)/2.0),
+                        0.0,
+                        0.0
+                    ));
+                    vec3 refr = refractRay(rd, n, 1.0/1.5);
+                    // sample interior (approximate)
+                    vec3 p2 = hitPos + refr*0.02;
+                    float dWax2 = sdWax(p2,iTime);
+                    float inside = smoothstep(0.0,0.02,dWax2);
+                    col = mix(vec3(0.1,0.1,0.12), emberPalette(inside), 0.6);
+                    // Fresnel
+                    float fres = pow(1.0 - dot(-rd,n),3.0);
+                    col = mix(col, vec3(0.8,0.9,1.0), fres*0.3);
+                }else{
+                    // background warm glow
+                    col = vec3(0.02,0.01,0.015);
+                }
+
+                // vignette
+                float vig = smoothstep(0.8,0.5,length(uv));
+                col *= vig;
+                return col;
+            }
+
+            void main(){
+                vec2 uv = (gl_FragCoord.xy - 0.5*iResolution.xy)/iResolution.y;
+                vec3 col = render(uv);
+                // gamma
+                col = pow(col, vec3(0.45));
+                gl_FragColor = vec4(col,1.0);
+            }
+        `,
+        depthWrite:false,
+        depthTest:false
+    });
+    mesh = new THREE.Mesh(geometry, material);
+    scene.add(mesh);
+    startTime = performance.now();
+    anim();
+    window.addEventListener('resize', resize);
+}
+
+function resize(){
+    const canvas = renderer.domElement;
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    renderer.setSize(w,h,false);
+    uniformData.iResolution.value.set(w,h);
+}
+function anim(){
+    uniformData.iTime.value = (performance.now() - startTime)*0.001;
+    renderer.render(scene, camera);
+    animId = requestAnimationFrame(anim);
+}
+
+// API
+function getState(){
+    return {heat: uniformData.heat.value, paletteIndex: uniformData.paletteIndex.value};
+}
+function reset(seed){
+    uniformData.seed.value = seed;
+    uniformData.heat.value = 0.65;
+    uniformData.paletteIndex.value = 0;
+    startTime = performance.now();
+}
+function destroy(){
+    cancelAnimationFrame(animId);
+    renderer.dispose();
+    material.dispose();
+    geometry.dispose();
+    window.removeEventListener('resize', resize);
+}
+
+// expose for BridgeBench
+window.BridgeBench = {
+    manifest,
+    getState,
+    reset,
+    destroy
+};
+
+init();
+</script>
+</body>
+</html>
