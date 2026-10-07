@@ -1,6 +1,3 @@
-Below is the complete, self-contained deliverable.
-
-```html
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1178,14 +1175,3 @@ start();
 </script>
 </body>
 </html>
-```
-
-**How it delivers the brief**
-
-- **One physical object, one shader.** The whole shot is a single ray program: analytic ray–cone intersections trace the tapered glass shell (proper double refraction air→glass→liquor, with total internal reflection falling back to the dark-edged behaviour real glass shows at the silhouette), a sphere-traced solid-of-revolution builds the brushed base and cap, and the wax is a smooth implicit metaball field (quartic kernels + a squashed pool slab) marched adaptively with bisection refinement, collecting front-to-back layers so overlapping masses composite correctly.
-
-- **Wax that rewards the close look.** Per-layer thickness drives the colour ramp — glowing amber at thin edges, deep orange mid-tones, near-black maroon cores — plus warm backlight that shines *through* thin wax, heater in-scatter in the clear liquor, and gelatinous strip speculars. Kernel radii and velocity-stretched prolates give teardrops and necks; the choreographed flagship pair rises fused, snaps apart mid-air, and rejoins on descent, guaranteed present as a living bridge on frame one via a deterministic prewarm scan.
-
-- **Determinism by construction.** Every pose is a closed-form function of the epoch time; `reset(seed)` rebuilds identical parameters, rescans the same prewarm instant, zeroes the substep accumulator, and restores heat 0.65 / paletteIndex 0. `getState()` exposes only those two keys; the manifest declares `controls: []`; `destroy()` cancels the loop, drops the sole listener, and loses the GL context.
-
-- **Locked framing.** The camera is a compile-time constant aimed at the lamp's vertical centre, placing the full lamp (foot to cap) inside the central ~74% of frame height with symmetric margins on every aspect ratio — no drift, no crop, no overlays, ever.
