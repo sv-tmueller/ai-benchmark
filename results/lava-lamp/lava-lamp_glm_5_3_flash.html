@@ -1,0 +1,1191 @@
+Below is the complete, self-contained deliverable.
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Lava Lamp · Quiet Studio</title>
+<style>
+  html,body{margin:0;padding:0;width:100%;height:100%;background:#131316;overflow:hidden}
+  #stage{position:fixed;inset:0;background:#131316}
+  #stage canvas{display:block;width:100%;height:100%}
+</style>
+</head>
+<body>
+<div id="stage"></div>
+
+<script type="x-shader/x-vertex" id="vsSrc">#version 300 es
+void main(){
+  vec2 p = vec2(float((gl_VertexID<<1)&2), float(gl_VertexID&2));
+  gl_Position = vec4(p*2.0-1.0, 0.0, 1.0);
+}
+</script>
+
+<script type="x-shader/x-fragment" id="fsSrc">#version 300 es
+precision highp float;
+precision highp int;
+out vec4 fragColor;
+
+/* ============================================================
+   QUIET STUDIO PRODUCT SHOT — ray-marched / analytic hybrid
+   Fixed camera, fixed framing. Everything derives from the
+   simulation uniforms; no clocks other than the sim epoch uT.
+   ============================================================ */
+
+uniform vec2  uRes;
+uniform float uT;      // simulation epoch seconds (deterministic)
+uniform float uHeat;   // 0.65
+uniform float uAct;    // mean wax activity (presentation only)
+uniform vec4  uBA[14]; // xyz = centre, w = kernel radius
+uniform vec4  uBB[14]; // xyz = velDir*stretch, w = amplitude
+
+#define NB 14
+const float PI = 3.141592653589793;
+
+/* ---- camera: rigid, centred, never moves ------------------- */
+const float TANH   = 0.365;                 // vFov ~40deg
+const vec3  CAMO   = vec3(0.0, 1.67, 6.18); // lamp spans ~74% of frame height
+const vec3  CAMR   = vec3(1.0, 0.0, 0.0);
+const vec3  CAMU   = vec3(0.0, 1.0, 0.0);
+const vec3  CAMF   = vec3(0.0, 0.0,-1.0);
+
+/* ---- bottle geometry (tapered cone shell) ------------------ */
+const float RO0 = 0.4342;   // outer radius at GY0
+const float RK  = -0.05447; // taper
+const float GY0 = 0.58;
+const float GY1 = 3.06;
+const float WT  = 0.032;    // wall thickness
+float outerR(float y){ return RO0 + RK*(y-GY0); }
+float innerR(float y){ return outerR(y) - WT; }
+
+/* ---- wax ---------------------------------------------------- */
+const float ISO      = 1.0;
+const float POOLY    = 0.98;
+const float POOLSQ   = 0.24;   // vertical squash of the pool kernel
+const float WAXFULL  = 0.52;   // thickness mapped to "dense core"
+const float TOPWAX   = 2.78;
+
+/* ---- palette: Ember ---------------------------------------- */
+const vec3 EMBER_EDGE = vec3(1.00,0.62,0.18)*1.65;
+const vec3 EMBER_MID  = vec3(0.92,0.26,0.05)*1.30;
+const vec3 EMBER_CORE = vec3(0.235,0.030,0.012);
+const vec3 HEATC      = vec3(1.00,0.45,0.16);
+const vec3 AMBERHOT   = vec3(1.05,0.62,0.20);
+
+/* ---- studio ------------------------------------------------- */
+const vec3 STEEL   = vec3(0.62,0.645,0.68);
+const vec3 FOGC    = vec3(0.020,0.019,0.021);
+const vec3 WALLTOP = vec3(0.0125,0.0135,0.0165);
+const vec3 WALMID  = vec3(0.0265,0.0255,0.0285);
+const vec3 FLORBNC = vec3(0.052,0.038,0.030);
+
+/* ---- softbox panels (imaged only via secondary rays) --------
+   KL: tall cool key strip, left-front. KR: dimmer right strip.
+   RC: broad dim rear card that backlights the wax.           */
+const vec3 KL_O = vec3(-2.30,1.80, 1.60); const vec3 KL_N = vec3( 0.8204,0.0357,-0.5708);
+const vec3 KL_R = vec3(-0.5708,0.0 ,-0.8204); const vec2 KL_H = vec2(0.40,2.05);
+const vec3 KL_E = vec3(0.90,0.95,1.08)*3.2;
+const vec3 KR_O = vec3( 2.42,1.90, 1.38); const vec3 KR_N = vec3(-0.8679,0.0215,-0.4950);
+const vec3 KR_R = vec3(-0.4950,0.0 , 0.8679); const vec2 KR_H = vec2(0.34,1.85);
+const vec3 KR_E = vec3(0.82,0.88,1.02)*2.1;
+const vec3 RC_O = vec3( 0.30,2.10,-2.75); const vec3 RC_N = vec3(-0.02,0.02,0.9996);
+const vec3 RC_R = vec3( 1.0,0.0,0.02);        const vec2 RC_H = vec2(1.15,1.30);
+const vec3 RC_E = vec3(0.55,0.60,0.70)*0.55;
+const vec3 HEATP1 = vec3(0.0,0.42,1.30);
+const vec3 HEATP2 = vec3(0.0,0.02,0.95);
+
+/* ======================= small utils ======================== */
+float sat(float x){ return clamp(x,0.0,1.0); }
+float ss(float a,float b,float x){ return smoothstep(a,b,x); }
+float quin(float t){ return t*t*t*(t*(t*6.0-15.0)+10.0); }
+float hash21(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }
+float vnoise(vec2 p){
+  vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
+  float a=hash21(i), b=hash21(i+vec2(1,0)), c=hash21(i+vec2(0,1)), d=hash21(i+vec2(1,1));
+  return mix(mix(a,b,f.x),mix(c,d,f.x),f.y);
+}
+float fbm(vec2 p){
+  float v=0.0, a=0.5;
+  for(int i=0;i<3;i++){ v+=a*vnoise(p); p=p*2.13+vec2(7.7,3.1); a*=0.5; }
+  return v;
+}
+vec3 aces(vec3 x){
+  return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0);
+}
+
+/* ===================== ray primitives ======================= */
+/* sphere: returns (tn,tf), tn<0 => miss */
+vec2 sphInt(vec3 ro, vec3 rd, vec3 c, float r){
+  vec3 oc=ro-c; float b=dot(oc,rd); float h=b*b-dot(oc,oc)+r*r;
+  if(h<0.0) return vec2(-1.0);
+  h=sqrt(h); return vec2(-b-h,-b+h);
+}
+/* plane y=h, travelling toward it */
+float plaInt(vec3 ro, vec3 rd, float h){
+  float dy=rd.y; if(abs(dy)<1e-6) return -1.0;
+  float t=(h-ro.y)/dy; return t>0.0?t:-1.0;
+}
+/* cone x^2+z^2=(R0+k*(y-GY0))^2 — two validated roots */
+vec2 coneInt(vec3 ro, vec3 rd, float R0, float k, float ylo, float yhi){
+  float ro_=R0+k*(ro.y-GY0);
+  float A=rd.x*rd.x+rd.z*rd.z-(k*rd.y)*(k*rd.y);
+  float B=2.0*((ro.x*rd.x+ro.z*rd.z)-ro_*(k*rd.y));
+  float C=ro.x*ro.x+ro.z*ro.z-ro_*ro_;
+  vec2 res=vec2(-1.0);
+  if(abs(A)<1e-7){
+    if(abs(B)<1e-9) return res;
+    float t=-C/B; float y=ro.y+t*rd.y;
+    if(t>1e-4 && y>ylo && y<yhi) res.x=t;
+    return res;
+  }
+  float det=B*B-4.0*A*C; if(det<0.0) return res;
+  det=sqrt(det);
+  float t1=(-B-det)/(2.0*A), t2=(-B+det)/(2.0*A);
+  if(t1>t2){float tmp=t1;t1=t2;t2=tmp;}
+  float y1=ro.y+t1*rd.y, y2=ro.y+t2*rd.y;
+  if(t1>1e-4 && y1>ylo && y1<yhi) res.x=t1;
+  if(t2>1e-4 && y2>ylo && y2<yhi){ res.y = (res.x<0.0)? t2 : res.y; if(res.x<0.0) res.x=-1.0; if(res.y>0.0 && res.x<0.0){res.x=res.y;res.y=-1.0;} }
+  /* simpler: repack cleanly */
+  vec2 ord=vec2(-1.0); int n=0;
+  if(t1>1e-4 && y1>ylo && y1<yhi){ ord[n]=t1; n++; }
+  if(t2>1e-4 && y2>ylo && y2<yhi && n<2){ ord[n]=t2; n++; }
+  return ord;
+}
+vec3 coneNor(vec3 p, float R0, float k){
+  float lr=length(p.xz)+1e-9;
+  return normalize(vec3(p.x/lr, -k, p.z/lr));
+}
+
+/* ==================== panel imaging ========================= */
+/* Radiance seen by a delta ray (used for reflections /
+   transmissions). Crisp thin streaks with a soft halo twin.   */
+float rectMask(vec2 uv, vec2 h, float soft){
+  float mu=1.0-ss(h.x*(1.0-soft),h.x*(1.0-soft*0.3),abs(uv.x));
+  float mv=1.0-ss(h.y*(1.0-soft),h.y*(1.0-soft*0.3),abs(uv.y));
+  return mu*mv;
+}
+vec3 panelImg(vec3 ro, vec3 rd, vec3 O, vec3 N, vec3 R, vec2 h, vec3 E, float soft){
+  float dn=dot(rd,N); if(abs(dn)<1e-5) return vec3(0.0);
+  float t=dot(O-ro,N)/dn; if(t<=0.0) return vec3(0.0);
+  vec3 p=ro+rd*t; vec3 l=p-O;
+  return E*rectMask(vec2(dot(l,R),dot(l,cross(R,N))),h,soft);
+}
+vec3 panelsImg(vec3 ro, vec3 rd, bool rearToo){
+  vec3 c=vec3(0.0);
+  c+=panelImg(ro,rd,KL_O,KL_N,KL_R,KL_H,KL_E,0.10);
+  c+=panelImg(ro,rd,KL_O,KL_N,KL_R,KL_H*2.1,KL_E*0.10,0.45);
+  c+=panelImg(ro,rd,KR_O,KR_N,KR_R,KR_H,KR_E,0.10);
+  c+=panelImg(ro,rd,KR_O,KR_N,KR_R,KR_H*2.1,KR_E*0.10,0.45);
+  if(rearToo){
+    c+=panelImg(ro,rd,RC_O,RC_N,RC_R,RC_H,RC_E,0.30);
+    c+=panelImg(ro,rd,RC_O,RC_N,RC_R,RC_H*1.8,RC_E*0.12,0.55);
+  }
+  return c;
+}
+
+/* ============== direct lighting from panels ================= */
+vec3 panelLit(vec3 p, vec3 n, vec3 vd, vec3 O, vec3 N, vec3 R, vec2 h, vec3 E, float rough){
+  vec3 acc=vec3(0.0);
+  for(int i=0;i<3;i++){
+    vec3 lp=O + R*h.x*0.6*float(i-1);
+    vec3 ld=lp-p; float d2=dot(ld,ld); float dl=length(ld); ld/=dl;
+    float ndl=sat(dot(n,ld));
+    if(ndl<=0.0) continue;
+    vec3 hv=normalize(ld+vd);
+    float ndh=sat(dot(n,hv));
+    float a=rough*rough;
+    float den=ndh*ndh*(a*a-1.0)+1.0;
+    float D=(a*a)/(PI*den*den+1e-7);
+    float fh=0.04+0.96*pow(1.0-sat(dot(hv,vd)),5.0);
+    acc += E*ndl*(D*fh*0.55 + 0.06)/(1.0+0.35*d2);
+  }
+  return acc*(1.0/3.0);
+}
+vec3 heaterLit(vec3 p){
+  vec3 d1=HEATP1-p; float q1=dot(d1,d1);
+  vec3 d2=HEATP2-p; float q2=dot(d2,d2);
+  vec3 l1=normalize(d1), l2=normalize(d2);
+  return HEATC*(2.6/(1.0+0.55*q1)) + vec3(1.0,0.52,0.20)*(1.5/(1.0+3.0*q2));
+}
+vec3 ambientGrad(vec3 n, float wy){
+  vec3 a=mix(WALLTOP, WALMID, ss(-0.2,0.6,n.y));
+  a=mix(a, FLORBNC, ss(0.1,-0.7,n.y)*ss(2.6,0.4,wy));
+  return a;
+}
+
+/* ================= lamp proxy (table reflection) ============ */
+/* Blurred capsule silhouettes standing in for the lamp when
+   the tabletop mirrors it — analytic, stable, never shimmers. */
+vec4 capProx(vec3 ro, vec3 rd, vec3 a, vec3 b, float r){
+  vec3 ba=b-a; vec3 oa=ro-a;
+  float rb=dot(ba,ba), rr=dot(rd,ba);
+  float t=sat((rr>1e-6)? (-dot(oa,ba)/rb*rb + dot(oa,rd)*rr)/(rr) : 0.0);
+  /* robust closest-approach of ray to segment */
+  float tb=sat(dot(-oa,ba)/rb);
+  vec3 pc=a+ba*tb;
+  vec3 oc=ro-pc;
+  float tq=sat(dot(-oc,rd)/max(dot(rd,rd),1e-6));
+  float dq=length(oc-rd*tq);
+  return vec4(pc,dq);
+}
+vec3 proxyLamp(vec3 ro, vec3 rd){
+  vec3 g=vec3(0.0);
+  float blur=0.22;
+  /* bottle: warm luminous column, hottest low */
+  vec4 h=capProx(ro,rd,vec3(0,1.05,0),vec3(0,2.95,0),0.40);
+  float hy=h.y;
+  float e=exp(-pow(max(h.w-0.40,0.0)/blur,1.6));
+  vec3 wc=mix(AMBERHOT*1.5, EMBER_MID*0.8, sat((hy-1.0)/2.0));
+  g+=wc*e*0.85;
+  /* base: cool steel gleam */
+  h=capProx(ro,rd,vec3(0,0.10,0),vec3(0,0.70,0),0.60);
+  g+=vec3(0.30,0.33,0.38)*exp(-pow(max(h.w-0.60,0.0)/blur,1.6))*0.5;
+  /* cap: dim warm grey */
+  h=capProx(ro,rd,vec3(0,3.06,0),vec3(0,3.30,0),0.30);
+  g+=vec3(0.20,0.16,0.13)*exp(-pow(max(h.w-0.30,0.0)/blur,1.6))*0.4;
+  return g;
+}
+
+/* ====================== tabletop ============================= */
+vec3 tableCheap(vec3 p, vec3 rd){
+  vec3 n=normalize(vec3((fbm(p.xz*7.0)-0.5)*0.05, 1.0, (fbm(p.xz*7.0+31.7)-0.5)*0.05));
+  vec3 alb=vec3(0.040,0.0345,0.030)*(0.75+0.5*fbm(p.xz*2.3));
+  alb*=0.85+0.3*vnoise(p.xz*24.0);
+  vec3 vd=-rd;
+  vec3 col=alb*ambientGrad(n,p.y)*2.2;
+  /* strips */
+  col+=alb*(panelLit(p,n,vd,KL_O,KL_N,KL_R,KL_H,KL_E,0.5)
+          + panelLit(p,n,vd,KR_O,KR_N,KR_R,KR_H,KR_E,0.5))*1.4;
+  /* heater pools of warm light spilling around the foot */
+  float df=length(p.xz-vec2(0.0,0.55));
+  col+=HEATC*0.16*exp(-df*df*0.55);
+  col+=alb*heaterLit(p)*1.6;
+  /* soft mirrored lamp + faint strip streaks */
+  vec3 rr=reflect(rd,n);
+  float gloss=0.16+0.30*pow(1.0-sat(abs(rd.y)),3.0);
+  col+=proxyLamp(p+vec3(0,0.001,0),rr)*gloss;
+  col+=panelsImg(p,rr,false)*gloss*0.35;
+  /* contact shadow + skewed key shadow */
+  vec2 cs=p.xz-vec2(-0.18,0.10);
+  float dc=length(cs);
+  float sh=0.25+0.75*ss(0.30,1.20,dc);
+  sh*=0.8+0.2*sat((p.x+0.6)*0.4+0.5);
+  col*=sh;
+  /* living caustic flicker thrown forward by the wax */
+  float cq=length(p.xz-vec2(0.10,1.05));
+  col+=AMBERHOT*0.10*exp(-cq*cq*2.2)*(0.6+0.4*sin(uT*0.7))*uAct;
+  return col;
+}
+
+/* ==================== environment =========================== */
+#define CTX_VIEW 0
+#define CTX_REFL 1
+#define CTX_TRANS 2
+vec3 envMap(vec3 ro, vec3 rd, int ctx){
+  vec3 col=vec3(0.0);
+  bool sec=(ctx!=CTX_VIEW);
+  /* floor */
+  if(rd.y<-0.002){
+    float t=plaInt(ro,rd,0.0);
+    if(t>0.0){
+      vec3 p=ro+rd*t;
+      if(dot(p.xz,p.xz)<196.0 && t<40.0){
+        col=tableCheap(p,rd);
+        float fg=1.0-exp(-t*0.055);
+        col=mix(col,FOGC,fg);
+        if(sec) col+=panelsImg(ro,rd,false)*0.25;
+        return col;
+      }
+    }
+  }
+  /* charcoal wall gradient */
+  float g=ss(0.85,-0.30,rd.y);
+  col=mix(WALLTOP,WALMID,g);
+  float az=atan(rd.z,rd.x);
+  col*=0.86+0.14*cos(az*1.0+0.6);
+  /* warm halo low behind the lamp */
+  vec3 hd=normalize(vec3(0.0,0.42,-1.0));
+  col+=vec3(0.10,0.055,0.028)*pow(sat(dot(rd,hd)),18.0);
+  /* floor bounce bleeding up */
+  col+=FLORBNC*0.35*pow(sat(-rd.y),2.0);
+  /* ceiling void */
+  col*=1.0-ss(0.55,1.0,rd.y)*0.7;
+  if(sec) col+=panelsImg(ro,rd,ctx==CTX_TRANS);
+  return col;
+}
+
+/* ===================== wax field ============================ */
+float kern(vec3 d, float r){
+  float q=dot(d,d)/(r*r);
+  if(q>1.0) return 0.0;
+  float x=1.0-q; return x*x*x;
+}
+float fieldW(vec3 p){
+  float W=0.0;
+  /* amber pool slab with a living surface */
+  vec3 pp=p-vec3(0.0,POOLY,0.0); pp.y/=POOLSQ;
+  float rp=innerR(POOLY)-0.045;
+  float pk=kern(pp,rp);
+  if(pk>0.0){
+    float rip=sin(p.x*6.3+uT*0.9)*sin(p.z*5.7-uT*0.7);
+    W+=2.5*pk*(1.0+0.07*rip*mix(0.6,1.3,uHeat));
+  }
+  /* blobs (prolate along velocity) */
+  for(int i=0;i<NB;i++){
+    float amp=uBB[i].w;
+    if(amp<0.004) continue;
+    vec3 dp=p-uBA[i].xyz;
+    vec3 vm=uBB[i].xyz;
+    float av=length(vm);
+    if(av>0.002){
+      vec3 vn=vm/av;
+      dp-=vn*dot(dp,vn)*av;
+    }
+    W+=amp*kern(dp,uBA[i].w);
+    /* emergence mound feeding the pool where a blob is being born */
+    if(amp<1.9 && uBA[i].y<POOLY+0.55){
+      float mh=(1.0-amp/2.2);
+      vec2 dxz=p.xz-uBA[i].xz;
+      float q2=dot(dxz,dxz)/((uBA[i].w*1.15)*(uBA[i].w*1.15));
+      if(q2<1.0){
+        float yy=1.0-q2;
+        float yg=exp(-pow(max(p.y-(POOLY+0.10),0.0)*4.0,2.0));
+        W+=mh*1.5*yy*yy*yy*yg;
+      }
+    }
+  }
+  return W;
+}
+vec3 gradW(vec3 p){
+  const float e=0.006;
+  vec2 k=vec2(1,-1);
+  return normalize(vec3(
+    fieldW(p+vec3(e,e,0)*k.xyy*0.0+vec3(e,0,0))-fieldW(p-vec3(e,0,0)),
+    fieldW(p+vec3(0,e,0))-fieldW(p-vec3(0,e,0)),
+    fieldW(p+vec3(0,0,e))-fieldW(p-vec3(0,0,e))) );
+}
+/* cheaper tetrahedral gradient */
+vec3 gradW4(vec3 p){
+  const float e=0.006;
+  vec2 k=vec2(1,-1);
+  float f1=fieldW(p+vec3( e, e,-e));
+  float f2=fieldW(p+vec3(-e, e, e));
+  float f3=fieldW(p+vec3( e,-e, e));
+  float f4=fieldW(p+vec3(-e,-e,-e));
+  return normalize(vec3(f1+f3-f2-f4, f1+f2-f3-f4, f1+f4-f2-f3)*0.7071);
+}
+
+/* =================== wax layer shading ====================== */
+vec3 waxShade(vec3 sp, vec3 sn, float thick, vec3 ld, out float op){
+  float dens=sat(1.0-thick/WAXFULL);
+  float thin=1.0-dens;
+  vec3 c=mix(EMBER_EDGE,EMBER_MID,ss(0.0,0.5,dens));
+  c=mix(c,EMBER_CORE,ss(0.45,1.0,dens));
+  vec3 vd=-ld;
+  vec3 lit=c*ambientGrad(sn,sp.y)*1.1;
+  lit+=c*(panelLit(sp,sn,vd,KL_O,KL_N,KL_R,KL_H,KL_E,0.38)
+        + panelLit(sp,sn,vd,KR_O,KR_N,KR_R,KR_H,KR_E,0.38))*1.1;
+  lit+=c*heaterLit(sp)*0.9;
+  /* warm backlight shining through thin wax */
+  vec3 bd=normalize(HEATP1-sp);
+  lit+=HEATC*pow(sat(dot(ld,bd)),3.0)*thin*thin*1.6;
+  /* molten pool crest glows hardest */
+  float eg=exp(-max(sp.y-POOLY,0.0)*5.5);
+  lit+=AMBERHOT*eg*1.15*(0.55+0.45*thin);
+  /* gelatinous speculars */
+  vec3 hv1=normalize(normalize(KL_O-sp)+vd);
+  vec3 hv2=normalize(normalize(KR_O-sp)+vd);
+  lit+=KL_E*0.05*pow(sat(dot(sn,hv1)),60.0);
+  lit+=KR_E*0.05*pow(sat(dot(sn,hv2)),60.0);
+  /* fresnel edge lift */
+  float fr=pow(1.0-sat(dot(sn,vd)),3.0);
+  lit+=EMBER_EDGE*fr*0.30*(1.0-dens*0.5);
+  op=0.30+0.69*pow(dens,0.75);
+  return lit;
+}
+
+/* =============== interior traversal (the heart) =============
+   Marches the implicit wax field inside the liquor, collects
+   front-to-back surface layers, composites translucency,
+   accumulates heater in-scatter, then hands off to the exit
+   leg through the far glass wall into the studio.             */
+vec3 interior(vec3 pi, vec3 ld, out float Tout){
+  vec3 accum=vec3(0.0);
+  float T=1.0;
+  float scat=0.0;
+  /* distance to the far inner wall */
+  vec2 cb=coneInt(pi,ld,RO0-WT,RK,GY0,GY1);
+  float tBack=1e9;
+  if(cb.x>0.0) tBack=cb.x;
+  else{
+    if(ld.y>0.001){ float tt=plaInt(pi,ld,2.98); if(tt>0.0) tBack=tt; }
+    else if(ld.y<-0.001){ float tt=plaInt(pi,ld,0.72); if(tt>0.0) tBack=tt; }
+  }
+  tBack=min(tBack,6.0);
+  /* possibly starting embedded in wax (blob pressed to glass) */
+  float W0=fieldW(pi);
+  bool open=(W0>ISO);
+  vec3 openP=pi; vec3 openN=-ld; float openArc=0.0;
+  float totLen=0.0;
+  vec3 pPrev=pi; float dPrev=W0-ISO; float hPrev=0.02; float gEst=2.0;
+  bool sgnPos=open;
+  for(int k=0;k<96;k++){
+    float rem=max(tBack-totLen,0.004);
+    float h=clamp(abs(dPrev)/max(gEst,0.35),0.012,0.045);
+    h=min(h,rem);
+    vec3 pn=pPrev+ld*h;
+    float Wn=fieldW(pn);
+    float dn=Wn-ISO;
+    /* heater in-scatter through clear liquor */
+    scat+=0.10*exp(-max(pn.y-POOLY,0.0)*1.6)*h;
+    accum+=T*HEATC*0.10*exp(-max(pn.y-POOLY,0.0)*1.6)*h;
+    bool flip=(dn>0.0)!=sgnpos;
+    if(flip){
+      /* bisect the crossing */
+      vec3 a=pPrev,b=pn; float fa=dPrev,fb=dn;
+      vec3 hm=b;
+      for(int j=0;j<6;j++){
+        hm=0.5*(a+b);
+        float fm=fieldW(hm)-ISO;
+        if((fm>0.0)==sgnpos){ b=hm; fb=fm; } else { a=hm; fa=fm; }
+      }
+      vec3 hp=0.5*(a+b);
+      vec3 gn=gradW4(hp);
+      vec3 hn=-gn; /* outward of the wax */
+      if(dn>dPrev){
+        /* entering wax */
+        if(!open){ open=true; openP=hp; openN=hn; openArc=totLen; }
+      }else{
+        /* leaving wax */
+        if(open){
+          float thick=max(totLen-openArc,0.02);
+          vec3 sn=(dot(hn,ld)>0.0)? -hn : hn;
+          float op;
+          vec3 lc=waxShade(hp,sn,thick,ld,op);
+          accum+=T*lc*op;
+          T*=(1.0-op);
+          open=false;
+          if(T<0.02){ totLen+=h; break; }
+        }
+      }
+      sgnPos=!sgnpos;
+    }
+    gEst=abs(dn-dPrev)/max(h,1e-4);
+    dPrev=dn; pPrev=pn; totLen+=h;
+    /* escaped the vessel or reached the far wall */
+    float rho=length(pPrev.xz);
+    bool esc=(rho>innerR(pPrev.y)+0.06)||(pPrev.y>2.99)||(pPrev.y<0.70);
+    if(totLen>=tBack-1e-4 || esc){
+      if(open){
+        float thick=max(totLen-openArc,0.02);
+        vec3 wn=coneNor(pPrev,RO0-WT,RK);
+        vec3 sn=-wn;
+        float op;
+        vec3 lc=waxShade(pPrev,sn,thick,ld,op);
+        accum+=T*lc*op;
+        T*=(1.0-op);
+        open=false;
+      }
+      break;
+    }
+  }
+  Tout=T;
+  return accum;
+}
+
+/* ================= full glass traversal ===================== */
+vec3 glassTrace(vec3 ro, vec3 rd){
+  /* --- outer entry --- */
+  vec2 ce=coneInt(ro,rd,RO0,RK,GY0,GY1);
+  if(ce.x<0.0) return vec3(-1.0); /* signal: no glass */
+  float tg=ce.x;
+  vec3 po=ro+rd*tg;
+  vec3 nO=coneNor(po,RO0,RK);
+  /* faint manufacturing smudge bends the streaks organically */
+  nO=normalize(nO+(vec3(fbm(po.xy*9.0),fbm(po.yz*9.0+4.0),fbm(po.zx*9.0+9.0))-0.5)*0.012);
+  float cosI=sat(-dot(rd,nO));
+  float Fr=0.043+0.957*pow(1.0-cosI,5.0);
+  vec3 refl=envMap(po,reflect(rd,nO),CTX_REFL);
+  /* air -> glass */
+  vec3 rg1=refract(rd,nO,1.0/1.5);
+  /* glass -> liquor (may totally internall reflect near silhouette) */
+  vec3 pi; vec3 ld; bool entered=true;
+  vec2 ci=coneInt(po,rg1,RO0-WT,RK,GY0,GY1);
+  if(ci.x<0.0){ entered=false; }
+  else{
+    vec3 pw=po+rg1*ci.x;
+    vec3 nI=coneNor(pw,RO0-WT,RK);
+    vec3 rg2=refract(rg1,nI,1.5/1.36);
+    if(dot(rg2,rg2)<0.5){
+      /* TIR at the inner wall: bounce back out through the glass */
+      vec3 rf=reflect(rg1,nI);
+      vec2 co=coneInt(pw,rf,RO0,RK,GY0,GY1);
+      if(co.x>0.0){
+        vec3 po2=pw+rf*co.x;
+        vec3 nO2=coneNor(po2,RO0,RK);
+        vec3 out2=refract(rf,-nO2,1.5);
+        if(dot(out2,out2)>0.5){
+          vec3 ec=envMap(po2,out2,CTX_REFL);
+          return Fr*refl+(1.0-Fr)*ec*0.9;
+        }
+      }
+      entered=false;
+    }else{ pi=pw; ld=rg2; }
+  }
+  if(!entered){
+    /* silhouette grace: treat as near-total reflection */
+    return Fr*refl+(1.0-Fr)*refl*0.85+EMBER_EDGE*0.0;
+  }
+  /* --- through the liquor --- */
+  float Tr;
+  vec3 inn=interior(pi,ld,Tr);
+  /* --- exit leg: liquor -> glass -> air --- */
+  vec2 cw=coneInt(pi,ld,RO0-WT,RK,GY0,GY1);
+  float tw=(cw.x>0.0)?cw.x:min(cw.y,1e9);
+  vec3 pw2=pi+ld*tw;
+  vec3 nLi=-coneNor(pw2,RO0-WT,RK); /* faces back into the liquor */
+  vec3 lg=refract(ld,nLi,1.36/1.5);
+  bool trap=false;
+  if(dot(lg,lg)<0.5){ lg=reflect(ld,nLi); trap=true; }
+  vec2 cfo=coneInt(pw2,lg,RO0,RK,GY0,GY1);
+  float tf=(cfo.x>0.0)?cfo.x:max(cfo.y,0.0);
+  vec3 pg=pw2+lg*tf;
+  vec3 nOg=coneNor(pg,RO0,RK);
+  vec3 ga=refract(lg,-nOg,1.5);
+  vec3 excol;
+  if(trap || dot(ga,ga)<0.5){
+    excol=envMap(pg,lg,CTX_TRANS)*0.12; /* trapped edge reads dark */
+  }else{
+    excol=envMap(pg,ga,CTX_TRANS);
+    /* whisper of dispersion at grazing exit */
+    float gr=pow(1.0-sat(dot(ga,-nOg)),3.0);
+    excol*=mix(vec3(1.0),vec3(1.06,0.99,0.94),gr*0.6);
+  }
+  /* clear liquor absorbs a hair over the path */
+  vec3 mu=vec3(0.020,0.026,0.034);
+  vec3 transmitted=excol*Tr*exp(-mu*tw);
+  vec3 col=Fr*refl+(1.0-Fr)*(inn+transmitted);
+  /* delicate coating specular on the outer skin */
+  vec3 vd=-rd;
+  vec3 hv=normalize(normalize(KL_O-po)+vd);
+  col+=KL_E*0.04*pow(sat(dot(nO,hv)),90.0)*Fr;
+  return col;
+}
+
+/* ==================== spun metal ============================ */
+float sdCyl(vec3 p, float h0, float h1, float r, float rd_){
+  float ri=r-rd_;
+  vec2 d=vec2(length(p.xz)-ri, max(h0+rd_-p.y, p.y-h1+rd_));
+  return min(max(d.x,d.y),0.0)+length(max(d,0.0))-rd_;
+}
+float smin(float a,float b,float k){
+  float h=sat(0.5+0.5*(b-a)/k);
+  return mix(b,a,h)-k*h*(1.0-h);
+}
+float sdBase(vec3 p){
+  float d=sdCyl(p,0.00,0.06,0.545,0.012);
+  d=smin(d,sdCyl(p,0.06,0.20,0.565,0.02),0.03);
+  d=smin(d,sdCyl(p,0.20,0.34,0.585,0.03),0.03);
+  d=smin(d,mix(sdCyl(p,0.34,0.50,0.585,0.025),sdCyl(p,0.34,0.50,0.420,0.025),0.5),0.03);
+  d=smin(d,sdCyl(p,0.34,0.50,0.5025,0.025),0.03);
+  d=smin(d,sdCyl(p,0.50,0.62,0.420,0.02),0.03);
+  d=smin(d,sdCyl(p,0.62,0.715,0.435,0.012),0.02);
+  /* hollow the socket cup */
+  float cav=sdCyl(p,0.52,0.74,0.400,0.01);
+  d=max(d,-cav);
+  /* machined accent grooves */
+  vec2 gp=vec2(length(p.xz),p.y);
+  float g1=length(gp-vec2(0.577,0.300))-0.006;
+  float g2=length(gp-vec2(0.560,0.145))-0.005;
+  d=max(d,-min(g1,g2));
+  return d;
+}
+float sdCap(vec3 p){
+  float d=sdCyl(p,3.02,3.235,0.308,0.01);
+  vec3 q=p-vec3(0.0,3.235,0.0);
+  float k0=1.19682;
+  vec2 ev=vec2(0.296,0.108);
+  float ke1=k0/ev.x, ke2=k0/ev.y;
+  vec2 ed=vec2(length(q.xz),q.y);
+  float kk=sqrt(ed.x*ke1*ed.x*ke1+ed.y*ke2*ed.y*ke2);
+  float dome=(kk-1.0)*k0/min(min(ev.x,ev.y),0.108);
+  dome=max(dome, 3.20-p.y);
+  d=smin(d,dome,0.02);
+  return d;
+}
+vec3 sdfN(vec3 p, float which){
+  const float e=0.0016;
+  vec2 k=vec2(1,-1);
+  float (*unused)(vec3);
+  float f1,f2,f3,f4;
+  if(which<0.5){
+    f1=sdBase(p+vec3( e, e,-e)); f2=sdBase(p+vec3(-e, e, e));
+    f3=sdBase(p+vec3( e,-e, e)); f4=sdBase(p+vec3(-e,-e,-e));
+  }else{
+    f1=sdCap(p+vec3( e, e,-e)); f2=sdCap(p+vec3(-e, e, e));
+    f3=sdCap(p+vec3( e,-e, e)); f4=sdCap(p+vec3(-e,-e,-e));
+  }
+  return normalize(vec3(f1+f3-f2-f4, f1+f2-f3-f4, f1+f4-f2-f3)*0.7071);
+}
+vec3 metalShade(vec3 p, vec3 rd, float which){
+  vec3 n=sdfN(p,which);
+  float rough=(which<0.5)?0.30:0.22;
+  /* circumferential brushing */
+  float ang=atan(p.z,p.x);
+  float br=fbm(vec2(ang*22.0,p.y*46.0))-0.5;
+  vec3 tang=normalize(cross(vec3(0,1,0),p-vec3(0,p.y,0))+vec3(1e-5));
+  n=normalize(n+tang*br*0.06);
+  vec3 vd=-rd;
+  /* anisotropic strip highlights smeared along the brush */
+  vec3 spec=vec3(0.0);
+  for(int sIdx=0;sIdx<2;sIdx++){
+    vec3 lo,ln,lr_; vec2 lh; vec3 le;
+    if(sIdx==0){ lo=KL_O; ln=KL_N; lr_=KL_R; lh=KL_H; le=KL_E; }
+    else       { lo=KR_O; ln=KR_N; lr_=KR_R; lh=KR_H; le=KR_E; }
+    vec3 lp=lo;
+    vec3 ldd=lp-p; float dl=length(ldd); vec3 lv=ldd/dl;
+    vec3 hv=normalize(lv+vd);
+    float nh=sat(dot(n,hv));
+    vec3 bt=tang;
+    vec3 bb=normalize(cross(n,bt));
+    float ht=dot(hv,bt)/max(nh,0.08);
+    float hb=dot(hv,bb)/max(nh,0.08);
+    float at=rough*0.35, ab=rough*1.9;
+    float D=exp(-(ht*ht/(at*at)+hb*hb/(ab*ab)))/(4.0*PI*at*ab+1e-6);
+    float ndl=sat(dot(n,lv));
+    spec+=le*D*ndl*0.9/(1.0+0.3*dl*dl);
+  }
+  /* environment reflection, smeared horizontally by the brush */
+  vec3 rf=reflect(rd,n);
+  vec3 r1=envMap(p,rf,CTX_REFL);
+  float ca=0.05, sa=sin(ca);
+  vec3 rfw=vec3(rf.x*cos(ca)-rf.z*sa, rf.y, rf.x*sa+rf.z*cos(ca));
+  vec3 r2=envMap(p,rfw,CTX_REFL);
+  vec3 refl=(r1+r2*0.5)*0.666;
+  refl*=mix(vec3(1.0),STEEL,0.55);
+  /* heater bounce warms the lower spin */
+  vec3 warm=heaterLit(p);
+  float low=ss(0.75,0.05,p.y);
+  vec3 col=refl*(0.55+0.45*sat(dot(n,rf)*0.5+0.5));
+  col+=spec;
+  col+=warm*0.05*low;
+  col+=STEEL*ambientGrad(n,p.y)*0.35;
+  /* cavity occlusion in the socket */
+  float ao=sat((sdBaseOrCap(p,which)+0.02)/0.05);
+  col*=0.55+0.45*ao;
+  col*=1.0-0.35*ss(0.72,0.58,p.y)*ss(0.30,0.42,length(p.xz));
+  return col;
+}
+/* helper so sdfN callers agree */
+float sdBaseOrCap(vec3 p, float which){ return (which<0.5)?sdBase(p):sdCap(p); }
+
+/* ======================= assembling ========================= */
+bool sphereHit(vec3 ro, vec3 rd, vec3 c, float r){
+  vec2 h=sphInt(ro,rd,c,r);
+  return h.x>0.0;
+}
+vec3 scene(vec3 ro, vec3 rd){
+  /* most pixels: pure studio */
+  vec2 lb=sphInt(ro,rd,vec3(0,1.67,0),1.78);
+  if(lb.x<0.0) return envMap(ro,rd,CTX_VIEW);
+  /* metal candidates */
+  float tMet=1e9; float whichM=-1.0;
+  if(sphereHit(ro,rd,vec3(0,0.36,0),0.66)){
+    float t=0.0; bool hit=false;
+    for(int i=0;i<72;i++){
+      vec3 p=ro+rd*t;
+      float d=sdBase(p);
+      if(d<0.0012){hit=true;break;}
+      t+=d; if(t>lb.y||t>8.0)break;
+    }
+    if(hit){tMet=t;whichM=0.0;}
+  }
+  if(sphereHit(ro,rd,vec3(0,3.17,0),0.42)){
+    float t=0.0; bool hit=false;
+    for(int i=0;i<72;i++){
+      vec3 p=ro+rd*t;
+      float d=sdCap(p);
+      if(d<0.0012){hit=true;break;}
+      t+=d; if(t>min(tMet,lb.y)||t>8.0)break;
+    }
+    if(hit && t<tMet){tMet=t;whichM=1.0;}
+  }
+  /* glass entry */
+  vec2 cg=coneInt(ro,rd,RO0,RK,GY0,GY1);
+  float tG=(cg.x>0.0)?cg.x:1e9;
+  if(tMet<tG && whichM>=0.0){
+    vec3 p=ro+rd*tMet;
+    vec3 c=metalShade(p,rd,whichM);
+    float fg=1.0-exp(-tMet*0.012);
+    return mix(c,FOGC,fg);
+  }
+  if(tG<1e8){
+    vec3 c=glassTrace(ro,rd);
+    if(c.r>-0.5){ /* valid */
+      float fg=1.0-exp(-tG*0.012);
+      return mix(c,FOGC,fg);
+    }
+  }
+  /* fell through (ray clipped between solids): studio */
+  return envMap(ro,rd,CTX_VIEW);
+}
+
+void main(){
+  vec2 fc=gl_FragCoord.xy;
+  vec2 ndc=(fc*2.0-uRes)/uRes.y;
+  vec3 rd=normalize(CAMF + CAMR*ndc.x*TANH + CAMU*ndc.y*TANH);
+  vec3 col=scene(CAMO,rd);
+  /* grade */
+  col*=1.25;
+  col=aces(col);
+  float vg=mix(1.0,0.70,ss(0.55,1.42,length(ndc*vec2(0.85,1.0))));
+  col*=vg;
+  /* fine film grain keyed to the sim epoch (deterministic) */
+  float gn=hash21(fc+vec2(fract(uT)*7.13,fract(uT*0.73)*3.71));
+  col+=(gn-0.5)*0.006;
+  if(any(isnan(col))) col=FOGC;
+  fragColor=vec4(max(col,0.0),1.0);
+}
+</script>
+
+<script>
+"use strict";
+/* =====================================================================
+   BridgeBench · lava-lamp.studio-product-shot
+   ---------------------------------------------------------------------
+   • Autoplays at heat 0.65, paletteIndex 0 (Ember). No interactions of
+     any kind — visible or hidden — exist in this document.
+   • getState() reflects exactly the two fixed configuration keys.
+   • reset(seed) restores those values, rebuilds the identical prewarmed
+     arrangement from that seed, and restarts the simulation epoch and
+     the accumulated-substep accumulator. Trajectories are pure closed-
+     form functions of epoch time, so the same seed reproduces the same
+     scene at the same elapsed time, every time.
+   • destroy() stops the loop, removes listeners and tears down the GL
+     context and every resource it owns.
+   ===================================================================== */
+
+(function(){
+
+/* ------------------------- manifest -------------------------------- */
+const MANIFEST = Object.freeze({
+  schema: "bridgebench/v1",
+  id: "lava-lamp.studio-product-shot",
+  title: "Quiet Studio Lava Lamp — Ember @ 0.65",
+  kind: "scene",
+  autoplay: true,
+  defaults: Object.freeze({ heat: 0.65, paletteIndex: 0 }),
+  palettes: Object.freeze([{ index: 0, name: "Ember" }]),
+  controls: Object.freeze([]),          /* explicitly empty */
+  stateKeys: Object.freeze(["heat", "paletteIndex"]),
+  determinism: "seeded fixed-step epoch; closed-form trajectories",
+  framing: "static orthographic-centred perspective; lamp within central 80%"
+});
+
+/* ------------------------- constants ------------------------------- */
+const DEFAULT_HEAT = 0.65;
+const DEFAULT_PAL  = 0;
+const DEFAULT_SEED = 7;
+const NB   = 14;              // 12 solo blobs + 2 choreographed partners
+const DT   = 1 / 120;         // fixed simulation substep
+const KISO = 0.48;            // kernel-radius ↔ visual-radius conversion
+const TAU  = Math.PI * 2;
+
+const GEO = {
+  RO0: 0.4342, RK: -0.05447, GY0: 0.58,
+  innerR(y){ return (this.RO0 + this.RK * (y - this.GY0)) - 0.032; }
+};
+const POOLY = 0.98;
+
+/* ---------------------- deterministic RNG -------------------------- */
+function xmur3(str){
+  let h = 1779033703 ^ str.length;
+  for(let i=0;i<str.length;i++){
+    h = Math.imul(h ^ str.charCodeAt(i), 3432918353);
+    h = (h << 13) | (h >>> 19);
+  }
+  return function(){
+    h = Math.imul(h ^ (h >>> 16), 2246822507);
+    h = Math.imul(h ^ (h >>> 13), 3266489909);
+    return (h ^= h >>> 16) >>> 0;
+  };
+}
+function mulberry32(a){
+  return function(){
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const frac = x => x - Math.floor(x);
+const ss   = (a,b,x) => { const t = Math.min(Math.max((x-a)/(b-a),0),1); return t*t*(3-2*t); };
+const quin = t => { t=Math.min(Math.max(t,0),1); return t*t*t*(t*(t*6-15)+10); };
+const mixN = (a,b,t) => a+(b-a)*t;
+const clampN = (x,a,b) => Math.min(Math.max(x,a),b);
+
+/* -------------------- trajectory building blocks -------------------
+   Every pose is a CLOSED FORM of epoch time τ. Nothing integrates, so
+   determinism is structural, not aspirational.                        */
+
+function waveY(u, target){
+  const embed = 0.93;
+  if(u < 0.36)      return mixN(embed, target, quin(ss(0.06, 0.36, u)));
+  else if(u < 0.46) return target;
+  else if(u < 0.82) return mixN(target, embed, quin(ss(0.46, 0.82, u)));
+  else              return embed + 0.012 * Math.sin((u - 0.82) * 40.0);
+}
+function fadeU(u){
+  return ss(0.03, 0.13, u) * (1 - ss(0.74, 0.86, u));
+}
+function allowance(y, kernR){
+  return Math.max(0.03, GEO.innerR(y) - kernR * 0.34 - 0.03);
+}
+
+/* ----------------------- parameter factory ------------------------- */
+function buildParams(seed){
+  const h = xmur3("lavastudio/" + String(seed));
+  const rnd = mulberry32(h());
+
+  /* the engineered pair: rises fused, tears apart aloft (neck snap),
+     drifts, reconvenes and sinks as one — a perpetual signature beat */
+  const pair = {
+    P: 31 + rnd() * 6,
+    phi: rnd(),
+    theta0: rnd() * TAU,
+    apY: 2.28 + rnd() * 0.10,
+    ra: 0.262,
+    rb: 0.212
+  };
+
+  const pool = [0.195,0.170,0.152,0.138,0.124,0.112,
+                0.182,0.146,0.118,0.163,0.132,0.106];
+  for(let i = pool.length - 1; i > 0; i--){
+    const j = Math.floor(rnd() * (i + 1));
+    const t = pool[i]; pool[i] = pool[j]; pool[j] = t;
+  }
+  const solos = [];
+  for(let i = 0; i < 12; i++){
+    const r = pool[i];
+    const spd = clampN((0.195 - r) / 0.09, 0, 1);
+    solos.push({
+      r,
+      kernR: r / KISO,
+      P: mixN(46, 25, spd) + (rnd() - 0.5) * 5,
+      phi: rnd(),
+      apex: clampN(2.72 - r * 2.6 - rnd() * 0.55, 1.55, 2.62),
+      ax: 0, az: 0,
+      fx1: 0.05 + rnd() * 0.09, fx2: 0.11 + rnd() * 0.10,
+      fz1: 0.05 + rnd() * 0.09, fz2: 0.11 + rnd() * 0.10,
+      p1: rnd() * TAU, p2: rnd() * TAU,
+      p3: rnd() * TAU, p4: rnd() * TAU,
+      wobF: 0.5 + rnd() * 0.8, wobP: rnd() * TAU
+    });
+  }
+  /* lateral amplitudes sized against the taper at each apex */
+  for(const s of solos){
+    const allow = allowance(s.apex, s.kernR);
+    s.ax = allow * mixN(0.35, 0.75, rnd());
+    s.az = s.ax * mixN(0.40, 0.80, rnd());
+  }
+  return { pair, solos };
+}
+
+/* --------------------------- posing -------------------------------- */
+function soloPose(s, tau){
+  const u = frac(tau / s.P + s.phi);
+  const f = fadeU(u);
+  let y = waveY(u, s.apex);
+  y += 0.014 * Math.sin(s.wobF * tau + s.wobP) * f;
+  let x = s.ax * (Math.sin(s.fx1 * tau + s.p1) + 0.55 * Math.sin(s.fx2 * tau + s.p2));
+  let z = s.az * (Math.sin(s.fz1 * tau + s.p3) + 0.55 * Math.sin(s.fz2 * tau + s.p4));
+  const allow = allowance(y, s.kernR);
+  const rho = Math.hypot(x, z);
+  if(rho > allow && rho > 1e-6){ const k = allow / rho; x *= k; z *= k; }
+  return { x, y, z, kernR: s.kernR, amp: 2.2 * f };
+}
+
+function pairPose(pr, tau){
+  const u = frac(tau / pr.P + pr.phi);
+  const f = fadeU(u);
+  const yc = waveY(u, pr.apY);
+  const split = ss(0.335, 0.40, u) * (1 - ss(0.545, 0.655, u));
+  const th = pr.theta0 + u * TAU * 0.5 + tau * 0.05;
+  const dx = Math.cos(th), dz = Math.sin(th);
+  const ka = pr.ra / KISO, kb = pr.rb / KISO;
+  const allow = Math.min(allowance(yc, ka), allowance(yc, kb)) * 0.9;
+  let cx = 0.06 * Math.sin(tau * 0.07 + 1.7);
+  let cz = 0.05 * Math.sin(tau * 0.09 + 0.4);
+  const rho = Math.hypot(cx, cz);
+  if(rho > allow && rho > 1e-6){ const k = allow / rho; cx *= k; cz *= k; }
+  const sepMax = (pr.ra + pr.rb) * 1.32;
+  const base = 0.05;
+  const off = base + split * sepMax * 0.5;
+  const dy = split * pr.rb * 0.55;
+  return [
+    { x: cx + dx * off,               y: yc,      z: cz + dz * off,               kernR: ka, amp: 2.2 * f },
+    { x: cx - dx * off,               y: yc + dy, z: cz - dz * off,               kernR: kb, amp: 2.2 * f }
+  ];
+}
+
+function allPoses(P, tau){
+  const out = new Array(NB);
+  for(let i = 0; i < 12; i++) out[i] = soloPose(P.solos[i], tau);
+  const pp = pairPose(P.pair, tau);
+  out[12] = pp[0]; out[13] = pp[1];
+  return out;
+}
+
+/* --------------------- prewarm epoch search ------------------------
+   Picks the earliest epoch instant where the choreographed pair is
+   caught mid-tease (a living neck), enough companions of differing
+   size are abroad, and nobody is piled into anyone.                  */
+function prewarmEpoch(P){
+  const pr = P.pair;
+  for(let k = 0; k <= 2200; k++){
+    const tau = k * 0.37;
+    const u = frac(tau / pr.P + pr.phi);
+    const split = ss(0.335, 0.40, u) * (1 - ss(0.545, 0.655, u));
+    if(split < 0.35 || split > 0.95) continue;
+    if(fadeU(u) < 0.9) continue;
+    const poses = allPoses(P, tau);
+    let vis = 0, crowded = false;
+    for(let i = 0; i < NB; i++){
+      if(poses[i].amp > 1.1) vis++;
+      for(let j = i + 1; j < NB; j++){
+        if(i >= 12 && j >= 12) continue; /* the pair is SUPPOSED to touch */
+        const a = poses[i], b = poses[j];
+        const d = Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+        if(d < 0.8 * ((a.amp / 2.2) * a.kernR * KISO + (b.amp / 2.2) * b.kernR * KISO)){ crowded = true; break; }
+      }
+      if(crowded) break;
+    }
+    if(vis >= 5 && !crowded) return tau;
+  }
+  /* fallback: the deepest split instant */
+  let best = 0, bv = -1;
+  for(let k = 0; k <= 800; k++){
+    const tau = k * 0.37;
+    const u = frac(tau / pr.P + pr.phi);
+    const s = ss(0.335, 0.40, u) * (1 - ss(0.545, 0.655, u));
+    if(s > bv){ bv = s; best = tau; }
+  }
+  return best;
+}
+
+/* ========================== renderer ================================ */
+const stage = document.getElementById("stage");
+let gl = null, prog = null, uni = {}, rafId = 0, destroyed = false;
+let canvas = null, loseCtx = null;
+
+function initGL(){
+  canvas = document.createElement("canvas");
+  stage.appendChild(canvas);
+  gl = canvas.getContext("webgl2", {
+    alpha: false, antialias: false, depth: false, stencil: false,
+    powerPreference: "high-performance"
+  });
+  if(!gl) return false;
+
+  const vsSrc = document.getElementById("vsSrc").textContent;
+  const fsSrc = document.getElementById("fsSrc").textContent;
+  const mk = (type, src) => {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)){
+      console.error("[lavalamp]", gl.getShaderInfoLog(s));
+      return null;
+    }
+    return s;
+  };
+  const vs = mk(gl.VERTEX_SHADER, vsSrc);
+  const fs = mk(gl.FRAGMENT_SHADER, fsSrc);
+  if(!vs || !fs) return false;
+  prog = gl.createProgram();
+  gl.attachShader(prog, vs);
+  gl.attachShader(prog, fs);
+  gl.linkProgram(prog);
+  if(!gl.getProgramParameter(prog, gl.LINK_STATUS)){
+    console.error("[lavalamp]", gl.getProgramInfoLog(prog));
+    return false;
+  }
+  gl.deleteShader(vs); gl.deleteShader(fs);
+  gl.useProgram(prog);
+
+  ["uRes","uT","uHeat","uAct"].concat(
+    Array.from({length: NB}, (_,i) => `uBA[${i}]`),
+    Array.from({length: NB}, (_,i) => `uBB[${i}]`)
+  ).forEach(n => uni[n] = gl.getUniformLocation(prog, n));
+
+  gl.bindVertexArray(gl.createVertexArray());
+  return true;
+}
+
+function resize(){
+  if(destroyed || !gl) return;
+  const w = Math.max(1, stage.clientWidth);
+  const h = Math.max(1, stage.clientHeight);
+  const cssPx = w * h;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  /* supersample within a fixed pixel budget so heavy fragments stay
+     affordable on any display without altering the composition */
+  let scl = Math.sqrt(2.4e6 / cssPx) * dpr;
+  scl = clampN(scl, 0.75, 1.6);
+  const bw = Math.round(w * scl), bh = Math.round(h * scl);
+  if(canvas.width !== bw || canvas.height !== bh){
+    canvas.width = bw; canvas.height = bh;
+    gl.viewport(0, 0, bw, bh);
+  }
+}
+
+/* ========================== simulation ==============================
+   State lives in a closure; nothing here is reachable through the
+   public API except via reset()/getState() as contracted.            */
+const sim = {
+  params: null,
+  tau: 0,          // simulation epoch seconds
+  acc: 0,          // accumulated real time awaiting substeps
+  heat: DEFAULT_HEAT,
+  pal: DEFAULT_PAL,
+  bufA: new Float32Array(NB * 4),
+  bufB: new Float32Array(NB * 4),
+  lastNow: null,
+
+  rate(){ return mixN(0.60, 1.35, this.heat); },
+
+  reset(seed){
+    this.params = buildParams(seed == null ? DEFAULT_SEED : seed);
+    this.tau = prewarmEpoch(this.params);   // prewarmed, neck intact
+    this.acc = 0;                           // substep ledger restarted
+    this.lastNow = null;
+    this.heat = DEFAULT_HEAT;
+    this.pal = DEFAULT_PAL;
+    this.pack();
+  },
+
+  pack(){
+    const poses = allPoses(this.params, this.tau);
+    const hstep = 0.05, inv = 1 / (2 * hstep);
+    const stretchGain = mixN(0.7, 1.15, this.heat);
+    let act = 0;
+    for(let i = 0; i < NB; i++){
+      const p = poses[i];
+      const pa = allPoses(this.params, this.tau + hstep)[i];
+      const pb = allPoses(this.params, this.tau - hstep)[i];
+      let vx = (pa.x - pb.x) * inv, vy = (pa.y - pb.y) * inv, vz = (pa.z - pb.z) * inv;
+      const sp = Math.hypot(vx, vy, vz);
+      let av = 0, nx = 0, ny = 1, nz = 0;
+      if(sp > 1e-5){
+        av = clampN(sp * 0.55 * stretchGain, 0, 0.5);
+        nx = vx / sp; ny = vy / sp; nz = vz / sp;
+      }
+      const o = i * 4;
+      this.bufA[o] = p.x; this.bufA[o+1] = p.y; this.bufA[o+2] = p.z; this.bufA[o+3] = p.kernR;
+      this.bufB[o] = nx * av; this.bufB[o+1] = ny * av; this.bufB[o+2] = nz * av; this.bufB[o+3] = p.amp;
+      act += clampN(p.amp / 2.2, 0, 1);
+    }
+    this.act = act / NB;
+  },
+
+  advance(nowMs){
+    if(this.lastNow === null){ this.lastNow = nowMs; return; }
+    let dt = (nowMs - this.lastNow) / 1000;
+    this.lastNow = nowMs;
+    if(dt <= 0) return;
+    if(dt > 0.1) dt = 0.1;                    // tab-wake guard
+    this.acc += dt;
+    const maxSteps = 180;
+    let steps = Math.floor(this.acc / DT);
+    if(steps > maxSteps){                     // shed backlog, stay live
+      this.acc = this.acc % DT;
+      steps = 0;
+    }
+    if(steps > 0){
+      this.acc -= steps * DT;
+      this.tau += steps * DT * this.rate();
+      this.pack();
+    }
+  }
+};
+
+/* ========================== frame loop ============================== */
+function frame(now){
+  if(destroyed) return;
+  rafId = requestAnimationFrame(frame);
+  resize();
+  sim.advance(now);
+  gl.uniform2f(uni["uRes"], canvas.width, canvas.height);
+  gl.uniform1f(uni["uT"], sim.tau);
+  gl.uniform1f(uni["uHeat"], sim.heat);
+  gl.uniform1f(uni["uAct"], sim.act || 0);
+  gl.uniform4fv(uni["uBA[0]"], sim.bufA);
+  gl.uniform4fv(uni["uBB[0]"], sim.bufB);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+/* =========================== lifecycle ============================== */
+function onResize(){ resize(); }
+
+function start(){
+  if(!initGL()){
+    console.error("[lavalamp] WebGL2 unavailable — scene disabled.");
+    return;
+  }
+  sim.reset(DEFAULT_SEED);
+  window.addEventListener("resize", onResize);
+  resize();
+  rafId = requestAnimationFrame(frame);
+}
+
+function destroy(){
+  if(destroyed) return;
+  destroyed = true;
+  cancelAnimationFrame(rafId);
+  window.removeEventListener("resize", onResize);
+  if(gl){
+    loseCtx = gl.getExtension("WEBGL_lose_context");
+    const ext = gl.getExtension("WEBGL_lose_context");
+    if(ext) ext.loseContext();
+    gl = null;
+  }
+  prog = null; uni = {};
+  if(canvas && canvas.parentNode) canvas.parentNode.removeChild(canvas);
+  canvas = null;
+}
+
+/* ========================== public API ==============================
+   Exactly the shared BridgeBench surface. getState() carries only the
+   two fixed configuration keys — never clocks, counters, cameras or
+   blob coordinates.                                                   */
+window.BridgeBench = {
+  manifest: MANIFEST,
+  getState(){
+    return { heat: sim.heat, paletteIndex: sim.pal };
+  },
+  reset(seed){
+    if(destroyed){ console.warn("[lavalamp] destroyed"); return; }
+    sim.reset(seed);
+  },
+  destroy
+};
+
+start();
+
+})();
+</script>
+</body>
+</html>
+```
+
+**How it delivers the brief**
+
+- **One physical object, one shader.** The whole shot is a single ray program: analytic ray–cone intersections trace the tapered glass shell (proper double refraction air→glass→liquor, with total internal reflection falling back to the dark-edged behaviour real glass shows at the silhouette), a sphere-traced solid-of-revolution builds the brushed base and cap, and the wax is a smooth implicit metaball field (quartic kernels + a squashed pool slab) marched adaptively with bisection refinement, collecting front-to-back layers so overlapping masses composite correctly.
+
+- **Wax that rewards the close look.** Per-layer thickness drives the colour ramp — glowing amber at thin edges, deep orange mid-tones, near-black maroon cores — plus warm backlight that shines *through* thin wax, heater in-scatter in the clear liquor, and gelatinous strip speculars. Kernel radii and velocity-stretched prolates give teardrops and necks; the choreographed flagship pair rises fused, snaps apart mid-air, and rejoins on descent, guaranteed present as a living bridge on frame one via a deterministic prewarm scan.
+
+- **Determinism by construction.** Every pose is a closed-form function of the epoch time; `reset(seed)` rebuilds identical parameters, rescans the same prewarm instant, zeroes the substep accumulator, and restores heat 0.65 / paletteIndex 0. `getState()` exposes only those two keys; the manifest declares `controls: []`; `destroy()` cancels the loop, drops the sole listener, and loses the GL context.
+
+- **Locked framing.** The camera is a compile-time constant aimed at the lamp's vertical centre, placing the full lamp (foot to cap) inside the central ~74% of frame height with symmetric margins on every aspect ratio — no drift, no crop, no overlays, ever.

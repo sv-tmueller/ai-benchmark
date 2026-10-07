@@ -1,0 +1,50 @@
+{
+  "generated_utc": "2026-10-07T11:20:19.328719+00:00",
+  "toml": "game-lava-lamp.toml",
+  "prompt_id": "game-lava-lamp",
+  "name_suffix": null,
+  "title": "Photoreal ray-marched lava lamp studio shot",
+  "endpoint": "https://ai.noris.de/v1/chat/completions",
+  "model": "vllm/qsu/glm-5-3-flash",
+  "params": {
+    "temperature": 0.2,
+    "max_tokens_requested_initial": 65536,
+    "max_tokens_effective_last_attempt": 65536,
+    "reasoning_effort": null,
+    "stream": true,
+    "name_suffix": null
+  },
+  "finish_reason": "stop",
+  "truncated": false,
+  "usage": {
+    "prompt_tokens": 528,
+    "prompt_tokens_details": {
+      "cached_read_tokens": 527,
+      "cached_tokens": 527,
+      "cache_write_tokens": 0
+    },
+    "completion_tokens": 50001,
+    "completion_tokens_details": {
+      "reasoning_tokens": 33815
+    },
+    "total_tokens": 50529,
+    "reasoning_tokens": 33815
+  },
+  "retries": [
+    {
+      "attempt": 1,
+      "max_tokens": 65536,
+      "reasoning_effort": null,
+      "finish_reason": "stop",
+      "elapsed_s": 320.8,
+      "done_sentinel": true,
+      "name_suffix": null
+    }
+  ],
+  "num_retry_api_calls": 0,
+  "grading": null,
+  "outputs": {
+    "deliverable": "results/lava-lamp/lava-lamp_glm_5_3_flash.html",
+    "review_html": null
+  }
+}
