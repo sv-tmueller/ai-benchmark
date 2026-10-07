@@ -1,0 +1,59 @@
+{
+  "generated_utc": "2026-10-07T15:13:26.126640+00:00",
+  "toml": "game-sunset-ocean.toml",
+  "prompt_id": "game-sunset-ocean",
+  "name_suffix": null,
+  "title": "Photoreal Three.js sunset ocean scene as a single HTML file",
+  "endpoint": "https://ai.noris.de/v1/chat/completions",
+  "model": "vllm/release/glm-5-2",
+  "params": {
+    "temperature": 0.2,
+    "max_tokens_requested_initial": 65536,
+    "max_tokens_effective_last_attempt": 131072,
+    "reasoning_effort": null,
+    "stream": true,
+    "name_suffix": null
+  },
+  "finish_reason": "stop",
+  "truncated": false,
+  "usage": {
+    "prompt_tokens": 2301,
+    "prompt_tokens_details": {
+      "cached_read_tokens": 2176,
+      "cached_tokens": 2176,
+      "cache_write_tokens": 0
+    },
+    "completion_tokens": 28504,
+    "completion_tokens_details": {
+      "reasoning_tokens": 16279
+    },
+    "total_tokens": 30805,
+    "reasoning_tokens": 16279
+  },
+  "retries": [
+    {
+      "attempt": 1,
+      "max_tokens": 65536,
+      "reasoning_effort": null,
+      "finish_reason": "length",
+      "elapsed_s": 419.25,
+      "done_sentinel": true,
+      "name_suffix": null
+    },
+    {
+      "attempt": 2,
+      "max_tokens": 131072,
+      "reasoning_effort": null,
+      "finish_reason": "stop",
+      "elapsed_s": 176.78,
+      "done_sentinel": true,
+      "name_suffix": null
+    }
+  ],
+  "num_retry_api_calls": 1,
+  "grading": null,
+  "outputs": {
+    "deliverable": "results/sunset-ocean/sunset-ocean_glm_5_2.html",
+    "review_html": null
+  }
+}
