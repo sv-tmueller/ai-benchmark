@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Write a Node.js CLI script matching an exact specification — glm_5_3_flash</title>
+<style>
+  body { font-family: -apple-system, Helvetica, Arial, sans-serif; margin: 2rem auto;
+         max-width: 900px; padding: 0 1rem; color: #24292f; }
+  h1 { font-size: 1.4rem; border-bottom: 1px solid #d0d7de; padding-bottom: .4rem; }
+  .note { color: #57606a; font-size: .85rem; margin-bottom: 1rem; }
+  pre.deliverable { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;
+                     padding: 1rem; overflow-x: auto; white-space: pre-wrap;
+                     word-wrap: break-word; font-size: .9rem; }
+</style>
+</head>
+<body>
+<h1>Write a Node.js CLI script matching an exact specification — glm_5_3_flash</h1>
+<div class="note">GLM 5.3 Flash review wrapper — deliverable: <code>results/probe-follow-spec/follow-spec_glm_5_3_flash.txt</code></div>
+<pre class="deliverable">#!/usr/bin/env node
+
+'use strict';
+
+const fs = require('node:fs');
+
+function countLines(content) {
+  if (content === '') return 0;
+  // Treat a trailing newline as terminating the last line,
+  // while a missing trailing newline still leaves a final line.
+  const normalized = content.endsWith('\n') ? content.slice(0, -1) : content;
+  return normalized.split('\n').length;
+}
+
+function main() {
+  const args = process.argv.slice(2);
+
+  if (args.length === 0) {
+    console.error('usage: count-lines &lt;file...&gt;');
+    process.exit(2);
+  }
+
+  let failed = false;
+
+  for (const filePath of args) {
+    try {
+      const content = fs.readFileSync(filePath, 'utf8');
+      console.log(String(countLines(content)) + '\t' + filePath);
+    } catch {
+      console.error('error: ' + filePath);
+      failed = true;
+    }
+  }
+
+  if (failed) {
+    process.exitCode = 1;
+  }
+}
+
+main();
+</pre>
+</body>
+</html>
