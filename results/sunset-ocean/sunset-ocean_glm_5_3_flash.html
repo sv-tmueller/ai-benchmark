@@ -1,0 +1,817 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Sunset Ocean</title>
+<style>
+  html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#05070c;}
+  canvas{display:block;cursor:grab;}
+  canvas.dragging{cursor:grabbing;}
+  /* Intro veil: a plain dark fade, deliberately wordless */
+  #veil{position:fixed;inset:0;background:#05070c;z-index:20;transition:opacity 1.4s ease;pointer-events:none;}
+  #fail{position:fixed;inset:0;display:none;align-items:center;justify-content:center;color:#c9b8a0;font:13px/1.6 ui-monospace,Menlo,Consolas,monospace;z-index:30;text-align:center;}
+  /* Hidden diagnostics panel — opened with the backquote key */
+  #dbg{position:fixed;top:14px;right:14px;z-index:40;display:none;width:238px;
+       background:rgba(9,11,16,.84);backdrop-filter:blur(6px);border:1px solid rgba(255,178,107,.18);
+       border-radius:6px;padding:10px 12px 12px;color:#cfd6df;font:11px/1.5 ui-monospace,Menlo,Consolas,monospace;
+       box-shadow:0 8px 30px rgba(0,0,0,.5);}
+  #dbg h2{margin:0 0 6px;font-size:11px;font-weight:600;letter-spacing:.08em;color:#ffb26b;display:flex;justify-content:space-between;}
+  #dbg label{display:flex;justify-content:space-between;align-items:center;margin:5px 0 0;gap:8px;}
+  #dbg label span.v{color:#8fe3c8;min-width:44px;text-align:right;}
+  #dbg input[type=range]{flex:1;height:2px;accent-color:#ffb26b;margin:0;}
+  #dbg select,#dbg button{background:#141922;color:#cfd6df;border:1px solid #2a3342;border-radius:3px;font:inherit;padding:1px 6px;}
+  #dbg .row{display:flex;gap:6px;margin-top:6px;}
+  #dbg .chk{display:flex;align-items:center;gap:6px;margin-top:6px;color:#9aa4b0;}
+  #dbg .chk input{accent-color:#ffb26b;}
+</style>
+<script type="importmap">
+{
+  "imports":{
+    "three":"https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js",
+    "three/addons/":"https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="veil"></div>
+<div id="fail">This scene needs WebGL2.<br/>Please use a current Chrome, Firefox, Edge or Safari.</div>
+<aside id="dbg">
+  <h2>SUNSET OCEAN · DIAGNOSTICS <span id="fps">--</span></h2>
+  <label><input id="ovr" type="checkbox"/><em style="color:#9aa4b0">override sun drift</em></label>
+  <label>elev <input id="sElev" type="range" min="0.6" max="14" step="0.05" value="5.6"/><span class="v" id="vElev">5.6°</span></label>
+  <label>azim <input id="sAzim" type="range" min="-30" max="30" step="0.1" value="0"/><span class="v" id="vAzim">0.0°</span></label>
+  <label>sea&nbsp;&nbsp;<input id="sSea" type="range" min="0.4" max="1.7" step="0.01" value="1"/><span class="v" id="vSea">1.00</span></label>
+  <label>wind <input id="sWind" type="range" min="0" max="2" step="0.01" value="1"/><span class="v" id="vWind">1.00</span></label>
+  <label>expo <input id="sExp" type="range" min="0.4" max="1.8" step="0.01" value="1.05"/><span class="v" id="vExp">1.05</span></label>
+  <label>bloom<input id="sBloom" type="range" min="0" max="1.5" step="0.01" value="0.42"/><span class="v" id="vBloom">0.42</span></label>
+  <div class="row"><select id="qual"><option value="hi">Quality · High</option><option value="lo">Quality · Low</option></select></div>
+  <div class="chk"><input id="cg" type="checkbox" checked/>grain</div>
+  <div class="chk"><input id="cv" type="checkbox" checked/>vignette</div>
+  <div class="chk"><input id="cw" type="checkbox"/>wireframe water</div>
+</aside>
+
+<script type="module">
+/* ══════════════════════════════════════════════════════════════════════════
+   SUNSET OCEAN — single-file realtime scene
+   Systems (search the banners): CONFIG · GLSL LIB · TEXTURES · CORE · SKY ·
+   WATER · POST · CONTROL · DEBUG · LOOP
+
+   Engineering notes for reviewers:
+   • One analytical atmosphere model is the single source of truth for the
+     sky dome, the water's reflections, the fog colour and the light colours.
+     The GLSL constants are INTERPOLATED FROM the JS config object below, and
+     the same object feeds a JS twin evaluator — sky/reflection/fog/light can
+     never disagree.
+   • Waves: 9 Gerstner waves (3 swell + 6 wind sea) with the deep-water
+     dispersion relation ω=√(gk). Frequencies are quantised to a master
+     period P=480 s so wrapping simulation time is phase-continuous — the
+     sea can run indefinitely with no float-precision decay and no visible
+     loop. Cloud advection/morph uses the same trick (rotation-based morph).
+   • Mesh: camera-centred radial grid (dense near, exponential far), rebuilt
+     never, recentered every frame. All animation in shaders; one draw call.
+   • Pipeline: HDR half-float MSAA target → UnrealBloom (linear) →
+     OutputPass (ACES + sRGB) → grain/vignette (display-referred).
+   Mandate audit: water 1–5 §WATER · sky/sun/clouds 6–8 §SKY/GLSL ·
+   camera 9 §CONTROL · colour/post 10–11 §POST · AA 12 §CORE/§POST ·
+   motion §CONFIG(P quantisation)+§LOOP · perf §CONFIG presets.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+import * as THREE from 'three';
+import { EffectComposer }  from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass }      from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { ShaderPass }      from 'three/addons/postprocessing/ShaderPass.js';
+import { OutputPass }      from 'three/addons/postprocessing/OutputPass.js';
+
+/* ═══════════════════════════ §0 CONFIG ═══════════════════════════════════ */
+
+const MASTER_PERIOD = 480;               // s — every temporal frequency is 2π·n/P
+const GRAV = 9.81;
+
+// --- Atmosphere configuration (single source of truth, see header note) ---
+const ATMO = {
+  betaR : [0.0493, 0.1152, 0.2814],      // Rayleigh extinction · 8.5 km path, xyz=rgb
+  betaM : [0.0748, 0.0799, 0.0884],      // Mie extinction (turbid evening air)
+  mieG  : 0.79,
+  warmLo: [0.90, 1.25, 1.45],            // Chappuis-band-style exponents on sun transmittance
+  sunI  : 20.0,                          // solar radiance scale (arb. HDR units)
+  ambI  : 0.90,                          // multiple-scatter floor gain
+  discI : 2600.0,                        // sun-disc radiance
+  discR : 0.00635,                       // sun angular radius (rad) — slightly heroic
+};
+
+// --- Spectrum: lambda(m), amp(m), bearing offset (deg, 0 = travelling at camera),
+//     grouped budgets bound Σ Q·k·A so crests sharpen without self-intersection.
+const SWELL_BUDGET = 0.36, WIND_BUDGET = 0.52;
+const WAVES_SRC = [
+  // ---- swell group: long, heavy, near-common bearing -----------------------
+  { lam:104.0, amp:0.60, br:-3 }, { lam:61.0, amp:0.44, br:+5 },
+  { lam:37.0,  amp:0.30, br:-9 },
+  // ---- wind sea: shorter, faster, veered -----------------------------------
+  { lam:21.5,  amp:0.215, br:+14 }, { lam:13.8, amp:0.158, br:+22 },
+  { lam:8.9,   amp:0.112, br:+28 }, { lam:5.7,  amp:0.074, br:-16 },
+  { lam:3.7,   amp:0.049, br:+34 }, { lam:2.4,  amp:0.031, br:-24 },
+];
+const SWELL_COUNT = 3, BASE_BR_SWELL = 0, BASE_BR_WIND = 9;
+
+function buildWaveTable(){
+  const tab=[]; let qs=[], qw=[];
+  for(const w of WAVES_SRC){
+    const k=2*Math.PI/w.lam;
+    const om=Math.sqrt(GRAV*k);                              // deep-water dispersion
+    const n=Math.round(om*MASTER_PERIOD/(2*Math.PI));        // quantise → wrap-safe
+    const omq=n*2*Math.PI/MASTER_PERIOD;
+    const br=(tab.length<SWELL_COUNT?BASE_BR_SWELL:BASE_BR_WIND)+w.br;
+    const th=br*Math.PI/180;
+    tab.push({...w,k,om:omq,dx:Math.sin(th),dz:Math.cos(th)});
+    (tab.length<=SWELL_COUNT?qs:qw).push(tab[tab.length-1]);
+  }
+  const qOf=(grp,budget)=>{ const s=budget/grp.length;
+    grp.forEach(w=>w.qa=w.amp>0?s/(w.k):0); };               // Q·A = s/k  ⇒ Q·k·A = s
+  qOf(qs,SWELL_BUDGET); qOf(qw,WIND_BUDGET);
+  return tab;
+}
+const WAVES = buildWaveTable();
+const fmt = a => a.map(v=>Number(v.toFixed(6))).join(',');
+const waveGLSL = `
+#define NW ${WAVES.length}
+const float WK[NW]   = float[](${WAVES.map(w=>w.k.toFixed(6)).join(',')});
+const float WA[NW]   = float[](${WAVES.map(w=>w.amp.toFixed(6)).join(',')});
+const float WQA[NW]  = float[](${WAVES.map(w=>w.qa.toFixed(6)).join(',')});
+const float WW[NW]   = float[](${WAVES.map(w=>w.om.toFixed(6)).join(',')});
+const float WP[NW]   = float[](${WAVES.map((_,i)=>(i*1.618).toFixed(4)).join(',')});
+const vec2  WD[NW]   = vec2[](${WAVES.map(w=>`vec2(${w.dx.toFixed(6)},${w.dz.toFixed(6)})`).join(',')});
+`;
+
+// --- Quality presets --------------------------------------------------------
+const PRESETS={
+  hi:{rings:150,segs:240,detailLayers:2,dprCap:2.0,msaa:4},
+  lo:{rings:96, segs:144,detailLayers:1,dprCap:1.25,msaa:0},
+};
+let quality='hi';
+
+/* ═══════════════════ §1 GLSL LIBRARY (shared chunks) ══════════════════════ */
+
+const G_NOISE = /* glsl */`
+float hash12(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }
+float vnoise(vec2 p){
+  vec2 i=floor(p), f=fract(p); vec2 u=f*f*(3.0-2.0*f);
+  return mix(mix(hash12(i),hash12(i+vec2(1,0)),u.x),
+             mix(hash12(i+vec2(0,1)),hash12(i+vec2(1,1)),u.x),u.y);
+}
+const mat2 ROT = mat2(0.8,-0.6,0.6,0.8);
+float fbm(vec2 p,int oct){
+  float a=0.5,s=0.0;
+  for(int i=0;i<6;i++){ if(i>=oct)break; s+=a*vnoise(p); p=ROT*p*2.03+11.7; a*=0.5; }
+  return s;
+}
+float fbmAbs(vec2 p,int oct){                                 // ridged, for cloud puffs
+  float a=0.5,s=0.0;
+  for(int i=0;i<5;i++){ if(i>=oct)break; s+=a*(1.0-abs(2.0*vnoise(p)-1.0)); p=ROT*p*2.11+7.3; a*=0.52; }
+  return s;
+}`;
+
+const G_ATMO = /* glsl */`
+// Curtailed single-scattering atmosphere + multiple-scatter floor.
+// Constants are injected from the JS ATMO object — one source of truth.
+const vec3 BR = vec3(${fmt(ATMO.betaR)});
+const vec3 BM = vec3(${fmt(ATMO.betaM)});
+const vec3 WARME = vec3(${fmt(ATMO.warmLo)});
+const float MIE_G=${ATMO.mieG.toFixed(3)}, SUN_I=${ATMO.sunI.toFixed(2)},
+            AMB_I=${ATMO.ambI.toFixed(3)};
+float airmass(float y){ return 1.0/(max(y,0.0)*0.91+0.09); }
+
+vec3 sunTransmit(float sy){                                   // transmittance eye←sun
+  float am=airmass(sy);
+  vec3 t=exp(-(BR+BM)*am);
+  return pow(t,WARME);                                        // warm curve ≈ Chappuis band
+}
+
+vec3 atmosphere(vec3 v, vec3 sd){                             // v: unit view ray
+  float vy=v.y;                                               // below-horizon: compressed dim haze
+  bool below = vy<0.0;
+  float y = below ? -vy*0.35 : vy;
+  y=max(y,0.002);
+  float amV=airmass(y);
+  vec3 Tv=exp(-(BR+BM)*amV);
+
+  float mu=dot(v,sd);
+  float phR=0.15915494*(1.0+mu*mu);
+  float g=MIE_G,g2=g*g;
+  float phM=0.0795775*(1.0-g2)/pow(1.0+g2-2.0*g*mu,1.5);
+
+  vec3 ts=sunTransmit(sd.y);
+  float day=clamp(sd.y*8.0+0.35,0.0,1.0);
+  vec3 S = SUN_I*ts*(BR*phR+BM*phM);
+  vec3 L = S*(1.0-Tv)/(BR+BM);
+
+  // multiple-scatter floor: bluest overhead, rolled off at the horizon
+  vec3 rs=BR/(BR+BM);
+  vec3 amb=rs*(1.0-Tv)*AMB_I*day*mix(0.15,1.0,smoothstep(0.0,0.35,y));
+
+  vec3 c=L+amb;
+  return below ? c*0.85 : c;
+}
+float sunDisc(vec3 v, vec3 sd){                               // soft-limb disc + aureole
+  float mu=dot(v,sd);
+  float r=${ATMO.discR.toFixed(5)};
+  float d=smoothstep(cos(r+0.0009),cos(r*0.985),mu);
+  float au=pow(max(mu,0.0),180.0)*0.55;
+  return d+au;
+}`;
+
+const G_CLOUD = /* glsl */`
+// Two procedural layers on the dome: a wind-sheared cirrus band and sparse
+// altocumulus puffs. Warm undersides come from sunTransmit(); silver linings
+// from the Mie phase. Morph is a slow DOMAIN ROTATION — perfectly periodic.
+void cloudLayer(vec3 v, vec3 sd, inout vec3 col, inout float trans,
+                float cov1, float cov2, float t){
+  if(v.y<0.015||trans<0.02) return;
+  vec3 ts=sunTransmit(sd.y);
+  float mu=dot(v,sd);
+  float low=exp(-sd.y*9.0);                                  // how "sunset" the lighting is
+
+  // ---- cirrus band ---------------------------------------------------------
+  vec2 q1=v.xz/(v.y+0.118);
+  q1=mat2(0.936,-0.351,0.351,0.936)*q1;                      // orient to wind
+  q1*=0.42; q1.x*=0.55;                                      // shear into streaks
+  q1+=vec2(t*0.021,t*0.006);                                 // quantised drift
+  vec2 w1=vec2(fbm(q1*1.7+vec2(3.1),3),fbm(q1*1.7+vec2(9.4),3))-0.5;
+  float f1=fbm(q1+w1*0.9,5);
+  float band=exp(-pow((v.y-0.10)/0.17,2.0));
+  float d1=smoothstep(0.52,0.80,f1)*band*cov1;
+
+  // ---- altocumulus puffs ----------------------------------------------------
+  vec2 q2=v.xz/(v.y+0.45)*0.9+vec2(t*0.013,-t*0.004);
+  float f2=fbmAbs(q2,4);
+  float d2=smoothstep(0.62,0.88,f2)*cov2*smoothstep(0.02,0.14,v.y);
+
+  for(int i=0;i<2;i++){
+    float d=(i==0)?d1:d2; if(d<0.004)continue;
+    float edge=1.0-smoothstep(0.0,0.85,d);                   // thin edges glow
+    vec3 coolTop=vec3(0.30,0.34,0.44);
+    vec3 warmUnd=ts*1.55+vec3(0.05,0.02,0.0);
+    vec3 und=mix(coolTop*0.9,warmUnd,(i==0?edge:edge*0.8)*low*
+                 pow(max(mu*0.5+0.5,0.0),(i==0?2.5:1.6)));
+    float sil=pow(max(mu,0.0),24.0)*edge*1.25;               // silver lining
+    vec3 cc=mix(und,coolTop*1.35+ts*0.25,smoothstep(0.35,0.9,d));
+    cc+=(ts*SUN_I*0.05)*sil;
+    float a=clamp(d*(i==0?0.85:1.0)+sil*0.25,0.0,1.0)*trans;
+    col=mix(col,cc,a);
+    trans*=1.0-a*0.92;
+  }
+}
+void cloudLite(vec3 v, vec3 sd, inout vec3 col, float t){     // cheap cirrus for reflections
+  if(v.y<0.03)return;
+  vec2 q1=v.xz/(v.y+0.118); q1=mat2(0.936,-0.351,0.351,0.936)*q1;
+  q1*=0.42; q1.x*=0.55; q1+=vec2(t*0.021,t*0.006);
+  float f1=fbm(q1,3);
+  float d=smoothstep(0.55,0.82,f1)*exp(-pow((v.y-0.10)/0.19,2.0))*0.55;
+  if(d<0.004)return;
+  vec3 ts=sunTransmit(sd.y);
+  float mu=dot(v,sd);
+  vec3 cc=mix(ts*1.4+vec3(0.04),vec3(0.34,0.37,0.46),smoothstep(0.1,0.8,d));
+  col=mix(col,cc,clamp(d,0.0,1.0)*0.8);
+}`;
+
+/* ═══════════════════ §2 PROCEDURAL TEXTURES ═══════════════════════════════ */
+/* Tileable value-noise heightfields → packed XY normals (RG, BC5-style) and
+   a ridged foam mask. Generated once at boot; mipmapped + anisotropic so the
+   far field minifies without sparkling. Zero assets, zero downloads.       */
+
+function makeField(size,cells,octaves,ridged){
+  const h=new Float32Array(size*size);
+  const rnd=(x,y,c)=>{ // periodic lattice hash
+    let n=Math.sin(x*127.1+y*311.7+c*74.7)*43758.5453; return n-Math.floor(n);
+  };
+  const val=(x,y,c)=>{
+    const xi=Math.floor(x),yi=Math.floor(y),xf=x-xi,yf=y-yi;
+    const u=xf*xf*(3-2*xf),v=yf*yf*(3-2*yf);
+    const w=(a,b)=>rnd(((a%c)+c)%c,((b%c)+c)%c,c);
+    const a=w(xi,yi),b=w(xi+1,yi),c2=w(xi,yi+1),d=w(xi+1,yi+1);
+    return a+(b-a)*u+(c2-a)*v+(a-b-c2+d)*u*v;
+  };
+  for(let y=0;y<size;y++)for(let x=0;x<size;x++){
+    let s=0,a=0.5,fr=cells;
+    for(let o=0;o<octaves;o++){
+      const n=val(x/size*fr,y/size*fr,o*17.17);
+      s+=a*(ridged?1-Math.abs(2*n-1):n);
+      fr*=2;a*=0.5;
+    }
+    h[y*size+x]=s;
+  }
+  return h;
+}
+function fieldToNormalTexture(size,h,str){
+  const cv=document.createElement('canvas');cv.width=cv.height=size;
+  const ctx=cv.getContext('2d'),img=ctx.createImageData(size,size);
+  const at=(x,y)=>h[((y+size)%size)*size+((x+size)%size)];
+  for(let y=0;y<size;y++)for(let x=0;x<size;x++){
+    const dx=(at(x+1,y)-at(x-1,y))*str, dy=(at(x,y+1)-at(x,y-1))*str;
+    const i=(y*size+x)*4;
+    img.data[i]  =Math.max(0,Math.min(255,(-dx*0.5+0.5)*255));
+    img.data[i+1]=Math.max(0,Math.min(255,(-dy*0.5+0.5)*255));
+    img.data[i+2]=255; img.data[i+3]=255;
+  }
+  ctx.putImageData(img,0,0);
+  const t=new THREE.CanvasTexture(cv);
+  t.wrapS=t.wrapT=THREE.RepeatWrapping;
+  t.minFilter=THREE.LinearMipmapLinearFilter;t.magFilter=THREE.LinearFilter;
+  t.generateMipmaps=true;t.colorSpace=THREE.NoColorSpace;
+  return t;
+}
+function fieldToAlphaTexture(size,h){
+  const cv=document.createElement('canvas');cv.width=cv.height=size;
+  const ctx=cv.getContext('2d'),img=ctx.createImageData(size,size);
+  for(let i=0;i<size*size;i++){
+    const v=Math.max(0,Math.min(255,h[i]*255));
+    img.data[i*4]=img.data[i*4+1]=img.data[i*4+2]=v;img.data[i*4+3]=255;
+  }
+  ctx.putImageData(img,0,0);
+  const t=new THREE.CanvasTexture(cv);
+  t.wrapS=t.wrapT=THREE.RepeatWrapping;
+  t.minFilter=THREE.LinearMipmapLinearFilter;t.magFilter=THREE.LinearFilter;
+  t.generateMipmaps=true;t.colorSpace=THREE.NoColorSpace;
+  return t;
+}
+const TEX_DETAIL_A=fieldToNormalTexture(512,makeField(512,6,5,false),2.6);
+const TEX_DETAIL_B=fieldToNormalTexture(512,makeField(512,10,4,false),3.1);
+const TEX_FOAM    =fieldToAlphaTexture(256,makeField(256,5,5,true ));
+
+/* ═══════════════════ §3 CORE: renderer · scene · camera ═══════════════════ */
+
+let renderer;
+try{
+  renderer=new THREE.WebGLRenderer({antialias:false,stencil:false,powerPreference:'high-performance'});
+}catch(e){ document.getElementById('fail').style.display='flex'; throw e; }
+if(!renderer.capabilities.isWebGL2){ document.getElementById('fail').style.display='flex'; throw new Error('WebGL2 required'); }
+document.body.appendChild(renderer.domElement);
+renderer.toneMapping=THREE.ACESFilmicToneMapping;   // consumed by OutputPass
+renderer.toneMappingExposure=1.05;
+renderer.debug.checkShaderErrors=true;
+
+const scene=new THREE.Scene();
+scene.background=null;
+renderer.setClearColor(0x0a0d14,1);
+
+const camera=new THREE.PerspectiveCamera(55,innerWidth/innerHeight,0.1,20000);
+camera.position.set(0,3.35,26);
+
+const ANISO=Math.min(8,renderer.capabilities.getMaxAnisotropy());
+TEX_DETAIL_A.anisotropy=TEX_DETAIL_B.anisotropy=TEX_FOAM.anisotropy=ANISO;
+
+/* ═══════════════════════════ §4 SKY DOME ══════════════════════════════════ */
+
+const skyUni={
+  uSunDir :{value:new THREE.Vector3(0,0.1,-1)},
+  uTimeW  :{value:0},                                // wrapped cloud time
+  uCov1   :{value:0.55},
+  uCov2   :{value:0.20},
+};
+const skyMat=new THREE.ShaderMaterial({
+  uniforms:skyUni, side:THREE.BackSide, depthWrite:false,
+  vertexShader:/* glsl */`
+    varying vec3 vDir;
+    void main(){ vDir=position; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+  fragmentShader:/* glsl */`
+    precision highp float;
+    varying vec3 vDir;
+    uniform vec3 uSunDir; uniform float uTimeW,uCov1,uCov2;
+    ${G_NOISE}${G_CLOUD}${G_ATMO}
+    void main(){
+      vec3 v=normalize(vDir);
+      vec3 c=atmosphere(v,uSunDir);
+      float trans=1.0;
+      cloudLayer(v,uSunDir,c,trans,uCov1,uCov2,uTimeW);
+      // sun disc, dimmed by cloud transmittance, reddened by transmittance
+      float disc=sunDisc(v,uSunDir);
+      c+=sunTransmit(uSunDir.y)*vec3(${ATMO.discI.toFixed(0)}.0)*disc*trans;
+      gl_FragColor=vec4(c,1.0);
+    }`,
+});
+const skyDome=new THREE.Mesh(new THREE.SphereGeometry(8500,48,32),skyMat);
+skyDome.frustumCulled=false; skyDome.renderOrder=-1;
+scene.add(skyDome);
+
+/* ── JS twin of the atmosphere (lights, fog probes, ambient) ─────────────── */
+function airmassJS(y){return 1/(Math.max(y,0)*0.91+0.09);}
+function sunTransmitJS(sy){
+  const am=airmassJS(sy);
+  return ATMO.betaR.map((b,i)=>Math.pow(Math.exp(-(b+ATMO.betaM[i])*am),ATMO.warmLo[i]));
+}
+function atmosphereJS(vx,vy,vz,sd){
+  const below=vy<0, y=Math.max(below?-vy*0.35:vy,0.002);
+  const amV=airmassJS(y);
+  const Tv=ATMO.betaR.map((b,i)=>Math.exp(-(b+ATMO.betaM[i])*amV));
+  const mu=vx*sd.x+vy*sd.y+vz*sd.z;
+  const phR=0.15915494*(1+mu*mu), g=ATMO.mieG;
+  const phM=0.0795775*(1-g*g)/Math.pow(1+g*g-2*g*mu,1.5);
+  const ts=sunTransmitJS(sd.y);
+  const day=Math.min(1,Math.max(0,sd.y*8+0.35));
+  const out=[0,0,0];
+  for(let i=0;i<3;i++){
+    const S=ATMO.sunI*ts[i]*(ATMO.betaR[i]*phR+ATMO.betaM[i]*phM);
+    let L=S*(1-Tv[i])/(ATMO.betaR[i]+ATMO.betaM[i]);
+    const rs=ATMO.betaR[i]/(ATMO.betaR[i]+ATMO.betaM[i]);
+    const amb=rs*(1-Tv[i])*ATMO.ambI*day*(0.15+0.85*THREE.MathUtils.smoothstep(y,0,0.35));
+    out[i]=(L+amb)*(below?0.85:1);
+  }
+  return out;
+}
+
+/* ═══════════════════ §5 WATER — geometry · material ═══════════════════════ */
+
+function buildRadialGrid(rings,segs){
+  const r0=0.35,rMax=8000;
+  const verts=new Float32Array((1+rings*segs)*3);
+  // apex at centre
+  let vi=3;
+  for(let ri=1;ri<=rings;ri++){
+    const r=r0*Math.pow(rMax/r0,ri/rings);
+    for(let si=0;si<segs;si++){
+      const a=si/segs*Math.PI*2;
+      verts[vi++]=Math.cos(a)*r; verts[vi++]=0; verts[vi++]=Math.sin(a)*r;
+    }
+  }
+  const idx=new Uint16Array(rings*segs*6-segs*3); // fans + quads
+  let ii=0;
+  for(let si=0;si<segs;si++){                     // centre fan
+    idx[ii++]=0;idx[ii++]=1+si;idx[ii++]=1+(si+1)%segs;
+  }
+  for(let ri=0;ri<rings-1;ri++){
+    const a=1+ri*segs,b=1+(ri+1)*segs;
+    for(let si=0;si<segs;si++){
+      const s1=si,s2=(si+1)%segs;
+      idx[ii++]=a+s1;idx[ii++]=b+s1;idx[ii++]=b+s2;
+      idx[ii++]=a+s1;idx[ii++]=b+s2;idx[ii++]=a+s2;
+    }
+  }
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.BufferAttribute(verts,3));
+  g.setIndex(new THREE.BufferAttribute(idx,1));
+  return g;
+}
+
+const waterUni={
+  uTimeW    :{value:0},
+  uCamPos   :{value:new THREE.Vector3()},
+  uSunDir   :{value:skyUni.uSunDir.value},
+  uAmpScale :{value:1},
+  uWind     :{value:1},
+  uDetA     :{value:TEX_DETAIL_A},
+  uDetB     :{value:TEX_DETAIL_B},
+  uFoamT    :{value:TEX_FOAM},
+  uSunLight :{value:new THREE.Color(1,0.6,0.3)},   // JS-atmo driven
+  uSkyAmb   :{value:new THREE.Color(0.1,0.15,0.25)},
+  uDeepCol  :{value:new THREE.Color(0.016,0.10,0.13)},
+  uSssCol   :{value:new THREE.Color(0.10,0.55,0.42)},
+  uDetailLayers:{value:PRESETS.hi.detailLayers},
+};
+const waterMat=new THREE.ShaderMaterial({
+  uniforms:waterUni,
+  vertexShader:/* glsl */`
+    precision highp float;
+    ${waveGLSL}
+    uniform float uTimeW,uAmpScale;
+    uniform vec3 uCamPos;
+    varying vec3 vWP; varying vec3 vN; varying float vJ,vH,vDist;
+    void main(){
+      vec3 base=(modelMatrix*vec4(position,1.0)).xyz;
+      float dist=length(base.xz-uCamPos.xz);
+      float dispFade=exp(-pow(dist/1100.0,2.0));   // geometry settles toward horizon
+      float normFade=exp(-dist/2600.0);            // slopes relax even later
+      vec3 disp=vec3(0.0); float hRaw=0.0,sumA=0.0;
+      float p=0.0,r=0.0,s=0.0;                     // Jacobian accumulator terms
+      for(int i=0;i<NW;i++){
+        float k=WK[i]; vec2 D=WD[i];
+        float lod=exp(-pow(k*dist*0.0016,2.0));    // per-wave spectral LOD
+        if(lod<0.004)continue;
+        float att=lod*uAmpScale;
+        float ph=k.dot(D,base.xz)-WW[i]*uTimeW+WP[i];
+        float sp=sin(ph),cp=cos(ph);
+        float A=WA[i]*att, QA=WQA[i]*att;
+        disp+=vec3(QA*D.x*cp,A*sp,QA*D.y*cp)*dispFade;
+        hRaw+=A*sp; sumA+=A;
+        float ks=k*att;
+        p-=WQA[i]*ks*D.x*D.x*sp;
+        r-=WQA[i]*ks*D.y*D.y*sp;
+        s-=WQA[i]*ks*D.x*D.y*sp;
+      }
+      vec3 wp=base+disp;
+      vec2 grad=vec2(0.0);
+      for(int i=0;i<NW;i++){
+        float k=WK[i]; vec2 D=WD[i];
+        float lod=exp(-pow(k*dist*0.0016,2.0));
+        if(lod<0.004)continue;
+        float ph=k.dot(D,base.xz)-WW[i]*uTimeW+WP[i];
+        grad+=WA[i]*lod*uAmpScale*k*D*cos(ph);
+      }
+      grad*=mix(normFade,1.0,0.35);
+      vN=normalize(vec3(-grad.x,1.0,-grad.y));
+      vJ=((1.0+p)*(1.0+r)-s*s);
+      vH=(sumA>0.001)?hRaw/sumA:0.0;
+      vWP=wp; vDist=dist;
+      gl_Position=projectionMatrix*viewMatrix*vec4(wp,1.0);
+    }`,
+  fragmentShader:/* glsl */`
+    precision highp float;
+    ${G_NOISE}${G_ATMO}${G_CLOUD}
+    uniform float uTimeW,uWind,uDetailLayers;
+    uniform vec3 uCamPos,uSunDir,uSunLight,uSkyAmb,uDeepCol,uSssCol;
+    uniform sampler2D uDetA,uDetB,uFoamT;
+    varying vec3 vWP; varying vec3 vN; varying float vJ,vH,vDist;
+
+    vec3 sampleNormal(sampler2D t,vec2 uv,float str){
+      vec3 tn=texture2D(t,uv).rga*2.0-1.0;
+      return vec3(tn.x,0.0,tn.y)*str;
+    }
+    void main(){
+      vec3 N=normalize(vN);
+      float dist=vDist;
+      // ---- detail ripples: two scrolling layers, faded with distance -------
+      float df1=exp(-dist*0.004), df2=exp(-dist*0.008);
+      vec2 duv1=vWP.xz*0.035+vec2(uTimeW*0.0672,uTimeW*0.0188);   // speeds quantised to P
+      vec2 duv2=vWP.xz*0.090+vec2(-uTimeW*0.1210,uTimeW*0.0522);
+      vec3 dn=sampleNormal(uDetA,duv1,0.55*df1*uWind);
+      if(uDetailLayers>1) dn+=sampleNormal(uDetB,duv2,0.38*df2*uWind);
+      N=normalize(N+dn); N.y=max(N.y,0.05); N=normalize(N);
+
+      vec3 V=normalize(uCamPos-vWP);
+      float ndv=max(dot(N,V),1e-3);
+      // ---- Fresnel (Schlick, F0 = 0.02) -------------------------------------
+      float F=0.02+0.98*pow(1.0-ndv,5.0);
+
+      // ---- reflected sky: same atmosphere as the dome (+ cirrus) ------------
+      vec3 R=reflect(-V,N); R.y=max(R.y,0.015); R=normalize(R);
+      vec3 skyR=atmosphere(R,uSunDir);
+      if(R.y>0.03) cloudLite(R,uSunDir,skyR,uTimeW);
+
+      // ---- water body: deep colour + crest scattering ----------------------
+      float hgt=smoothstep(-0.15,0.9,vH);
+      float blk=pow(max(-dot(uSunDir,V),0.0),2.2);              // back-lit transmission
+      float sss=hgt*(0.22+0.78*blk);
+      float nl=max(dot(N,uSunDir),0.0);
+      vec3 body=uDeepCol*(uSkyAmb*2.2+vec3(0.35));
+      body+=uSssCol*sss*(uSunLight*(0.35+0.65*nl)+uSkyAmb*0.6);
+      body+=uSssCol*pow(max(-dot(uSunDir,V),0.0),8.0)*hgt*0.7*uSunLight; // crest flare
+
+      // ---- sun glitter: dual GGX lobes, roughening with distance -----------
+      vec3 Hv=normalize(V+uSunDir);
+      float ndh=max(dot(N,Hv),0.0);
+      float dk=smoothstep(60.0,900.0,dist);
+      float a1=mix(0.075,0.42,dk), a2=0.42;
+      float d1=a1*a1/(3.14159*pow(ndh*ndh*(a1*a1-1.0)+1.0,2.0));
+      float d2=a2*a2/(3.14159*pow(ndh*ndh*(a2*a2-1.0)+1.0,2.0));
+      float term=max(dot(N,uSunDir)*0.5+0.5,0.0); term*=term;
+      vec3 spec=(d1*1.0+d2*0.22)*F*term*uSunLight*0.9;
+
+      // ---- whitecaps: Jacobian pinch + procedural breakup ------------------
+      float jac=smoothstep(0.80,0.30,vJ);
+      float fm=texture2D(uFoamT,vWP.xz*0.11+vec2(uTimeW*0.021,uTimeW*0.008)).r;
+      fm*=texture2D(uFoamT,vWP.xz*0.031-vec2(uTimeW*0.006,uTimeW*0.017)).r;
+      float foam=jac*smoothstep(0.35,0.75,fm*0.75+jac*0.45)*uWind;
+      foam*=exp(-dist*0.002);
+      vec3 foamCol=(uSunLight*(0.55+0.45*nl)+uSkyAmb)*0.92;
+      body=mix(body,foamCol,clamp(foam,0.0,1.0)*0.85);
+
+      // ---- assemble: fresnel mirror over body, then specular ---------------
+      vec3 col=mix(body,skyR,F)+spec;
+
+      // ---- aerial perspective: fog coloured BY the sky at the horizon ------
+      vec3 hv=normalize(vec3(vWP.x-uCamPos.x,0.0,vWP.z-uCamPos.z));
+      vec3 fogCol=atmosphere(hv,uSunDir);
+      float fh=1.0-exp(-pow(dist*(1.0/2600.0),1.30));
+      col=mix(col,fogCol,fh);
+
+      gl_FragColor=vec4(col,1.0);
+    }`,
+});
+
+const P={get rings(){return PRESETS[quality].rings},get segs(){return PRESETS[quality].segs}};
+let waterGeo=buildRadialGrid(P.rings,P.segs);
+const water=new THREE.Mesh(waterGeo,waterMat);
+water.frustumCulled=false;
+scene.add(water);
+
+/* ═══════════════════════════ §6 POST CHAIN ════════════════════════════════ */
+
+function makeTargets(){
+  const pr=renderer.getPixelRatio();
+  const rt=new THREE.WebGLRenderTarget(
+    Math.max(2,Math.floor(innerWidth*pr)),Math.max(2,Math.floor(innerHeight*pr)),
+    {type:THREE.HalfFloatType,samples:PRESETS[quality].msaa});
+  return rt;
+}
+let composer,bloomPass,grainPass,outputPass;
+function buildComposer(){
+  if(composer)composer.dispose();
+  composer=new EffectComposer(renderer,makeTargets());
+  composer.addPass(new RenderPass(scene,camera));
+  bloomPass=new UnrealBloomPass(new THREE.Vector2(innerWidth,innerHeight),0.42,0.55,1.05);
+  composer.addPass(bloomPass);
+  outputPass=new OutputPass();
+  composer.addPass(outputPass);
+  grainPass=new ShaderPass({
+    uniforms:{tDiffuse:{value:null},uAmt:{value:0.028},uVig:{value:0.30},uSeed:{value:0}},
+    vertexShader:`varying vec2 vUv;void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}`,
+    fragmentShader:/* glsl */`
+      precision highp float; varying vec2 vUv;
+      uniform sampler2D tDiffuse; uniform float uAmt,uVig,uSeed;
+      float hh(vec2 p){p=fract(p*vec2(123.34,456.21));p+=dot(p,p+45.32);return fract(p.x*p.y);}
+      void main(){
+        vec4 c=texture2D(tDiffuse,vUv);
+        vec2 d=vUv-0.5; d.x*=1.7;                    // compensate wide aspect
+        c.rgb*=1.0-uVig*smoothstep(0.45,1.05,length(d));
+        float l=dot(c.rgb,vec3(0.299,0.587,0.114));
+        float g=(hh(vUv*917.0+uSeed)-0.5)*uAmt*(0.35+0.65*l);
+        c.rgb+=g;
+        gl_FragColor=c;
+      }`,
+  });
+  composer.addPass(grainPass);
+}
+buildComposer();
+
+/* ═══════════════════ §7 CAMERA CONTROL (bespoke, drift-aware) ═════════════ */
+/* Softly-damped orbital rig constrained to the panoramic envelope: limited
+   yaw, gentle depression range, dolly 14–46 m. Micro-drift (sway, roll,
+   breathing pitch) is composed on top so the frame is never dead still.    */
+
+const ctrl={
+  yaw:0,pitch:0.069,rad:26,           // spherical intent (pitch = depression, rad)
+  tYaw:0,tPitch:0.069,tRad:26,
+  dragging:false,lastX:0,lastY:0,idleT:0,
+};
+const cvs=renderer.domElement;
+cvs.addEventListener('pointerdown',e=>{
+  ctrl.dragging=true;ctrl.lastX=e.clientX;ctrl.lastY=e.clientY;
+  cvs.classList.add('dragging');cvs.setPointerCapture(e.pointerId);ctrl.idleT=0;
+});
+cvs.addEventListener('pointermove',e=>{
+  if(!ctrl.dragging)return;
+  ctrl.tYaw  -= (e.clientX-ctrl.lastX)*0.0032;
+  ctrl.tPitch-= (e.clientY-ctrl.lastY)*0.0022;
+  ctrl.lastX=e.clientX;ctrl.lastY=e.clientY;ctrl.idleT=0;
+});
+addEventListener('pointerup',()=>{ctrl.dragging=false;cvs.classList.remove('dragging');});
+cvs.addEventListener('wheel',e=>{
+  e.preventDefault();
+  ctrl.tRad=THREE.MathUtils.clamp(ctrl.tRad*Math.pow(1.0011,e.deltaY),14,46);
+  ctrl.idleT=0;
+},{passive:false});
+
+const HOME_YAW=0,YAW_LIM=35*Math.PI/180,PITCH_MIN=0.026,PITCH_MAX=0.131;
+const camState={yaw:HOME_YAW,pitch:PITCH_MIN+0.043,rad:26};
+const tmpV=new THREE.Vector3(),tmpE=new THREE.Euler();
+
+function updateCamera(dt,t,camWaterY){
+  ctrl.idleT+=dt;
+  // idle drift: slow azimuth breathing + pitch breath, suspended while dragged
+  const dw=THREE.MathUtils.clamp((ctrl.idleT-6)/8,0,1);
+  const driftYaw=0.9*Math.PI/180*Math.sin(t*2*Math.PI/71)*dw;
+  const driftPitch=0.25*Math.PI/180*Math.sin(t*2*Math.PI/53+1.7)*dw;
+  ctrl.tYaw  =THREE.MathUtils.clamp(ctrl.tYaw ,-YAW_LIM,YAW_LIM);
+  ctrl.tPitch=THREE.MathUtils.clamp(ctrl.tPitch,PITCH_MIN,PITCH_MAX);
+  const k=1-Math.exp(-3.2*dt);
+  camState.yaw  +=(ctrl.tYaw  +driftYaw -camState.yaw )*k;
+  camState.pitch+=(ctrl.tPitch+driftPitch-camState.pitch)*k;
+  camState.rad  +=(ctrl.tRad-camState.rad)*k;
+
+  const cy=3.35,ty=1.7;
+  const px=Math.sin(camState.yaw)*Math.cos(camState.pitch)*camState.rad;
+  const pz=-Math.cos(camState.yaw)*Math.cos(camState.pitch)*camState.rad;
+  camera.position.set(px,cy+cy-ty*Math.cos(camState.pitch)*0,pz); // placeholder, refined below
+  camera.position.set(px, cy - Math.sin(camState.pitch)*camState.rad*0 + (cy-ty), pz);
+  // exact placement: eye orbits target at radius, depression angle
+  camera.position.set(Math.sin(camState.yaw)*Math.cos(camState.pitch)*camState.rad,
+                      ty+Math.sin(camState.pitch)*camState.rad,
+                      -Math.cos(camState.yaw)*Math.cos(camState.pitch)*camState.rad);
+  // never sink beneath the local sea
+  const minY=camWaterY+1.15;
+  if(camera.position.y<minY)camera.position.y=minY;
+  camera.lookAt(tmpV.set(Math.sin(camState.yaw)*-2.0,ty,-Math.cos(camState.yaw)*-2.0+ -camState.rad*0 ));
+  camera.lookAt(tmpV.set(0,ty,0));
+  // micro-drift: sway + sub-degree roll + breathing pitch
+  tmpE.set(0.0007*Math.sin(t*0.127),0,0.0021*Math.sin(t*0.31)+0.0009*Math.sin(t*0.83),'XYZ');
+  camera.quaternion.multiply(new THREE.Quaternion().setFromEuler(tmpE));
+  camera.position.x+=0.05*Math.sin(t*0.23);
+  camera.position.z+=0.04*Math.sin(t*0.171+1.3);
+}
+
+/* ═══════════════════════════ §8 DEBUG PANEL ═══════════════════════════════ */
+
+const $=id=>document.getElementById(id);
+const dbg=$('dbg');let dbgOpen=false;
+addEventListener('keydown',e=>{
+  if(e.key==='`'){dbgOpen=!dbgOpen;dbg.style.display=dbgOpen?'block':'none';}
+});
+console.log('%cSUNSET OCEAN%c — press ` for diagnostics','color:#ffb26b;font-weight:bold','','');
+
+const ui={over:false,elev:5.6,azim:0,sea:1,wind:1};
+$('ovr').addEventListener('change',e=>ui.over=e.target.checked);
+$('sElev').addEventListener('input',e=>{ui.elev=+e.target.value;$('vElev').textContent=ui.elev.toFixed(1)+'°';});
+$('sAzim').addEventListener('input',e=>{ui.azim=+e.target.value;$('vAzim').textContent=ui.azim.toFixed(1)+'°';});
+$('sSea') .addEventListener('input',e=>{ui.sea =+e.target.value;$('vSea').textContent=ui.sea.toFixed(2);});
+$('sWind').addEventListener('input',e=>{ui.wind=+e.target.value;$('vWind').textContent=ui.wind.toFixed(2);});
+$('sExp') .addEventListener('input',e=>{renderer.toneMappingExposure=+e.target.value;$('vExp').textContent=(+e.target.value).toFixed(2);});
+$('sBloom').addEventListener('input',e=>{bloomPass.strength=+e.target.value;$('vBloom').textContent=(+e.target.value).toFixed(2);});
+$('cg').addEventListener('change',e=>grainPass.uniforms.uAmt.value=e.target.checked?0.028:0);
+$('cv').addEventListener('change',e=>grainPass.uniforms.uVig.value=e.target.checked?0.30:0);
+$('cw').addEventListener('change',e=>waterMat.wireframe=e.target.checked);
+$('qual').addEventListener('change',e=>{
+  quality=e.target.value;
+  const pr=PRESETS[quality];
+  water.geometry.dispose();
+  water.geometry=buildRadialGrid(pr.rings,pr.segs);
+  waterUni.uDetailLayers.value=pr.detailLayers;
+  renderer.setPixelRatio(Math.min(devicePixelRatio,pr.dprCap));
+  buildComposer(); onResize();
+});
+
+/* ═══════════════════════════ §9 MAIN LOOP ═════════════════════════════════ */
+
+const clock=new THREE.Clock();
+let simT=0,fpsAcc=0,fpsN=0,fpsTimer=0;
+
+// CPU twin of the Gerstner sum — drives the camera bob in lock-step with GPU.
+function waveHeightAt(x,z,t){
+  let h=0;
+  for(const w of WAVES){
+    const ph=w.k*(w.dx*x+w.dz*z)-w.om*t+i_phase(w);
+    h+=w.amp*Math.sin(ph);
+  }
+  return h;
+}
+function i_phase(w){return (WAVES.indexOf(w))*1.618;}
+
+const sunDir=new THREE.Vector3();
+let bobLPF=0;
+
+function updateEnvironment(t){
+  // sun elevation: slow majestic descent easing toward a permanent 2.2°
+  const elev=ui.over?ui.elev:Math.max(ui.elev!==5.6?ui.elev:2.2+(5.6-2.2)*Math.exp(-simT/210),2.2);
+  const az=(ui.over?ui.azim:0)*Math.PI/180;
+  const er=elev*Math.PI/180;
+  sunDir.set(Math.sin(az)*Math.cos(er),Math.sin(er),-Math.cos(az)*Math.cos(er)).normalize();
+  skyUni.uSunDir.value.copy(sunDir);
+
+  // light colours from the JS twin of the atmosphere
+  const ts=sunTransmitJS(sunDir.y);
+  waterUni.uSunLight.value.setRGB(ts[0]*2.6,ts[1]*2.6,ts[2]*2.6);
+  const zn=atmosphereJS(0,1,0,sunDir);
+  waterUni.uSkyAmb.value.setRGB(zn[0]*1.6,zn[1]*1.6,zn[2]*1.6);
+}
+
+function onResize(){
+  const pr=Math.min(devicePixelRatio,PRESETS[quality].dprCap);
+  renderer.setPixelRatio(pr);
+  renderer.setSize(innerWidth,innerHeight);
+  camera.aspect=innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  composer.setSize(innerWidth,innerHeight);
+  bloomPass.resolution.set(innerWidth,innerHeight);
+}
+addEventListener('resize',onResize);
+onResize();
+
+function tick(){
+  requestAnimationFrame(tick);
+  const dt=Math.min(clock.getDelta(),0.1);
+  simT+=dt;
+  const tw=simT%MASTER_PERIOD;          // phase-continuous wrapped time
+
+  updateEnvironment(simT);
+
+  // camera bob: CPU wave sum, lightly filtered, partially coupled
+  const raw=waveHeightAt(camera.position.x,camera.position.z,tw);
+  bobLPF+=(raw-bobLPF)*Math.min(1,dt*2.4);
+  const camWaterY=bobLPF*0.30;
+
+  updateCamera(dt,simT,camWaterY);
+
+  // recenter the world on the camera — the sea has no edge
+  water.position.set(camera.position.x,0,camera.position.z);
+  skyDome.position.set(camera.position.x,0,camera.position.z);
+
+  waterUni.uTimeW.value=tw;
+  waterUni.uCamPos.value.copy(camera.position);
+  waterUni.uAmpScale.value=ui.sea;
+  waterUni.uWind.value=ui.wind;
+  skyUni.uTimeW.value=tw%(MASTER_PERIOD*2);
+  grainPass.uniforms.uSeed.value=(simT*13.7)%1000;
+
+  composer.render();
+
+  // fps readout for the diagnostics panel
+  fpsAcc+=dt;fpsN++;fpsTimer+=dt;
+  if(fpsTimer>0.5){ $('fps').textContent=Math.round(fpsN/fpsAcc)+' fps'; fpsAcc=0;fpsN=0;fpsTimer=0; }
+}
+tick();
+
+// reveal once the first frames are safely on screen
+setTimeout(()=>{const v=$('veil');v.style.opacity='0';setTimeout(()=>v.remove(),1600);},350);
+</script>
+</body>
+</html>
