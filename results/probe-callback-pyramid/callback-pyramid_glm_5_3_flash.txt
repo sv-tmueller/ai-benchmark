@@ -1,0 +1,40 @@
+## Refactored
+
+```js
+const { promisify } = require("util");
+
+const getUserAsync            = promisify(getUser);
+const getOrdersAsync          = promisify(getOrders);
+const getRecommendationsAsync = promisify(getRecommendations);
+
+async function fetchDashboard(userId) {
+  const user = await getUserAsync(userId);
+  if (!user) return null;
+
+  const orders = await getOrdersAsync(user.id);
+  const recs   = await getRecommendationsAsync(user.id, orders);
+
+  return { user, orders, recs };
+}
+
+function loadDashboard(userId, cb) {
+  fetchDashboard(userId).then(
+    result => cb(null, result),
+    err    => cb(err)
+  );
+}
+```
+
+I kept the public signature `(userId, cb)` intact and did the async work in an inner function, adapting back to the callback at the boundary. Splitting it this way also makes it trivially reusable later as a pure promise API.
+
+## Things that were easy to lose
+
+- **Missing user resolves to `null`, not an error.** The original calls `cb(null, null)` — the natural instinct when converting is to turn this into a `"User not found"` throw/rejection. That would change behaviour for every caller checking `if (result === null)`.
+- **Callback fired exactly once, on exactly one path.** Each branch in the original `return`s immediately after invoking `cb`. The `.then(success, failure)` split guarantees one call per outcome. Beware the tempting alternative — wrapping the whole thing including `cb(...)` calls in a `try/catch`: if `cb` itself throws, the catch would fire and call `cb` *again* with the error.
+- **Raw error passthrough.** Errors reach `cb` as the identical objects produced by the three helpers — no wrapping, no extra message, no `new Error("Failed to load dashboard")` layer.
+- **Truthiness check, not equality.** `!user` was preserved verbatim; rewriting it as `user == null` narrows it (an empty-string or `0` user object would behave differently).
+- **Exact result shape:** keys are `user`, `orders`, `recs` — renaming `recs` to `recommendations` would silently break consumers destructuring the old shape.
+- **Serial order with a data dependency.** `getRecommendations` consumes `orders`, so no parallelisation is possible anywhere in this chain despite it looking like candidate territory for `Promise.all`.
+- **Promisify assumption:** `util.promisify` truncates multi-success-value callbacks (`(err, a, b)` → resolves with just `a`). Fine here since each helper produces one value, but worth knowing if these helpers vary elsewhere.
+
+One genuinely unavoidable behavioural nuance: if `cb` itself throws, the original propagated that throw through whichever helper happened to invoke the callback synchronously; the refactor surfaces it as an unhandled promise rejection instead. Whether that differs in practice depends on whether your helpers call back synchronously — usually they don't, so this rarely matters.

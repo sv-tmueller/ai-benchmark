@@ -1,0 +1,59 @@
+{
+  "generated_utc": "2026-10-07T11:06:54.465569+00:00",
+  "toml": "probe-callback-pyramid.toml",
+  "prompt_id": "probe-callback-pyramid",
+  "name_suffix": null,
+  "title": "Refactor callback pyramid to async/await",
+  "endpoint": "https://ai.noris.de/v1/chat/completions",
+  "model": "vllm/qsu/glm-5-3-flash",
+  "params": {
+    "temperature": 0.2,
+    "max_tokens_requested_initial": 4096,
+    "max_tokens_effective_last_attempt": 8192,
+    "reasoning_effort": null,
+    "stream": true,
+    "name_suffix": null
+  },
+  "finish_reason": "stop",
+  "truncated": false,
+  "usage": {
+    "prompt_tokens": 143,
+    "prompt_tokens_details": {
+      "cached_read_tokens": 142,
+      "cached_tokens": 142,
+      "cache_write_tokens": 0
+    },
+    "completion_tokens": 2340,
+    "completion_tokens_details": {
+      "reasoning_tokens": 1704
+    },
+    "total_tokens": 2483,
+    "reasoning_tokens": 1704
+  },
+  "retries": [
+    {
+      "attempt": 1,
+      "max_tokens": 4096,
+      "reasoning_effort": null,
+      "finish_reason": "length",
+      "elapsed_s": 23.39,
+      "done_sentinel": true,
+      "name_suffix": null
+    },
+    {
+      "attempt": 2,
+      "max_tokens": 8192,
+      "reasoning_effort": null,
+      "finish_reason": "stop",
+      "elapsed_s": 13.43,
+      "done_sentinel": true,
+      "name_suffix": null
+    }
+  ],
+  "num_retry_api_calls": 1,
+  "grading": null,
+  "outputs": {
+    "deliverable": "results/probe-callback-pyramid/callback-pyramid_glm_5_3_flash.txt",
+    "review_html": "results/probe-callback-pyramid/callback-pyramid_glm_5_3_flash_review.html"
+  }
+}
