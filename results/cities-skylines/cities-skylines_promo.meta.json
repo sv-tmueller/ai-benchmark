@@ -1,0 +1,7 @@
+{
+  "source_md": "results/cities-skylines/cities-skylines_glm_5_3_flash.md",
+  "method": "fence_extract",
+  "source_sha256": "57ca052df6f72929694e868abd0647df2b8a6f77fdcdcb18903cec31ec6658ad",
+  "promoted_utc": "2026-10-07T12:04:42Z",
+  "extractor": "batch97-issue98"
+}
