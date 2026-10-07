@@ -1,0 +1,51 @@
+{
+  "generated_utc": "2026-10-07T10:44:47.751190+00:00",
+  "toml": "math-addition.toml",
+  "prompt_id": "math-addition",
+  "title": "Simple arithmetic: 17 + 25",
+  "endpoint": "https://ai.noris.de/v1/chat/completions",
+  "model": "vllm/qsu/glm-5-3-flash",
+  "params": {
+    "temperature": 0.0,
+    "max_tokens_requested_initial": 65536,
+    "max_tokens_effective_last_attempt": 65536,
+    "reasoning_effort": null,
+    "stream": true
+  },
+  "finish_reason": "stop",
+  "truncated": false,
+  "usage": {
+    "prompt_tokens": 38,
+    "prompt_tokens_details": {
+      "cached_read_tokens": 37,
+      "cached_tokens": 37,
+      "cache_write_tokens": 0
+    },
+    "completion_tokens": 14,
+    "completion_tokens_details": {
+      "reasoning_tokens": 11
+    },
+    "total_tokens": 52,
+    "reasoning_tokens": 11
+  },
+  "retries": [
+    {
+      "attempt": 1,
+      "max_tokens": 65536,
+      "reasoning_effort": null,
+      "finish_reason": "stop",
+      "elapsed_s": 0.62,
+      "done_sentinel": true
+    }
+  ],
+  "num_retry_api_calls": 0,
+  "grading": {
+    "mode": "contains",
+    "expected": "42",
+    "pass": true
+  },
+  "outputs": {
+    "deliverable": "results/math-addition/math-addition_glm_5_3_flash.txt",
+    "review_html": "results/math-addition/math-addition_glm_5_3_flash_review.html"
+  }
+}
