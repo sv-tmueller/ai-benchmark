@@ -1,0 +1,50 @@
+{
+  "generated_utc": "2026-10-07T10:49:19.349861+00:00",
+  "toml": "code-flatten-list.toml",
+  "prompt_id": "code-python-function",
+  "name_suffix": null,
+  "title": "Write a Python function to flatten nested lists",
+  "endpoint": "https://ai.noris.de/v1/chat/completions",
+  "model": "vllm/qsu/glm-5-3-flash",
+  "params": {
+    "temperature": 0.0,
+    "max_tokens_requested_initial": 65536,
+    "max_tokens_effective_last_attempt": 65536,
+    "reasoning_effort": null,
+    "stream": true,
+    "name_suffix": null
+  },
+  "finish_reason": "stop",
+  "truncated": false,
+  "usage": {
+    "prompt_tokens": 138,
+    "prompt_tokens_details": {
+      "cached_read_tokens": 137,
+      "cached_tokens": 137,
+      "cache_write_tokens": 0
+    },
+    "completion_tokens": 4495,
+    "completion_tokens_details": {
+      "reasoning_tokens": 3610
+    },
+    "total_tokens": 4633,
+    "reasoning_tokens": 3610
+  },
+  "retries": [
+    {
+      "attempt": 1,
+      "max_tokens": 65536,
+      "reasoning_effort": null,
+      "finish_reason": "stop",
+      "elapsed_s": 18.8,
+      "done_sentinel": true,
+      "name_suffix": null
+    }
+  ],
+  "num_retry_api_calls": 0,
+  "grading": null,
+  "outputs": {
+    "deliverable": "results/code-flatten-list/code-flatten-list_glm_5_3_flash.md",
+    "review_html": "results/code-flatten-list/code-flatten-list_glm_5_3_flash_review.html"
+  }
+}
