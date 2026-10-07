@@ -1,0 +1,49 @@
+{
+  "generated_utc": "2026-10-07T15:06:53.332746+00:00",
+  "toml": "game-horror-house.toml",
+  "prompt_id": "game-horror-house",
+  "name_suffix": null,
+  "title": "First-person haunted-house escape game (Vite + Three.js)",
+  "endpoint": "https://ai.noris.de/v1/chat/completions",
+  "model": "vllm/release/glm-5-2",
+  "params": {
+    "temperature": 0.2,
+    "max_tokens_requested_initial": 65536,
+    "max_tokens_effective_last_attempt": 65536,
+    "reasoning_effort": null,
+    "stream": true,
+    "name_suffix": null
+  },
+  "finish_reason": "stop",
+  "truncated": false,
+  "usage": {
+    "prompt_tokens": 2494,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 0
+    },
+    "completion_tokens": 34778,
+    "completion_tokens_details": {
+      "reasoning_tokens": 2108
+    },
+    "total_tokens": 37272,
+    "reasoning_tokens": 2108
+  },
+  "retries": [
+    {
+      "attempt": 1,
+      "max_tokens": 65536,
+      "reasoning_effort": null,
+      "finish_reason": "stop",
+      "elapsed_s": 203.09,
+      "done_sentinel": true,
+      "name_suffix": null
+    }
+  ],
+  "num_retry_api_calls": 0,
+  "grading": null,
+  "outputs": {
+    "deliverable": "results/horror-house/horror-house_glm_5_2.md",
+    "review_html": "results/horror-house/horror-house_glm_5_2_review.html"
+  }
+}

@@ -1,0 +1,2862 @@
+{
+  "name": "bridge-horror-house",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "three": "^0.160.0"
+  },
+  "devDependencies": {
+    "vite": "^5.4.0"
+  }
+}
+```
+
+```js
+// vite.config.js
+import { defineConfig } from 'vite';
+
+export default defineConfig({
+  server: { port: 5173, host: true, open: false },
+  base: './'
+});
+```
+
+```html
+<!-- index.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>BRIDGE HORROR HOUSE</title>
+<style>
+  :root{ --ink:#cfcabd; --blood:#a01018; --bone:#e9e4d3; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:#000;
+    font-family:"Courier New",monospace; color:var(--ink); cursor:none; }
+  #game-root{ position:fixed; inset:0; z-index:1; }
+  canvas{ display:block; }
+
+  /* ---------- GRAIN / VIGNETTE / FLASH ---------- */
+  #grain{ position:fixed; inset:-50px; z-index:30; pointer-events:none;
+    opacity:.08; mix-blend-mode:overlay; image-rendering:pixelated; }
+  @keyframes grainShift{ 0%{transform:translate(0,0)} 25%{transform:translate(-12px,8px)}
+    50%{transform:translate(8px,-14px)} 75%{transform:translate(-6px,4px)}
+    100%{transform:translate(10px,-2px)} }
+  #grain.active{ animation:grainShift .35s steps(4) infinite; }
+  #vignette{ position:fixed; inset:0; z-index:29; pointer-events:none;
+    background:radial-gradient(ellipse at center, rgba(0,0,0,0) 38%, rgba(0,0,0,.55) 78%, rgba(0,0,0,.95) 100%);
+    transition:background .4s ease; }
+  #flash{ position:fixed; inset:0; z-index:40; pointer-events:none; opacity:0;
+    background:#fff; mix-blend-mode:screen; }
+  #red-flash{ position:fixed; inset:0; z-index:41; pointer-events:none; opacity:0;
+    background:radial-gradient(circle at center,#b21a22 0%,#400008 70%,transparent 100%); }
+
+  /* ---------- CROSSHAIR / BURN METER ---------- */
+  #crosshair{ position:fixed; left:50%; top:50%; transform:translate(-50%,-50%);
+    z-index:15; width:6px; height:6px; border-radius:50%;
+    background:rgba(220,210,180,.65); box-shadow:0 0 4px rgba(0,0,0,.9);
+    pointer-events:none; transition:opacity .2s; }
+  #crosshair.interact{ background:#ffd27f; width:9px; height:9px; box-shadow:0 0 8px #ffae42; }
+  #burn-wrap{ position:fixed; left:50%; top:calc(50% + 24px); transform:translateX(-50%);
+    z-index:15; width:140px; height:6px; border:1px solid rgba(255,170,80,.45);
+    background:rgba(0,0,0,.55); opacity:0; transition:opacity .25s; pointer-events:none;}
+  #burn-fill{ width:0%; height:100%; background:linear-gradient(90deg,#ffb347,#ff5722); }
+
+  /* ---------- HUD ---------- */
+  #hud{ position:fixed; inset:0; z-index:20; pointer-events:none; opacity:0;
+    transition:opacity .8s; }
+  #hud.show{ opacity:1; }
+  #objective{ position:absolute; top:22px; left:24px; font-size:13px; letter-spacing:2px;
+    text-transform:uppercase; text-shadow:0 0 6px #000, 0 2px 2px #000; line-height:1.6;}
+  #objective b{ color:#ffe39a; }
+  #keys-row{ position:absolute; top:54px; left:24px; display:flex; gap:10px; }
+  .key-slot{ width:26px; height:32px; border:1px solid #444; border-radius:3px 3px 6px 6px;
+    background:#15110d; position:relative; opacity:.45; transition:.3s; }
+  .key-slot.got{ opacity:1; background:linear-gradient(#caa64a,#7a5a1a);
+    box-shadow:0 0 10px rgba(220,180,80,.5); }
+  .key-slot::after{ content:''; position:absolute; top:8px; left:8px; right:8px; height:10px;
+    border-radius:50%; border:2px solid #2a2018; }
+  .key-slot.got::after{ border-color:#3a2810; }
+
+  #battery-wrap{ position:absolute; bottom:24px; left:24px; width:200px; }
+  #bat-label{ font-size:11px; letter-spacing:3px; color:#cdb98a; margin-bottom:4px;
+    text-shadow:0 0 4px #000; }
+  #battery-bar{ width:100%; height:14px; border:1px solid #5a4a30; background:#0a0805;
+    position:relative; overflow:hidden; }
+  #battery-fill{ width:100%; height:100%; background:linear-gradient(90deg,#3df07a,#88ff66);
+    transition:width .25s linear, background .3s; }
+  #battery-fill.warn{ background:linear-gradient(90deg,#ffaa33,#ff7733); }
+  #battery-fill.crit{ background:linear-gradient(90deg,#ff3030,#cc1010); animation:blink .5s infinite alternate; }
+  @keyframes blink{ from{filter:brightness(.7)} to{filter:brightness(1.4)} }
+
+  #hint{ position:absolute; bottom:24px; left:50%; transform:translateX(-50%);
+    font-size:12px; letter-spacing:2px; color:#ddd; text-shadow:0 0 6px #000;
+    opacity:0; transition:opacity .25s; }
+  #subtitle{ position:absolute; bottom:62px; left:50%; transform:translateX(-50%);
+    font-style:italic; font-size:13px; color:#cabfa6; text-shadow:0 0 6px #000;
+    opacity:0; transition:opacity .4s; max-width:600px; text-align:center;}
+
+  /* ---------- TITLE SCREEN ---------- */
+  #title-screen{ position:fixed; inset:0; z-index:50; cursor:pointer;
+    background:radial-gradient(ellipse at center,#120a06 0%,#050302 70%,#000 100%);
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    color:#bdac86; }
+  #title-screen h1{ font-size:clamp(36px,7vw,84px); letter-spacing:14px; font-weight:bold;
+    color:#d8c79a; text-shadow:0 0 24px #000, 0 0 60px rgba(150,40,20,.4);
+    animation:titleBreath 4s ease-in-out infinite; }
+  #title-screen h1 span{ color:#a01018; }
+  @keyframes titleBreath{ 0%,100%{letter-spacing:14px} 50%{letter-spacing:18px} }
+  #title-screen p.sub{ margin-top:18px; font-size:13px; letter-spacing:6px; color:#7a6a48; }
+  #enter-btn{ margin-top:46px; padding:14px 38px; border:1px solid #6a5836;
+    color:#e6d49a; letter-spacing:6px; font-size:14px; background:rgba(20,12,4,.6);
+    transition:.3s; backdrop-filter:blur(2px);}
+  #enter-btn:hover{ background:rgba(120,40,20,.5); color:#fff; border-color:#a01018;
+    box-shadow:0 0 30px rgba(160,16,24,.5); }
+  #title-warn{ position:absolute; bottom:30px; font-size:11px; letter-spacing:3px;
+    color:#56452a; text-align:center; line-height:1.8; }
+  #loading-line{ margin-top:24px; font-size:11px; letter-spacing:4px; color:#5a4a30; min-height:14px; }
+
+  /* ---------- NOTE OVERLAY ---------- */
+  #note-overlay{ position:fixed; inset:0; z-index:45; display:none;
+    align-items:center; justify-content:center; background:rgba(0,0,0,.85); cursor:pointer;}
+  #note-paper{ width:min(520px,82vw); aspect-ratio:1/1.3; padding:42px 38px;
+    background:linear-gradient(135deg,#d8cba0,#bcae7e); color:#231a0c;
+    font-family:'Georgia',serif; font-size:15px; line-height:1.7; box-shadow:0 0 80px #000;
+    transform:rotate(-1.2deg); position:relative; }
+  #note-paper::before{content:'';position:absolute;inset:0;background:
+    repeating-linear-gradient(0deg, transparent 0 22px, rgba(60,40,20,.05) 22px 23px),
+    radial-gradient(circle at 30% 20%, rgba(120,80,30,.18), transparent 60%),
+    radial-gradient(circle at 80% 90%, rgba(80,40,10,.25), transparent 50%);pointer-events:none;}
+  #note-title{ font-size:22px; letter-spacing:2px; margin-bottom:18px; font-weight:bold;
+    border-bottom:1px solid #6a4a20; padding-bottom:8px; }
+  #note-close{ position:absolute; bottom:18px; right:22px; font-size:11px; color:#5a3a18;
+    letter-spacing:2px; }
+
+  /* ---------- DEATH SCREEN ---------- */
+  #death-screen{ position:fixed; inset:0; z-index:60; display:none;
+    background:#000; align-items:center; justify-content:center; flex-direction:column; }
+  #jumpface{ position:absolute; inset:0; background:#000; display:flex;
+    align-items:center; justify-content:center; opacity:0; }
+  #death-text{ position:relative; z-index:2; text-align:center; opacity:0; transition:opacity 1.2s; }
+  #death-text h2{ font-size:72px; letter-spacing:14px; color:#a01018;
+    text-shadow:0 0 30px #500; margin-bottom:14px; }
+  #death-text p{ color:#888; letter-spacing:3px; margin-bottom:30px; }
+  #restart-btn{ padding:12px 32px; border:1px solid #6a2020; color:#d99;
+    letter-spacing:5px; background:rgba(40,0,0,.4); cursor:pointer; transition:.3s; }
+  #restart-btn:hover{ background:rgba(160,16,24,.4); color:#fff; }
+
+  /* ---------- WIN SCREEN ---------- */
+  #win-screen{ position:fixed; inset:0; z-index:60; display:none;
+    background:radial-gradient(ellipse at center,#10202a 0%,#000 80%);
+    align-items:center; justify-content:center; flex-direction:column; text-align:center; }
+  #win-screen h2{ font-size:64px; letter-spacing:10px; color:#9fd0e0;
+    text-shadow:0 0 30px #049; margin-bottom:18px; }
+  #win-stats{ color:#bcd; letter-spacing:3px; line-height:2; margin-bottom:30px; }
+  #play-again{ padding:12px 32px; border:1px solid #4a8090; color:#cef;
+    letter-spacing:5px; background:rgba(0,30,50,.4); cursor:pointer; transition:.3s; }
+  #play-again:hover{ background:rgba(40,120,160,.4); color:#fff; }
+
+  .hidden{ display:none !important; }
+</style>
+</head>
+<body>
+  <div id="game-root"></div>
+
+  <!-- Atmosphere layers -->
+  <canvas id="grain"></canvas>
+  <div id="vignette"></div>
+  <div id="flash"></div>
+  <div id="red-flash"></div>
+
+  <!-- Crosshair + burn meter -->
+  <div id="crosshair"></div>
+  <div id="burn-wrap"><div id="burn-fill"></div></div>
+
+  <!-- HUD -->
+  <div id="hud">
+    <div id="objective">OBJECTIVE<br><b>FIND THREE KEYS</b></div>
+    <div id="keys-row">
+      <div class="key-slot" data-i="0"></div>
+      <div class="key-slot" data-i="1"></div>
+      <div class="key-slot" data-i="2"></div>
+    </div>
+    <div id="battery-wrap">
+      <div id="bat-label">FLASHLIGHT</div>
+      <div id="battery-bar"><div id="battery-fill"></div></div>
+    </div>
+    <div id="hint"></div>
+    <div id="subtitle"></div>
+  </div>
+
+  <!-- Title -->
+  <div id="title-screen">
+    <h1>BRIDGE<span>&nbsp;</span>HORROR&nbsp;<span>HOUSE</span></h1>
+    <p class="sub">YOU ARE NOT ALONE IN HERE</p>
+    <div id="enter-btn">ENTER</div>
+    <div id="loading-line"></div>
+    <div id="title-warn">HEADPHONES RECOMMENDED · DARK ROOM · CLICK TO LOCK MOUSE<br>
+      [WASD] MOVE · [SHIFT] SPRINT · [MOUSE] LOOK · [E] INTERACT · [F] TORCH</div>
+  </div>
+
+  <!-- Note reader -->
+  <div id="note-overlay">
+    <div id="note-paper">
+      <div id="note-title"></div>
+      <div id="note-body"></div>
+      <div id="note-close">[CLICK OR PRESS E TO CLOSE]</div>
+    </div>
+  </div>
+
+  <!-- Death -->
+  <div id="death-screen">
+    <div id="jumpface"><canvas id="jumpface-canvas" width="512" height="512"></canvas></div>
+    <div id="death-text">
+      <h2>CAUGHT</h2>
+      <p>The darkness took you.</p>
+      <button id="restart-btn">TRY AGAIN</button>
+    </div>
+  </div>
+
+  <!-- Win -->
+  <div id="win-screen">
+    <h2>ESCAPED</h2>
+    <div id="win-stats"></div>
+    <button id="play-again">PLAY AGAIN</button>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
+```
+
+```js
+// src/main.js
+import * as THREE from 'three';
+import { Game } from './Game.js';
+import { HUD } from './ui/HUD.js';
+
+const root = document.getElementById('game-root');
+
+const renderer = new THREE.WebGLRenderer({ antialias:true, powerPreference:'high-performance' });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+root.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x000000);
+scene.fog = new THREE.FogExp2(0x000000, 0.085);
+
+const camera = new THREE.PerspectiveCamera(74, innerWidth/innerHeight, 0.05, 80);
+
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+const hud = new HUD();
+
+const game = new Game({ renderer, scene, camera, hud });
+
+document.getElementById('enter-btn').addEventListener('click', async () => {
+  const loadLine = document.getElementById('loading-line');
+  loadLine.textContent = 'WAKING THE HOUSE…';
+  await new Promise(r=>setTimeout(r,250));
+  document.getElementById('title-screen').classList.add('hidden');
+  game.start();
+});
+
+document.getElementById('restart-btn').addEventListener('click', ()=>game.restart());
+document.getElementById('play-again').addEventListener('click', ()=>{
+  document.getElementById('win-screen').style.display='none';
+  game.restart();
+});
+
+let last = performance.now();
+function loop(now){
+  const dt = Math.min((now-last)/1000, 0.05);
+  last = now;
+  game.update(dt);
+  game.render();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+```
+
+```js
+// src/Game.js
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+
+import { House } from './world/House.js';
+import { Player } from './player/Player.js';
+import { Ghost } from './systems/Ghost.js';
+import { ScareDirector } from './systems/ScareDirector.js';
+import { AudioEngine } from './systems/AudioEngine.js';
+import { HUD } from './ui/HUD.js';
+
+export const STATE = { TITLE:'TITLE', PLAYING:'PLAYING', CAUGHT:'CAUGHT', ESCAPED:'ESCAPED', NOTE:'NOTE' };
+
+export class Game {
+  constructor({ renderer, scene, camera, hud }) {
+    this.renderer = renderer;
+    this.scene = scene;
+    this.camera = camera;
+    this.hud = hud;
+
+    this.state = STATE.TITLE;
+    this.keysFound = 0;
+    this.batteriesCarried = 0;
+    this.startTime = 0;
+    this.elapsed = 0;
+    this.banishes = 0;
+
+    // Post-processing
+    this.composer = new EffectComposer(renderer);
+    this.composer.addPass(new RenderPass(scene, camera));
+    const bloom = new UnrealBloomPass(
+      new THREE.Vector2(innerWidth, innerHeight), 0.55, 0.7, 0.85);
+    bloom.threshold = 0.78; bloom.strength = 0.55; bloom.radius = 0.7;
+    this.bloom = bloom;
+    this.composer.addPass(bloom);
+    this.composer.addPass(this._makeGrainPass());
+
+    this.audio = new AudioEngine();
+    this.house = null; this.player = null; this.ghost = null; this.scares = null;
+    this._bindInput();
+  }
+
+  _makeGrainPass(){
+    const shader = {
+      uniforms:{ tDiffuse:{value:null}, uTime:{value:0}, uAmount:{value:0.05} },
+      vertexShader:`varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);} `,
+      fragmentShader:`uniform sampler2D tDiffuse; uniform float uTime,uAmount; varying vec2 vUv;
+        float rand(vec2 n){return fract(sin(dot(n,vec2(12.9898,4.1414)))*43758.5453);}
+        void main(){
+          vec4 c=texture2D(tDiffuse,vUv);
+          float g=rand(vUv*uTime)-0.5;
+          c.rgb+=g*uAmount;
+          // mild desaturate in deep blacks
+          float lum=dot(c.rgb,vec3(0.3,0.59,0.11));
+          c.rgb=mix(vec3(lum),c.rgb,0.92);
+          gl_FragColor=c;
+        }`
+    };
+    const p = new ShaderPass(shader);
+    p.renderToScreen = true;
+    this.grainPass = p;
+    return p;
+  }
+
+  _bindInput(){
+    this.keys = {};
+    addEventListener('keydown', e=>{
+      this.keys[e.code]=true;
+      if(e.code==='KeyE') this.tryInteract();
+      if(e.code==='KeyF') this.player?.toggleFlashlight();
+      if(e.code==='Escape'){ if(document.pointerLockElement) document.exitPointerLock(); }
+    });
+    addEventListener('keyup', e=>this.keys[e.code]=false);
+
+    addEventListener('mousedown', e=>{
+      if(this.state===STATE.PLAYING && !document.pointerLockElement){
+        this.renderer.domElement.requestPointerLock?.();
+      }
+    });
+    document.addEventListener('pointerlockchange', ()=>{
+      this.locked = !!document.pointerLockElement;
+    });
+  }
+
+  async start(){
+    this.audio.init();
+    this.buildWorld();
+    this.state = STATE.PLAYING;
+    this.startTime = performance.now();
+    this.hud.showHUD(true);
+    this.renderer.domElement.requestPointerLock?.();
+    this.audio.startAmbient();
+  }
+
+  buildWorld(){
+    // Clear previous run
+    if(this.house){ this.house.dispose(); this.house=null; }
+    if(this.ghost){ this.ghost.dispose(); this.ghost=null; }
+    if(this.player){ this.player.dispose(); this.player=null; }
+    if(this.scares){ this.scares.dispose(); this.scares=null; }
+    this.keysFound=0; this.batteriesCarried=0; this.banishes=0;
+    this.hud.resetKeys();
+
+    this.house = new House(this.scene, this.audio);
+    this.player = new Player({ scene:this.scene, camera:this.camera, audio:this.audio,
+      collidersProvider:()=>this.house.getColliders(),
+      itemsProvider:()=>this.house.getItems(),
+      doorsProvider:()=>this.house.getDoors() });
+    this.player.spawnAt(this.house.foyerSpawn.clone());
+
+    this.ghost = new Ghost({ scene:this.scene, audio:this.audio, player:this.player });
+    this.scares = new ScareDirector({ scene:this.scene, audio:this.audio,
+      player:this.player, house:this.house, ghost:this.ghost, game:this });
+
+    this.house.onItemPickup = (item)=>this.handlePickup(item);
+    this.house.onNoteRead = (note)=>this.openNote(note);
+    this.house.onFrontDoorAttempt = ()=>this.attemptExit();
+  }
+
+  handlePickup(item){
+    if(item.kind==='key'){
+      this.keysFound++;
+      this.hud.setKey(this.keysFound-1, true);
+      this.audio.pickup();
+      this.hud.flash('#ffe39a', 0.18);
+      this.hud.subtitle(`A brass key. ${3-this.keysFound} remain.`);
+      this.scares.notifyKeyTaken(this.keysFound);
+      if(this.keysFound>=3){
+        this.hud.objective('<b>UNLOCK THE FRONT DOOR</b>');
+        this.hud.subtitle('Three keys. The front door awaits.');
+      }
+    } else if(item.kind==='battery'){
+      this.player.battery = Math.min(100, this.player.battery + 45);
+      this.audio.batteryPickup();
+      this.hud.subtitle('Spare battery. The torch feels heavier.');
+    }
+  }
+
+  attemptExit(){
+    if(this.keysFound>=3){
+      this.win();
+    } else {
+      this.hud.subtitle(`Locked. ${3-this.keysFound} keys still missing.`);
+      this.audio.lockedDoor();
+    }
+  }
+
+  tryInteract(){
+    if(this.state===STATE.NOTE){ this.closeNote(); return; }
+    if(this.state!==STATE.PLAYING || !this.player) return;
+    this.player.interact();
+  }
+
+  openNote(note){
+    this.state = STATE.NOTE;
+    this.hud.showNote(note.title, note.body);
+    if(document.pointerLockElement) document.exitPointerLock();
+  }
+  closeNote(){
+    this.hud.hideNote();
+    this.state = STATE.PLAYING;
+    this.renderer.domElement.requestPointerLock?.();
+  }
+
+  caught(){
+    if(this.state!==STATE.PLAYING) return;
+    this.state = STATE.CAUGHT;
+    this.audio.deathStinger();
+    this.hud.jumpscare(()=>{
+      document.getElementById('death-screen').style.display='flex';
+      setTimeout(()=>document.getElementById('death-text').style.opacity=1, 900);
+    });
+    if(document.pointerLockElement) document.exitPointerLock();
+  }
+
+  win(){
+    if(this.state!==STATE.PLAYING) return;
+    this.state = STATE.ESCAPED;
+    this.elapsed = (performance.now()-this.startTime)/1000;
+    this.audio.victoryDrone();
+    this.hud.flash('#ffffff', 0.4);
+    if(document.pointerLockElement) document.exitPointerLock();
+    const ws=document.getElementById('win-screen');
+    ws.style.display='flex';
+    document.getElementById('win-stats').innerHTML =
+      `SURVIVED <b>${Math.floor(this.elapsed)}s</b><br>BANISHES <b>${this.banishes}</b>`;
+  }
+
+  restart(){
+    document.getElementById('death-screen').style.display='none';
+    document.getElementById('death-text').style.opacity=0;
+    this.hud.clearJumpscare();
+    this.buildWorld();
+    this.state = STATE.PLAYING;
+    this.startTime = performance.now();
+    this.renderer.domElement.requestPointerLock?.();
+    this.audio.resumeAmbient();
+  }
+
+  update(dt){
+    if(this.grainPass) this.grainPass.uniforms.uTime.value = performance.now()*0.001;
+    if(this.state===STATE.TITLE) return;
+
+    if(this.state===STATE.PLAYING){
+      this.player.update(dt, this.keys);
+      this.scares.update(dt);
+      this.ghost.update(dt);
+      this.house.update(dt, this.player);
+
+      // Burn mechanic
+      if(this.ghost.isAlive()){
+        const camDir = new THREE.Vector3();
+        this.camera.getWorldDirection(camDir);
+        const gp = this.ghost.position();
+        const toG = gp.clone().sub(this.camera.position);
+        const d = toG.length();
+        toG.normalize();
+        const ang = camDir.angleTo(toG);
+        const torchOn = this.player.flashlightOn && this.player.battery>0;
+        const inBeam = torchOn && d < this.player.torchRange && ang < this.player.torchHalfAnglePenumbra;
+        if(inBeam && this.ghost.isVulnerable()){
+          const burnRate = 0.55 * (1 - d/this.player.torchRange);
+          this.ghost.addBurn(dt * burnRate);
+          this.player.drainBattery(dt * 1.6); // burning costs juice
+          this.hud.setBurn(this.ghost.burnFraction());
+          if(!this._burnLoopPlaying){ this._burnLoopPlaying=true; this.audio.burnLoopStart(); }
+        } else {
+          this.hud.setBurn(this.ghost.burnFraction());
+        }
+        if(!inBeam && this._burnLoopPlaying){ this._burnLoopPlaying=false; this.audio.burnLoopStop(); }
+        if(this.ghost.justBanished){ this.ghost.justBanished=false; this.banishes++; this.audio.banishShriek();
+          this.hud.shake(0.5, 0.4); this.hud.flash('#ffeebb', 0.25); }
+      } else {
+        if(this._burnLoopPlaying){ this._burnLoopPlaying=false; this.audio.burnLoopStop(); }
+        this.hud.setBurn(0);
+      }
+
+      // Caught?
+      if(this.ghost.canTouch() &&
+         this.ghost.position().distanceTo(this.camera.position) < 1.4){
+        this.caught();
+      }
+
+      // HUD refresh
+      this.hud.setBattery(this.player.battery);
+      this.hud.setCrosshairInteract(!!this.player.hoveredLabel);
+      this.hud.setHint(this.player.hoveredLabel||'');
+    }
+
+    this.audio.update(dt, this.ghost ? this.ghost.dangerLevel() : 0);
+  }
+
+  render(){
+    this.composer.render();
+  }
+}
+```
+
+```js
+// src/world/Textures.js
+import * as THREE from 'three';
+
+function makeCanvas(w,h){ const c=document.createElement('canvas'); c.width=w; c.height=h; return c; }
+function tex(canvas, rx=1, ry=1){
+  const t=new THREE.CanvasTexture(canvas);
+  t.wrapS=t.wrapT=THREE.RepeatWrapping;
+  t.repeat.set(rx,ry);
+  t.anisotropy=4;
+  t.colorSpace=THREE.SRGBColorSpace;
+  return t;
+}
+
+// ---- value-noise helper ----
+function seededRand(seed){ let s=seed>>>0; return ()=>{ s=(s*1664525+1013904223)>>>0; return s/4294967296; }; }
+function noiseGrid(w,h,seed,scale){
+  const r=seededRand(seed);
+  const gw=Math.ceil(w/scale)+2, gh=Math.ceil(h/scale)+2;
+  const g=[]; for(let i=0;i<gw*gh;i++) g.push(r());
+  const idx=(x,y)=>g[Math.max(0,Math.min(gw-1,x))+Math.max(0,Math.min(gh-1,y))*gw];
+  const smooth=t=>t*t*(3-2*t);
+  return (x,y)=>{
+    const gx=x/scale, gy=y/scale;
+    const x0=Math.floor(gx), y0=Math.floor(gy);
+    const fx=smooth(gx-x0), fy=smooth(gy-y0);
+    const a=idx(x0,y0), b=idx(x0+1,y0), c=idx(x0,y0+1), d=idx(x0+1,y0+1);
+    return a+(b-a)*fx + ((c-a)+(d-c-a+b)*fx)*fy;
+  };
+}
+
+export function woodFloorTex(repeatX=4, repeatY=4){
+  const W=512,H=512,c=makeCanvas(W,H),ctx=c.getContext('2d');
+  const n=noiseGrid(W,H,1234,32);
+  ctx.fillStyle='#2a1810'; ctx.fillRect(0,0,W,H);
+  const plankH=64;
+  for(let py=0;py<H;py+=plankH){
+    const shade=30+Math.random()*30;
+    for(let px=0;px<W;px++){
+      const knot=n(px*0.03,py*0.03)>0.78?1:0;
+      const gr=shade + Math.sin(py*0.05+px*0.01)*6 + (n(px*0.5,py*0.5)-0.5)*14;
+      ctx.fillStyle=`rgb(${gr|0},${(gr*0.6)|0},${(gr*0.35)|0})`;
+      ctx.fillRect(px,py,1,plankH);
+    }
+    // seam
+    ctx.strokeStyle='rgba(0,0,0,0.7)'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(0,py); ctx.lineTo(W,py); ctx.stroke();
+    // plank gaps horizontally
+    const splitX=Math.random()*W;
+    ctx.strokeStyle='rgba(0,0,0,0.5)';
+    ctx.beginPath(); ctx.moveTo(splitX,py); ctx.lineTo(splitX,py+plankH); ctx.stroke();
+  }
+  return tex(c,repeatX,repeatY);
+}
+
+export function wallpaperTex(repeatX=2, repeatY=2){
+  const W=256,H=256,c=makeCanvas(W,H),ctx=c.getContext('2d');
+  const grad=ctx.createLinearGradient(0,0,0,H);
+  grad.addColorStop(0,'#5a4a32'); grad.addColorStop(1,'#3e3018');
+  ctx.fillStyle=grad; ctx.fillRect(0,0,W,H);
+  // vertical stripes
+  for(let x=0;x<W;x+=24){
+    ctx.fillStyle = (x/24)%2 ? '#473618':'#5d4a2c';
+    ctx.fillRect(x,0,12,H);
+  }
+  // damask dots
+  ctx.fillStyle='rgba(20,12,4,0.35)';
+  for(let y=0;y<H;y+=32) for(let x=0;x<W;x+=32){
+    ctx.beginPath(); ctx.arc(x+16,y+16,3,0,Math.PI*2); ctx.fill();
+  }
+  // stains
+  const n=noiseGrid(W,H,77,64);
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){
+    const v=n(x,y); if(v>0.68){
+      ctx.fillStyle=`rgba(20,10,4,${(v-0.68)*0.9})`; ctx.fillRect(x,y,1,1);
+    }
+  }
+  // peeling edge tears
+  ctx.strokeStyle='rgba(0,0,0,0.4)';
+  for(let i=0;i<6;i++){
+    ctx.beginPath();
+    let x=Math.random()*W, y=Math.random()*H;
+    ctx.moveTo(x,y);
+    for(let k=0;k<8;k++){ x+=(Math.random()-0.5)*20; y+=(Math.random()-0.5)*20; ctx.lineTo(x,y);}
+    ctx.stroke();
+  }
+  return tex(c,repeatX,repeatY);
+}
+
+export function plasterCeilingTex(repeatX=4, repeatY=4){
+  const W=256,H=256,c=makeCanvas(W,H),ctx=c.getContext('2d');
+  ctx.fillStyle='#3a342a'; ctx.fillRect(0,0,W,H);
+  const n=noiseGrid(W,H,91,16);
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){
+    const v=n(x,y); const g=42+v*22;
+    ctx.fillStyle=`rgb(${g|0},${(g*0.93)|0},${(g*0.78)|0})`;
+    ctx.fillRect(x,y,1,1);
+  }
+  // cracks
+  ctx.strokeStyle='rgba(10,8,4,0.85)'; ctx.lineWidth=1;
+  for(let i=0;i<5;i++){
+    ctx.beginPath();
+    let x=Math.random()*W, y=Math.random()*H; ctx.moveTo(x,y);
+    for(let k=0;k<14;k++){ x+=(Math.random()-0.5)*30; y+=(Math.random()-0.5)*30; ctx.lineTo(x,y);}
+    ctx.stroke();
+  }
+  // water stain
+  const sx=W*Math.random(), sy=H*Math.random();
+  const grd=ctx.createRadialGradient(sx,sy,2,sx,sy,60);
+  grd.addColorStop(0,'rgba(60,40,15,0.55)');
+  grd.addColorStop(1,'rgba(60,40,15,0)');
+  ctx.fillStyle=grd; ctx.beginPath(); ctx.arc(sx,sy,60,0,Math.PI*2); ctx.fill();
+  return tex(c,repeatX,repeatY);
+}
+
+export function furnitureWoodTex(){
+  const W=256,H=256,c=makeCanvas(W,H),ctx=c.getContext('2d');
+  const n=noiseGrid(W,H,222,40);
+  for(let y=0;y<H;y++){
+    const base=42+Math.sin(y*0.04)*8;
+    for(let x=0;x<W;x++){
+      const v=n(x,y); const g=base+v*22;
+      ctx.fillStyle=`rgb(${g|0},${(g*0.55)|0},${(g*0.3)|0})`;
+      ctx.fillRect(x,y,1,1);
+    }
+  }
+  // grain lines
+  ctx.strokeStyle='rgba(20,10,4,0.5)';
+  for(let i=0;i<40;i++){
+    ctx.beginPath();
+    const y=Math.random()*H;
+    ctx.moveTo(0,y);
+    for(let x=0;x<=W;x+=8) ctx.lineTo(x,y+Math.sin(x*0.05+i)*2);
+    ctx.stroke();
+  }
+  return tex(c,1,1);
+}
+
+export function tileTex(){
+  const W=256,H=256,c=makeCanvas(W,H),ctx=c.getContext('2d');
+  ctx.fillStyle='#1c1c1c'; ctx.fillRect(0,0,W,H);
+  const sz=64;
+  for(let y=0;y<H;y+=sz)for(let x=0;x<W;x+=sz){
+    const g=70+Math.random()*30;
+    ctx.fillStyle=`rgb(${g|0},${(g*0.97)|0},${(g*0.92)|0})`;
+    ctx.fillRect(x+2,y+2,sz-4,sz-4);
+    // dirt
+    ctx.fillStyle='rgba(40,30,15,0.4)';
+    for(let i=0;i<8;i++) ctx.fillRect(x+Math.random()*sz,y+Math.random()*sz,2,2);
+  }
+  return tex(c,2,2);
+}
+
+export function brickTex(){
+  const W=256,H=128,c=makeCanvas(W,H),ctx=c.getContext('2d');
+  ctx.fillStyle='#16100a'; ctx.fillRect(0,0,W,H);
+  const bw=64,bh=24;
+  for(let row=0,y=0;y<H;y+=bh,row++){
+    const off=(row%2)?bw/2:0;
+    for(let x=-off;x<W;x+=bw){
+      const sh=60+Math.random()*30;
+      ctx.fillStyle=`rgb(${sh|0},${(sh*0.55)|0},${(sh*0.4)|0})`;
+      ctx.fillRect(x+1,y+1,bw-2,bh-2);
+      ctx.fillStyle='rgba(0,0,0,0.4)';
+      ctx.fillRect(x,y+bh-1,bw,1);
+    }
+  }
+  return tex(c,2,1);
+}
+
+export function fabricTex(color='#3a1820'){
+  const W=128,H=128,c=makeCanvas(W,H),ctx=c.getContext('2d');
+  ctx.fillStyle=color; ctx.fillRect(0,0,W,H);
+  for(let i=0;i<300;i++){
+    ctx.fillStyle=`rgba(0,0,0,${Math.random()*0.3})`;
+    ctx.fillRect(Math.random()*W,Math.random()*H,1,1);
+  }
+  return tex(c,1,1);
+}
+
+export function portraitFaceTex(seed=1){
+  const W=256,H=320,c=makeCanvas(W,H),ctx=c.getContext('2d');
+  ctx.fillStyle='#1a130a'; ctx.fillRect(0,0,W,H);
+  // frame
+  ctx.fillStyle='#3a2a14'; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#0a0804'; ctx.fillRect(14,14,W-28,H-28);
+  // face oval
+  const cx=W/2, cy=H/2+10;
+  const skin=['#9a7a5a','#7a5a40','#a08060'][seed%3];
+  ctx.fillStyle=skin;
+  ctx.beginPath(); ctx.ellipse(cx,cy,70,95,0,0,Math.PI*2); ctx.fill();
+  // shading
+  ctx.fillStyle='rgba(0,0,0,0.35)';
+  ctx.beginPath(); ctx.ellipse(cx+20,cy+10,55,80,0,0,Math.PI*2); ctx.fill();
+  // eyes
+  ctx.fillStyle='#0a0804';
+  const exo=24, ey=cy-20;
+  ctx.beginPath(); ctx.arc(cx-exo,ey,7,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(cx+exo,ey,7,0,Math.PI*2); ctx.fill();
+  // eye gleam
+  ctx.fillStyle='rgba(220,200,160,0.7)';
+  ctx.beginPath(); ctx.arc(cx-exo+2,ey-2,1.5,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(cx+exo+2,ey-2,1.5,0,Math.PI*2); ctx.fill();
+  // nose
+  ctx.strokeStyle='rgba(40,20,10,0.6)'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(cx,cy-5); ctx.lineTo(cx-8,cy+18); ctx.lineTo(cx+4,cy+22); ctx.stroke();
+  // mouth — varies by seed
+  ctx.strokeStyle='#3a1810'; ctx.lineWidth=3;
+  ctx.beginPath();
+  if(seed%3===0){ ctx.arc(cx,cy+38,18,0.1,Math.PI-0.1); }            // smile
+  else if(seed%3===1){ ctx.arc(cx,cy+58,18,Math.PI+0.1,Math.PI*2-0.1);}// frown
+  else { ctx.moveTo(cx-18,cy+42); ctx.lineTo(cx+18,cy+42); }            // flat
+  ctx.stroke();
+  // crack across painting
+  ctx.strokeStyle='rgba(0,0,0,0.6)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(20,30);
+  for(let i=0;i<10;i++) ctx.lineTo(20+i*22, 30+Math.sin(i)*40 + (i%2?-20:20));
+  ctx.stroke();
+  // dust
+  for(let i=0;i<200;i++){
+    ctx.fillStyle=`rgba(0,0,0,${Math.random()*0.2})`;
+    ctx.fillRect(Math.random()*W,Math.random()*H,1,1);
+  }
+  const t=new THREE.CanvasTexture(c);
+  t.colorSpace=THREE.SRGBColorSpace;
+  return t;
+}
+
+export function ghostFaceTex(expression=0){
+  // expression: 0 neutral, 1 screaming, 2 side-glance
+  const W=256,H=256,c=makeCanvas(W,H),ctx=c.getContext('2d');
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle='rgba(0,0,0,0)'; ctx.fillRect(0,0,W,H);
+  // skull-white translucent
+  ctx.fillStyle='rgba(220,215,205,0.96)';
+  ctx.beginPath(); ctx.ellipse(W/2,H/2,80,110,0,0,Math.PI*2); ctx.fill();
+  // hollow cheeks
+  ctx.fillStyle='rgba(20,15,10,0.55)';
+  ctx.beginPath(); ctx.ellipse(W/2-40,H/2+30,18,30,0,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(W/2+40,H/2+30,18,30,0,0,Math.PI*2); ctx.fill();
+  // eyes — black sockets w/ faint glow drawn separately as material emissive
+  ctx.fillStyle='#000';
+  if(expression===1){
+    ctx.beginPath(); ctx.ellipse(W/2-32,H/2-20,18,26,0,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(W/2+32,H/2-20,18,26,0,0,Math.PI*2); ctx.fill();
+    // gaping mouth
+    ctx.beginPath(); ctx.ellipse(W/2,H/2+50,22,40,0,0,Math.PI*2); ctx.fill();
+  } else if(expression===2){
+    ctx.beginPath(); ctx.ellipse(W/2-30,H/2-18,16,22,0.2,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(W/2+34,H/2-18,16,22,-0.2,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(W/2-20,H/2+45); ctx.lineTo(W/2+20,H/2+50); ctx.lineTo(W/2+18,H/2+58); ctx.lineTo(W/2-22,H/2+53); ctx.closePath(); ctx.fill();
+  } else {
+    ctx.beginPath(); ctx.ellipse(W/2-30,H/2-18,14,20,0,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(W/2+30,H/2-18,14,20,0,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(W/2,H/2+45,14,8,0,0,Math.PI*2); ctx.fill();
+  }
+  const t=new THREE.CanvasTexture(c);
+  t.colorSpace=THREE.SRGBColorSpace;
+  return t;
+}
+
+export function cobwebTex(){
+  const W=128,H=128,c=makeCanvas(W,H),ctx=c.getContext('2d');
+  ctx.clearRect(0,0,W,H);
+  ctx.strokeStyle='rgba(230,225,210,0.35)'; ctx.lineWidth=1;
+  const cx=W/2,cy=H/2;
+  for(let a=0;a<Math.PI*2;a+=Math.PI/8){
+    ctx.beginPath(); ctx.moveTo(cx,cy);
+    ctx.lineTo(cx+Math.cos(a)*60, cy+Math.sin(a)*60); ctx.stroke();
+  }
+  for(let r=10;r<60;r+=8){
+    ctx.beginPath();
+    for(let a=0;a<=Math.PI*2+0.01;a+=Math.PI/8){
+      const x=cx+Math.cos(a)*r, y=cy+Math.sin(a)*r;
+      if(a===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+    }
+    ctx.stroke();
+  }
+  const t=new THREE.CanvasTexture(c);
+  return t;
+}
+
+export function cookieTex(){
+  // flashlight lens cookie — irregular leafy/grimy mask
+  const W=128,H=128,c=makeCanvas(W,H),ctx=c.getContext('2d');
+  const g=ctx.createRadialGradient(W/2,H/2,10,W/2,H/2,64);
+  g.addColorStop(0,'rgba(255,255,255,1)');
+  g.addColorStop(0.7,'rgba(255,255,255,0.85)');
+  g.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  // smudge blobs
+  for(let i=0;i<14;i++){
+    ctx.fillStyle=`rgba(0,0,0,${0.05+Math.random()*0.2})`;
+    ctx.beginPath();
+    ctx.arc(Math.random()*W,Math.random()*H,4+Math.random()*16,0,Math.PI*2);
+    ctx.fill();
+  }
+  const t=new THREE.CanvasTexture(c);
+  return t;
+}
+```
+
+```js
+// src/world/House.js
+import * as THREE from 'three';
+import * as Tex from './Textures.js';
+
+const WALL_H = 3.0;
+const HALF_W = 10; // ±10 X
+const HALF_D = 8;  // ±8 Z
+
+export class House {
+  constructor(scene, audio){
+    this.scene = scene;
+    this.audio = audio;
+    this.group = new THREE.Group();
+    scene.add(this.group);
+
+    this.colliders = []; // {min:Vec2,max:Vec2}
+    this.items = [];
+    this.doors = [];
+    this.lights = [];
+    this.windowLights = [];
+
+    this.foyerSpawn = new THREE.Vector3(0, 1.65, 5.5);
+
+    this._buildShell();
+    this._buildInteriorWalls();
+    this._buildDoors();
+    this._buildFurnitureAndDressing();
+    this._spawnItems();
+    this._buildLights();
+  }
+
+  // -------- shell --------
+  _addCollider(minX,minZ,maxX,maxZ){
+    this.colliders.push({ min:new THREE.Vector2(minX,minZ), max:new THREE.Vector2(maxX,maxZ) });
+  }
+
+  _wall(x,z,w,d,mat){
+    const g = new THREE.BoxGeometry(w, WALL_H, d);
+    const m = new THREE.Mesh(g, mat);
+    m.position.set(x, WALL_H/2, z);
+    m.castShadow = false; m.receiveShadow = true;
+    this.group.add(m);
+    this._addCollider(x-w/2, z-d/2, x+w/2, z+d/2);
+    return m;
+  }
+
+  _shellMaterial(){
+    return new THREE.MeshStandardMaterial({ map: Tex.wallpaperTex(2,1.5),
+      roughness:0.95, metalness:0.0 });
+  }
+
+  _floorMat(){ return new THREE.MeshStandardMaterial({ map: Tex.woodFloorTex(4,3),
+    roughness:0.85, metalness:0.0 }); }
+  _ceilMat(){ return new THREE.MeshStandardMaterial({ map: Tex.plasterCeilingTex(4,3),
+    roughness:1.0, metalness:0.0 }); }
+
+  _buildShell(){
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(HALF_W*2, HALF_D*2), this._floorMat());
+    floor.rotation.x = -Math.PI/2; floor.receiveShadow = true;
+    this.group.add(floor);
+
+    const ceil = new THREE.Mesh(new THREE.PlaneGeometry(HALF_W*2, HALF_D*2), this._ceilMat());
+    ceil.rotation.x = Math.PI/2; ceil.position.y = WALL_H;
+    this.group.add(ceil);
+
+    const wm = this._shellMaterial();
+    // North wall (z=-HALF_D)
+    this._wall(0, -HALF_D, HALF_W*2, 0.2, wm);
+    // South wall split for front door (gap centered, 1.6 wide)
+    const doorGap = 1.6;
+    this._wall(-(HALF_W + doorGap)/2, HALF_D, HALF_W - doorGap/2, 0.2, wm);
+    this._wall( (HALF_W + doorGap)/2, HALF_D, HALF_W - doorGap/2, 0.2, wm);
+    // East/West outer
+    this._wall(-HALF_W, 0, 0.2, HALF_D*2, wm);
+    this._wall( HALF_W, 0, 0.2, HALF_D*2, wm);
+  }
+
+  _interiorWallMat(){ return new THREE.MeshStandardMaterial({ map: Tex.wallpaperTex(1.5,1.2),
+    roughness:0.95, metalness:0.0}); }
+
+  _buildInteriorWalls(){
+    const m = this._interiorWallMat();
+    // Hallway spans middle band z ∈ [-2, 2]
+    // Vertical dividers separating north rooms (study/bedroom/kitchen) at z=-2
+    // Study (west) | Bedroom (center) | Kitchen (east) — divide at x=-3.3 and x=3.3
+    // Wall segments along z=-2 with door gaps
+    // West segment (-10..-3.3) with door gap around x=-6.5
+    this._segWithGap(-9.0, -2, 2.0, 0.2, 1.4, m); // study door area approx x≈-9
+    this._segWithGap(-3.3, -2, 0.2, 4.0, 1.4, m); // divider study-bedroom (full wall, no door gap needed but we leave arch)
+    // simpler approach: build individual segments explicitly
+    return;
+  }
+
+  _segWithGap(centerX, z, totalLen, thick, gapW, mat){
+    // Not used; replaced by explicit construction below.
+  }
+
+  _buildDoors(){
+    // We rebuild interior walls explicitly here too (cleaner).
+    const m = this._interiorWallMat();
+    // Remove previously added placeholder colliders from _buildInteriorWalls (we returned early so none added except those above)
+    // Build clean partition walls:
+
+    // --- North corridor wall (z = -2) splits north rooms from hallway ---
+    // Segments: [-10 .. -6.6], gap(door study)[-6.6..-5.2], [-5.2 .. -1.7],
+    //           gap(door bedroom)[-1.7..-0.3], [-0.3 .. 3.1],
+    //           gap(door kitchen)[3.1..4.5], [4.5 .. 10]
+    const segsN = [
+      [-10, -6.6],[-5.2, -1.7],[-0.3, 3.1],[4.5, 10]
+    ];
+    for(const [a,b] of segsN){
+      const len=b-a, cx=(a+b)/2;
+      this._wall(cx, -2, len, 0.2, m);
+    }
+
+    // --- South corridor wall (z = +2) splits south rooms from hallway (archways, no doors) ---
+    // Living(west) | Foyer(center) | Dining(east). Arches at x ranges.
+    const archesS = [[-7.5,-6.0],[-1.0,1.0],[6.0,7.5]];
+    const segsS=[[-10,-7.5],[-6.0,-1.0],[1.0,6.0],[7.5,10]];
+    for(const [a,b] of segsS){
+      const len=b-a, cx=(a+b)/2;
+      this._wall(cx, 2, len, 0.2, m);
+    }
+    // Add arch lintel beams above (visual only, no collider)
+    for(const [a,b] of archesS){
+      const len=b-a, cx=(a+b)/2;
+      const beam = new THREE.Mesh(new THREE.BoxGeometry(len, 0.6, 0.2), m);
+      beam.position.set(cx, WALL_H-0.3, 2);
+      this.group.add(beam);
+    }
+
+    // --- Dividers between north rooms (vertical walls at x=-3.3 and x=3.3, spanning z∈[-8,-2]) ---
+    this._wall(-3.3, -5, 0.2, 6, m);
+    this._wall( 3.3, -5, 0.2, 6, m);
+
+    // --- Dividers between south rooms (at x=-3.3 and x=3.3, z∈[2,8]) ---
+    this._wall(-3.3, 5, 0.2, 6, m);
+    this._wall( 3.3, 5, 0.2, 6, m);
+
+    // ----- Doors -----
+    // Study door (north wall west opening, hinge on east side)
+    this.doors.push(this._makeDoor({ x:-5.9, z:-2, w:1.4, hingeSide:1, axis:'z', name:'Study Door' }));
+    // Bedroom door
+    this.doors.push(this._makeDoor({ x:-1.0, z:-2, w:1.4, hingeSide:1, axis:'z', name:'Bedroom Door' }));
+    // Kitchen door (no physical door — archway, but we leave it open)
+    // Front door (south, center)
+    this.frontDoor = this._makeDoor({ x:0, z:8, w:1.6, hingeSide:-1, axis:'z', name:'Front Door', heavy:true });
+    this.doors.push(this.frontDoor);
+    this.frontDoor.locked = true;
+  }
+
+  _makeDoor({x,z,w,hingeSide,axis,name,heavy=false}){
+    const grp = new THREE.Group();
+    const fw = w, fh = WALL_H - 0.05;
+    const mat = new THREE.MeshStandardMaterial({
+      map: heavy? Tex.brickTex(): Tex.furnitureWoodTex(),
+      color: heavy? 0x6a4a28 : 0xffffff,
+      roughness:0.85, metalness:0.05
+    });
+    // Use wood even for front door for readability
+    if(heavy){
+      mat.map = Tex.furnitureWoodTex();
+      mat.color = new THREE.Color(0x4a2e16);
+    }
+    const panel = new THREE.Mesh(new THREE.BoxGeometry(fw, fh, 0.08), mat);
+    panel.position.set(fw/2, fh/2, 0);
+    panel.castShadow = true; panel.receiveShadow = true;
+    grp.add(panel);
+    // knob
+    const knob = new THREE.Mesh(new THREE.SphereGeometry(0.05,12,12),
+      new THREE.MeshStandardMaterial({color:0xb8941a,emissive:0x331a00,roughness:0.4,metalness:0.8}));
+    knob.position.set(fw-0.15, fh/2, 0.08);
+    grp.add(knob);
+
+    grp.position.set(x + (hingeSide<0?fw/2:-fw/2)*(axis==='z'?0:0), 0, z);
+    // Place pivot correctly: hinge at one edge
+    // For axis='z' (door swings in z-plane), hinge at x = x - hingeSide*w/2
+    const hingeX = x - hingeSide * (w/2);
+    grp.position.set(hingeX, 0, z);
+    grp.userData = { name, open:false, locked:false, hingeSide, w, axis, baseRot:0 };
+    this.group.add(grp);
+    // Collider representing the door (updated dynamically)
+    const col = { min:new THREE.Vector2(), max:new THREE.Vector2(), doorRef:grp, dynamic:true };
+    this.colliders.push(col);
+    grp.userData.collider = col;
+    this._updateDoorCollider(grp);
+    return grp;
+  }
+
+  _updateDoorCollider(door){
+    const col = door.userData.collider;
+    if(door.userData.open){
+      // Open: no collider (folded against wall)
+      col.min.set(9999,9999); col.max.set(-9999,-9999);
+      return;
+    }
+    const w = door.userData.w;
+    const hs = door.userData.hingeSide;
+    if(door.userData.axis==='z'){
+      const minX = door.position.x - (hs<0? 0 : w);
+      const maxX = door.position.x + (hs<0? w : 0);
+      col.min.set(minX, door.position.z - 0.1);
+      col.max.set(maxX, door.position.z + 0.1);
+    }
+  }
+
+  toggleDoor(door){
+    if(door.userData.locked) return false;
+    door.userData.open = !door.userData.open;
+    const tgt = door.userData.open ? (door.userData.hingeSide>0? -Math.PI*0.62 : Math.PI*0.62) : 0;
+    this._animateDoor(door, tgt);
+    this._updateDoorCollider(door);
+    this.audio.doorCreak(door.userData.open);
+    return true;
+  }
+
+  _animateDoor(door, target){
+    const start = door.rotation.y;
+    const t0 = performance.now();
+    const dur = 700;
+    const step = ()=>{
+      const t = Math.min((performance.now()-t0)/dur, 1);
+      const e = t<0.5? 2*t*t : 1-Math.pow(-2*t+2,2)/2;
+      door.rotation.y = start + (target-start)*e;
+      if(t<1) requestAnimationFrame(step);
+    };
+    step();
+  }
+
+  // -------- Furniture & dressing --------
+  _buildFurnitureAndDressing(){
+    this._portrait(-9.5, -7.8, 1);
+    this._portrait(9.5, -7.8, 2);
+    this._portrait(-9.5, 7.8, 0);
+    this._portrait(9.5, 7.8, 3);
+    this._cobweb([-9.8,-7.8]);
+    this._cobweb([9.8,-7.8]);
+
+    // Foyer table with note
+    this._table(0, 5.5, 1.2, 0.9, 'foyer-table');
+    this._note(0, 5.5, 'FOYER NOTE',
+      'Three brass keys were hidden when the house sealed itself.\nFind them. Unlock the front door. Do not stay past dawn.',
+      'objective');
+
+    // Study desk + note
+    this._desk(-8, -6, 1.6, 0.8);
+    this._note(-8, -6, 'STUDY SCRIBBLE',
+      'Light burns him. Hold the torch on his face long enough and he flees — but the battery pays for it.\nThe dark is his country. Carry spares.',
+      'mechanic');
+
+    // Bookcases lining study
+    this._bookcase(-9.7, -5, 0.4, 2.0, 2.6);
+    this._bookcase(-9.7, -3, 0.4, 2.0, 2.6);
+
+    // Bedroom bed
+    this._bed(0, -5.5);
+    this._wardrobe(2.5, -7.5);
+
+    // Kitchen counters + table
+    this._counterStrip(-9.5, -3.0, 0.7, 5.0);
+    this._table(7.5, -5.5, 1.4, 0.9, 'kitchen-table');
+    this._chair(7.0, -5.0);
+    this._chair(8.0, -5.0);
+    this._fridge(9.4, -7.0);
+
+    // Living room sofa + fireplace
+    this._sofa(-7.5, 6.5);
+    this._fireplace(-9.7, 5.0);
+    this._coffeeTable(-7.5, 5.0);
+
+    // Dining room table + chairs
+    this._table(7.5, 5.5, 2.2, 0.95, 'dining-table');
+    this._chair(6.5, 5.5);
+    this._chair(8.5, 5.5);
+    this._chinaCabinet(9.6, 7.5);
+
+    // Candles
+    this._candle(-1.5, 5.5);
+    this._candle(1.5, 5.5);
+    this._candle(0, 0.0);
+    this._candle(-7.5, 4.5);
+    this._candle(7.5, 4.5);
+    this._candle(-8, -6.0);
+    this._candle(7.5, -5.5);
+
+    // Baseboard trim along exterior walls (simple boxes)
+    this._baseboards();
+  }
+
+  _box(x,y,z,w,h,d,mat,collide=true){
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w,h,d), mat);
+    m.position.set(x,y,z); m.castShadow=false; m.receiveShadow=true;
+    this.group.add(m);
+    if(collide) this._addCollider(x-w/2, z-d/2, x+w/2, z+d/2);
+    return m;
+  }
+
+  _table(x,z,w,l,id){
+    const wood = new THREE.MeshStandardMaterial({map:Tex.furnitureWoodTex(),roughness:0.7,metalness:0.05,color:0xc8a878});
+    const top = this._box(x, 0.85, z, w, 0.08, l, wood, true);
+    // legs (no colliders individually; tabletop collider covers footprint)
+    const legM = new THREE.MeshStandardMaterial({color:0x3a2410,roughness:0.9});
+    for(const dx of [-1,1])for(const dz of [-1,1]){
+      const lg = new THREE.Mesh(new THREE.BoxGeometry(0.08,0.81,0.08),legM);
+      lg.position.set(x+dx*(w/2-0.08), 0.4, z+dz*(l/2-0.08));
+      this.group.add(lg);
+    }
+    top.userData = {id};
+    return top;
+  }
+
+  _desk(x,z,w,l){
+    return this._table(x,z,w,l,'desk');
+  }
+
+  _bed(x,z){
+    const frame = new THREE.MeshStandardMaterial({color:0x2a1a10,roughness:0.9});
+    const sheet = new THREE.MeshStandardMaterial({map:Tex.fabricTex('#3a2030'),roughness:1.0});
+    this._box(x, 0.25, z, 2.0, 0.5, 2.6, frame, true);
+    this._box(x, 0.55, z, 1.9, 0.25, 2.5, sheet, false);
+    // pillow
+    this._box(x, 0.7, z-0.9, 1.4, 0.18, 0.5, new THREE.MeshStandardMaterial({color:0x9a8a76}), false);
+    // headboard
+    this._box(x, 1.0, z-1.3, 2.0, 1.2, 0.1, frame, true);
+  }
+
+  _wardrobe(x,z){
+    const m = new THREE.MeshStandardMaterial({map:Tex.furnitureWoodTex(),color:0x4a2e16,roughness:0.85});
+    this._box(x, 1.2, z, 1.4, 2.4, 0.7, m, true);
+  }
+
+  _bookcase(x,z,w,h,d){
+    const m = new THREE.MeshStandardMaterial({map:Tex.furnitureWoodTex(),color:0x3a2410,roughness:0.9});
+    this._box(x, h/2, z, w, h, d, m, true);
+    // books
+    const colors=[0x6a2020,0x204060,0x306040,0x604020,0x202060];
+    for(let i=0;i<h/0.35;i++){
+      const bx = x + (Math.random()-0.5)*(w*0.4);
+      const bz = z + (Math.random()-0.5)*(d*0.4);
+      const book = new THREE.Mesh(new THREE.BoxGeometry(0.18,0.3,0.12),
+        new THREE.MeshStandardMaterial({color:colors[i%colors.length]}));
+      book.position.set(bx, 0.2+i*0.35, bz);
+      this.group.add(book);
+    }
+  }
+
+  _counterStrip(x,z,w,l){
+    const m = new THREE.MeshStandardMaterial({map:Tex.tileTex(),color:0xcccccc,roughness:0.6});
+    this._box(x, 0.95, z, w, 0.08, l, m, true);
+    this._box(x, 0.45, z, w, 0.9, l, new THREE.MeshStandardMaterial({color:0x2a2a2a,roughness:0.8}), true);
+  }
+
+  _fridge(x,z){
+    const m = new THREE.MeshStandardMaterial({color:0xdadada,roughness:0.5,metalness:0.4});
+    this._box(x, 1.0, z, 0.8, 2.0, 0.7, m, true);
+  }
+
+  _chair(x,z){
+    const m = new THREE.MeshStandardMaterial({map:Tex.furnitureWoodTex(),color:0x5a3a1a,roughness:0.85});
+    this._box(x, 0.45, z, 0.45, 0.08, 0.45, m, true);
+    this._box(x, 0.85, z-0.2, 0.45, 0.8, 0.08, m, false);
+    for(const dx of [-1,1])for(const dz of [-1,1]){
+      const lg = new THREE.Mesh(new THREE.BoxGeometry(0.05,0.45,0.05),m);
+      lg.position.set(x+dx*0.18, 0.22, z+dz*0.18);
+      this.group.add(lg);
+    }
+  }
+
+  _sofa(x,z){
+    const m = new THREE.MeshStandardMaterial({map:Tex.fabricTex('#3a2820'),roughness:1.0});
+    this._box(x, 0.4, z, 2.6, 0.4, 1.0, m, true);
+    this._box(x, 0.7, z+0.4, 2.6, 0.6, 0.2, m, true);
+    this._box(x-1.3, 0.7, z, 0.2, 0.6, 1.0, m, true);
+    this._box(x+1.3, 0.7, z, 0.2, 0.6, 1.0, m, true);
+  }
+
+  _fireplace(x,z){
+    const m = new THREE.MeshStandardMaterial({map:Tex.brickTex(),color:0xaaaaaa,roughness:1.0});
+    this._box(x, 1.2, z, 1.6, 2.4, 0.4, m, true);
+    // hearth opening
+    const op = new THREE.Mesh(new THREE.BoxGeometry(1.0,1.0,0.3),
+      new THREE.MeshStandardMaterial({color:0x000000,emissive:0xff5500,emissiveIntensity:0.4}));
+    op.position.set(x, 0.5, z+0.05);
+    this.group.add(op);
+    // tiny flame light
+    const fl = new THREE.PointLight(0xff7720, 1.2, 4, 2.0);
+    fl.position.set(x, 0.6, z+0.3);
+    this.group.add(fl);
+    this.fireLight = fl;
+    this.lights.push({obj:fl,type:'fire'});
+  }
+
+  _coffeeTable(x,z){
+    this._table(x,z,1.0,0.6,'coffee');
+  }
+
+  _chinaCabinet(x,z){
+    const m = new THREE.MeshStandardMaterial({map:Tex.furnitureWoodTex(),color:0x4a2e16,roughness:0.85});
+    this._box(x, 1.2, z, 1.6, 2.4, 0.5, m, true);
+  }
+
+  _portrait(x,z,seed){
+    const tex = Tex.portraitFaceTex(seed);
+    const m = new THREE.MeshStandardMaterial({map:tex,roughness:0.9,emissive:0x110800,emissiveIntensity:0.2});
+    const fr = new THREE.Mesh(new THREE.BoxGeometry(0.9,1.2,0.06), m);
+    fr.position.set(x, 2.0, z);
+    fr.castShadow=false;
+    this.group.add(fr);
+  }
+
+  _cobweb(pos){
+    const tex = Tex.cobwebTex();
+    const m = new THREE.SpriteMaterial({map:tex,transparent:true,depthWrite:false,opacity:0.55});
+    const s = new THREE.Sprite(m);
+    s.scale.set(1.2,1.2,1);
+    s.position.set(pos[0]+0.1, WALL_H-0.4, pos[1]+0.1);
+    this.group.add(s);
+  }
+
+  _candle(x,z){
+    const wax = new THREE.MeshStandardMaterial({color:0xece0c0,roughness:0.6});
+    const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.03,0.04,0.3,8), wax);
+    stick.position.set(x, 0.95, z);
+    this.group.add(stick);
+    // holder
+    const hold = new THREE.Mesh(new THREE.CylinderGeometry(0.1,0.12,0.05,12),
+      new THREE.MeshStandardMaterial({color:0x6a4a20,metalness:0.6,roughness:0.4}));
+    hold.position.set(x, 0.79, z);
+    this.group.add(hold);
+    // flame
+    const flameMat = new THREE.MeshBasicMaterial({color:0xffb050,transparent:true,opacity:0.9});
+    const flame = new THREE.Mesh(new THREE.ConeGeometry(0.04,0.12,8), flameMat);
+    flame.position.set(x, 1.15, z);
+    this.group.add(flame);
+    const lt = new THREE.PointLight(0xffaa44, 0.7, 3.5, 2.0);
+    lt.position.set(x, 1.2, z);
+    this.group.add(lt);
+    this.lights.push({obj:lt, flame, type:'candle', baseInt:0.7, basePos:lt.position.clone()});
+  }
+
+  _baseboards(){
+    const m = new THREE.MeshStandardMaterial({color:0x1a1208,roughness:0.9});
+    const strip = (x,z,w,d)=>{ const b=this._box(x,0.075,z,w,0.15,d,m,false); };
+    // Skip detailed perimeter; visual hint only along parts
+    strip(0, -HALF_D+0.05, HALF_W*2, 0.1);
+    strip(0,  HALF_D-0.05, HALF_W*2, 0.1);
+    strip(-HALF_W+0.05, 0, 0.1, HALF_D*2);
+    strip( HALF_W-0.05, 0, 0.1, HALF_D*2);
+  }
+
+  // -------- Items --------
+  _spawnItems(){
+    // Key candidate spots per room
+    const kitchenSpots=[
+      {pos:[7.5,-5.5], label:'on the kitchen table'},
+      {pos:[-9.0,-3.5], label:'on the counter'},
+      {pos:[9.4,-7.0], label:'inside the fridge'}
+    ];
+    const studySpots=[
+      {pos:[-8,-6], label:'on the study desk'},
+      {pos:[-9.7,-5], label:'atop a bookshelf'},
+      {pos:[-7,-7], label:'beneath a chair'}
+    ];
+    const bedroomSpots=[
+      {pos:[0,-5.5], label:'on the bed'},
+      {pos:[2.5,-7.5], label:'in the wardrobe'},
+      {pos:[-2,-7], label:'on the nightstand'}
+    ];
+
+    const pick = arr => arr.splice(Math.floor(Math.random()*arr.length),1)[0];
+
+    const k1=pick(kitchenSpots), k2=pick(studySpots), k3=pick(bedroomSpots);
+    this._key(k1.pos, 'Kitchen Key', k1.label);
+    this._key(k2.pos, 'Study Key',   k2.label);
+    this._key(k3.pos, 'Bedroom Key',  k3.label);
+
+    // Fixed batteries
+    this._battery([-7.5, 4.5], 'living-room');
+    this._battery([7.5, 4.5],  'dining');
+    this._battery([0, 0],      'hallway');
+    this._battery([-9.0,-3.5], 'kitchen-counter-extra');
+  }
+
+  _key(pos,label,where){
+    const grp = new THREE.Group();
+    const bow = new THREE.Mesh(new THREE.TorusGeometry(0.06,0.018,8,16),
+      new THREE.MeshStandardMaterial({color:0xcaa64a,emissive:0x442a00,emissiveIntensity:0.6,metalness:0.85,roughness:0.3}));
+    bow.position.y=0.05;
+    const shaft = new THREE.Mesh(new THREE.BoxGeometry(0.02,0.18,0.02),
+      new THREE.MeshStandardMaterial({color:0xcaa64a,emissive:0x442a00,emissiveIntensity:0.6,metalness:0.85,roughness:0.3}));
+    shaft.position.y=-0.09;
+    const tooth = new THREE.Mesh(new THREE.BoxGeometry(0.05,0.03,0.02),
+      new THREE.MeshStandardMaterial({color:0xcaa64a,emissive:0x442a00,emissiveIntensity:0.6,metalness:0.85,roughness:0.3}));
+    tooth.position.set(0.025,-0.16,0);
+    grp.add(bow); grp.add(shaft); grp.add(tooth);
+    grp.position.set(pos[0], 0.95, pos[1]);
+    this.group.add(grp);
+    this.items.push({ kind:'key', obj:grp, pos:grp.position.clone(), label:`Take ${label}`, picked:false, where });
+    // Glow halo
+    const halo = new THREE.PointLight(0xffcf66, 0.6, 1.5, 2);
+    halo.position.copy(grp.position);
+    this.group.add(halo);
+    grp.userData.halo = halo;
+  }
+
+  _battery(pos,id){
+    const grp = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.04,0.04,0.14,12),
+      new THREE.MeshStandardMaterial({color:0x2a8a3a,emissive:0x103018,emissiveIntensity:0.4,metalness:0.6,roughness:0.4}));
+    body.rotation.z = Math.PI/2;
+    const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.022,0.022,0.04,12),
+      new THREE.MeshStandardMaterial({color:0xdddddd,metalness:0.8,roughness:0.3}));
+    cap.rotation.z=Math.PI/2; cap.position.x=0.08;
+    grp.add(body); grp.add(cap);
+    grp.position.set(pos[0], 0.95, pos[1]);
+    this.group.add(grp);
+    this.items.push({kind:'battery', obj:grp, pos:grp.position.clone(), label:'Take spare battery', picked:false});
+  }
+
+  _note(x,z,title,body,id){
+    const paper = new THREE.Mesh(new THREE.PlaneGeometry(0.25,0.32),
+      new THREE.MeshStandardMaterial({color:0xd8cba0,roughness:0.9,side:THREE.DoubleSide,emissive:0x111008,emissiveIntensity:0.2}));
+    paper.position.set(x, 0.95, z);
+    paper.rotation.x = -Math.PI/2.2;
+    this.group.add(paper);
+    this.notes = this.notes||[];
+    this.notes.push({mesh:paper, title, body});
+    this.items.push({kind:'note', obj:paper, pos:paper.position.clone(), label:'Read note', picked:false, ref:this.notes[this.notes.length-1]});
+  }
+
+  // -------- Lights --------
+  _buildLights(){
+    // Moonlight through windows (cold blue point lights at window positions)
+    const moonCol = 0x305070;
+    const wins = [
+      [-9.7,-7.5],[9.7,-7.5],[-9.7,7.5],[9.7,7.5],
+      [-9.7,-3],[9.7,-3],[-9.7,3],[9.7,3]
+    ];
+    for(const [x,z] of wins){
+      const lp = new THREE.PointLight(moonCol, 0.55, 6, 2.0);
+      lp.position.set(x*0.94, 1.8, z*0.94);
+      this.group.add(lp);
+      this.windowLights.push(lp);
+      // Window pane visual
+      const panes = new THREE.Mesh(new THREE.PlaneGeometry(1.2,1.6),
+        new THREE.MeshStandardMaterial({color:0x152535,emissive:0x183040,emissiveIntensity:0.5,roughness:0.4,metalness:0.2,side:THREE.DoubleSide}));
+      const sign = x<0?1:-1;
+      panes.position.set(x + sign*0.02, 1.6, z);
+      panes.rotation.y = sign>0? -Math.PI/2 : Math.PI/2;
+      if(Math.abs(z)<0.1){ panes.rotation.y=0; }
+      // orient: for x-extreme windows rotate Y; for z-extreme ones keep facing inward
+      this.group.add(panes);
+    }
+
+    // Warm hanging bulb in foyer
+    const foyerBulb = new THREE.PointLight(0xffba73, 0.45, 5, 2.0);
+    foyerBulb.position.set(0, 2.7, 5.5);
+    this.group.add(foyerBulb);
+    this.lights.push({obj:foyerBulb, type:'bulb', baseInt:0.45, flickerChance:0.04});
+    const fbMesh = new THREE.Mesh(new THREE.SphereGeometry(0.05,8,8),
+      new THREE.MeshBasicMaterial({color:0xffd080}));
+    fbMesh.position.copy(foyerBulb.position);
+    this.group.add(fbMesh);
+
+    // Hallway bulb
+    const hallBulb = new THREE.PointLight(0xffba73, 0.35, 5, 2.0);
+    hallBulb.position.set(0, 2.7, 0);
+    this.group.add(hallBulb);
+    this.lights.push({obj:hallBulb, type:'bulb', baseInt:0.35, flickerChance:0.06});
+    const hbMesh = new THREE.Mesh(new THREE.SphereGeometry(0.05,8,8),
+      new THREE.MeshBasicMaterial({color:0xffd080}));
+    hbMesh.position.copy(hallBulb.position);
+    this.group.add(hbMesh);
+
+    // Very dim ambient so unlit corners aren't pure-zero (still nearly black)
+    this.scene.add(new THREE.AmbientLight(0x101218, 0.18));
+
+    // Subtle hemispheric fill from above (moon wash)
+    const hemi = new THREE.HemisphereLight(0x202830, 0x050505, 0.12);
+    this.scene.add(hemi);
+  }
+
+  // -------- Public accessors --------
+  getColliders(){ return this.colliders; }
+  getItems(){ return this.items.filter(i=>!i.picked); }
+  getDoors(){ return this.doors; }
+
+  update(dt, player){
+    // Candle flicker
+    for(const L of this.lights){
+      if(L.type==='candle'){
+        L.obj.intensity = L.baseInt * (0.7 + Math.random()*0.6);
+        if(L.flame) L.flame.scale.setScalar(0.8+Math.random()*0.6);
+      } else if(L.type==='bulb'){
+        if(Math.random()<L.flickerChance) L.obj.intensity = L.baseInt*0.2;
+        else L.obj.intensity = L.baseInt;
+      } else if(L.type==='fire'){
+        L.obj.intensity = 1.0 + Math.random()*0.6;
+      }
+    }
+    // Item hover/spin
+    for(const it of this.items){
+      if(it.picked) continue;
+      it.obj.rotation.y += dt*1.2;
+      it.obj.position.y = it.pos.y + Math.sin(performance.now()*0.002 + it.pos.x)*0.02;
+    }
+    // Window lights pulse subtly with lightning handled externally via ScareDirector
+  }
+
+  dispose(){
+    this.scene.remove(this.group);
+    this.group.traverse(o=>{
+      if(o.geometry) o.geometry.dispose?.();
+      if(o.material){ if(Array.isArray(o.material)) o.material.forEach(m=>m.dispose()); else o.material.dispose(); }
+    });
+  }
+}
+```
+
+```js
+// src/player/Player.js
+import * as THREE from 'three';
+import * as Tex from '../world/Textures.js';
+
+export class Player {
+  constructor({ scene, camera, audio, collidersProvider, itemsProvider, doorsProvider }){
+    this.scene=scene; this.camera=camera; this.audio=audio;
+    this.collidersProvider=collidersProvider;
+    this.itemsProvider=itemsProvider;
+    this.doorsProvider=doorsProvider;
+
+    this.eyeHeight = 1.65;
+    this.radius = 0.35;
+    this.speed = 3.0;
+    this.sprintMul = 1.7;
+    this.accel = 12;
+    this.friction = 10;
+
+    this.yaw = Math.PI; // looking north initially
+    this.pitch = 0;
+    this.vel = new THREE.Vector3();
+    this.pos = new THREE.Vector3();
+    this.bobPhase = 0;
+    this.bobAmt = 0;
+
+    this.battery = 100;
+    this.flashlightOn = true;
+    this.torchRange = 11;
+    this.torchHalfAngle = Math.PI/7;     // 25.7°
+    this.torchHalfAnglePenumbra = Math.PI/5.5;
+
+    this.lastFootstep = 0;
+    this.hoveredLabel = '';
+
+    this._setupFlashlight();
+    this._setupDust();
+    this._bindMouse();
+  }
+
+  _setupFlashlight(){
+    const spot = new THREE.SpotLight(0xfff2d0, 6.5, this.torchRange, this.torchHalfAngle*2, 0.45, 1.6);
+    spot.position.set(0,0,0);
+    spot.target.position.set(0,0,-1);
+    spot.castShadow = true;
+    spot.shadow.mapSize.set(1024,1024);
+    spot.shadow.bias = -0.0005;
+    spot.shadow.normalBias = 0.02;
+    spot.shadow.camera.near = 0.1;
+    spot.shadow.camera.far = this.torchRange;
+    // Cookie
+    spot.map = Tex.cookieTex();
+    this.spot = spot;
+    this.camera.add(spot);
+    this.camera.add(spot.target);
+    this.scene.add(this.camera);
+
+    // Tiny muzzle glow plane (visible bulb)
+    const glow = new THREE.Mesh(new THREE.SphereGeometry(0.02,8,8),
+      new THREE.MeshBasicMaterial({color:0xfff0c0}));
+    glow.position.set(0.12,-0.1,-0.2);
+    this.camera.add(glow);
+  }
+
+  _setupDust(){
+    const N=240;
+    const geo = new THREE.BufferGeometry();
+    const arr = new Float32Array(N*3);
+    for(let i=0;i<N;i++){
+      arr[i*3]=(Math.random()-0.5)*6;
+      arr[i*3+1]=Math.random()*2.4;
+      arr[i*3+2]=-Math.random()*6;
+    }
+    geo.setAttribute('position', new THREE.BufferAttribute(arr,3));
+    const mat = new THREE.PointsMaterial({ size:0.025, color:0xa09070,
+      transparent:true, opacity:0.55, depthWrite:false, blending:THREE.AdditiveBlending });
+    this.dust = new THREE.Points(geo, mat);
+    this.dustFrustumOffset = new THREE.Vector3();
+    this.camera.add(this.dust);
+    this.dust.position.set(0,0,-1);
+  }
+
+  _bindMouse(){
+    document.addEventListener('mousemove',(e)=>{
+      if(!document.pointerLockElement) return;
+      const sens = 0.0022;
+      this.yaw -= e.movementX*sens;
+      this.pitch -= e.movementY*sens;
+      this.pitch = Math.max(-Math.PI/2+0.05, Math.min(Math.PI/2-0.05, this.pitch));
+    });
+  }
+
+  spawnAt(v){
+    this.pos.copy(v);
+    this.pos.y = this.eyeHeight;
+    this.camera.position.copy(this.pos);
+  }
+
+  toggleFlashlight(){
+    if(this.battery<=0){ this.flashlightOn=false; this.spot.visible=false; return; }
+    this.flashlightOn=!this.flashlightOn;
+    this.spot.visible=this.flashlightOn;
+    this.audio.click();
+  }
+
+  drainBattery(amount){
+    this.battery = Math.max(0, this.battery - amount);
+    if(this.battery<=0 && this.flashlightOn){
+      this.flashlightOn=false; this.spot.visible=false;
+    }
+    // Sputter near death
+    if(this.battery<20 && this.flashlightOn){
+      this.spot.intensity = 6.5 * (0.4 + Math.random()*0.6);
+    } else {
+      this.spot.intensity = 6.5;
+    }
+  }
+
+  interact(){
+    // Raycast for nearest item/door within reach
+    const origin = this.camera.position;
+    const dir = new THREE.Vector3(); this.camera.getWorldDirection(dir);
+    const reach = 2.4;
+
+    // Try doors first
+    for(const d of this.doorsProvider()){
+      const dp = d.position;
+      const to = new THREE.Vector3(dp.x-origin.x, 0, dp.z-origin.z);
+      const dist = to.length();
+      if(dist < reach+0.6){
+        // Toggle if roughly faced
+        const dot = to.normalize().dot(new THREE.Vector3(dir.x,0,dir.z).normalize());
+        if(dot > 0.2 || dist < 1.2){
+          if(d.userData.locked){
+            this.audio.lockedDoor();
+            // Notify game via front door attempt hook
+            if(d.name==='Front Door' || d===this._frontDoorRef){}
+          }
+          // We expose a callback instead — handled in House.toggleDoor via Game bridge
+          this._tryToggleDoor(d);
+          return;
+        }
+      }
+    }
+
+    // Items
+    let best=null, bd=reach;
+    for(const it of this.itemsProvider()){
+      const to = it.pos.clone().sub(origin);
+      const d = to.length();
+      if(d<bd){
+        const dot = to.normalize().dot(dir);
+        if(dot>0.55 || d<1.4){ best=it; bd=d; }
+      }
+    }
+    if(best){
+      best.picked=true;
+      best.obj.parent?.remove(best.obj);
+      if(best.obj.userData?.halo){ best.obj.userData.halo.parent?.remove(best.obj.userData.halo); }
+      if(best.kind==='note'){
+        this._readNote(best.ref);
+      } else {
+        this._pickupCb?.(best);
+      }
+    }
+  }
+
+  _tryToggleDoor(d){
+    // Locked front door routes to game-level attempt (handled by House.onFrontDoorAttempt)
+    if(d.userData.locked){
+      this._frontDoorAttemptCb?.();
+      return;
+    }
+    this._houseRef?.toggleDoor(d);
+  }
+
+  setHouseInterface(house, onPickup, onNote, onFrontDoorAttempt){
+    this._houseRef = house;
+    this._pickupCb = onPickup;
+    this._noteCb = onNote;
+    this._frontDoorAttemptCb = onFrontDoorAttempt;
+  }
+
+  _readNote(note){
+    this._noteCb?.(note);
+  }
+
+  update(dt, keys){
+    // Direction vectors
+    const fwd = new THREE.Vector3(-Math.sin(this.yaw),0,-Math.cos(this.yaw));
+    const right = new THREE.Vector3(Math.cos(this.yaw),0,-Math.sin(this.yaw));
+
+    let wish = new THREE.Vector3();
+    if(keys['KeyW']) wish.add(fwd);
+    if(keys['KeyS']) wish.sub(fwd);
+    if(keys['KeyD']) wish.add(right);
+    if(keys['KeyA']) wish.sub(right);
+    const moving = wish.lengthSq()>0;
+    if(moving) wish.normalize();
+
+    const sprint = keys['ShiftLeft']||keys['ShiftRight'];
+    const spd = this.speed * (sprint? this.sprintMul:1);
+    const target = wish.multiplyScalar(spd);
+
+    // Acceleration/friction
+    this.vel.x += (target.x - this.vel.x) * Math.min(1, this.accel*dt);
+    this.vel.z += (target.z - this.vel.z) * Math.min(1, this.accel*dt);
+    if(!moving){
+      this.vel.x *= Math.max(0, 1 - this.friction*dt);
+      this.vel.z *= Math.max(0, 1 - this.friction*dt);
+    }
+
+    // Move with collision (separate axes)
+    this._moveAxis('x', this.vel.x*dt);
+    this._moveAxis('z', this.vel.z*dt);
+
+    // Clamp to house bounds
+    this.pos.x = Math.max(-9.7, Math.min(9.7, this.pos.x));
+    this.pos.z = Math.max(-7.7, Math.min(7.7, this.pos.z));
+
+    // Head bob
+    const horizSpeed = Math.hypot(this.vel.x, this.vel.z);
+    if(horizSpeed>0.2){
+      this.bobPhase += dt * (sprint? 14:9);
+      this.bobAmt = Math.min(this.bobAmt + dt*4, 0.06);
+    } else {
+      this.bobAmt *= Math.max(0, 1 - dt*5);
+    }
+    const bobY = Math.sin(this.bobPhase)*this.bobAmt;
+    const bobX = Math.cos(this.bobPhase*0.5)*this.bobAmt*0.5;
+
+    // Apply to camera
+    this.camera.position.set(this.pos.x + bobX*right.x, this.pos.y + bobY, this.pos.z + bobX*right.z);
+    this.camera.rotation.order = 'YXZ';
+    this.camera.rotation.y = this.yaw;
+    this.camera.rotation.x = this.pitch;
+
+    // Flashlight sway/lag
+    const sw = Math.sin(performance.now()*0.0015)*0.012;
+    const sw2 = Math.cos(performance.now()*0.0011)*0.012;
+    this.spot.position.set(sw, sw2, 0.05);
+    this.spot.target.position.set(sw*4, sw2*4, -1);
+
+    // Dust motion
+    if(this.dust){
+      const pa = this.dust.geometry.attributes.position.array;
+      for(let i=0;i<pa.length;i+=3){
+        pa[i] += (Math.random()-0.5)*0.004;
+        pa[i+1] += Math.sin(performance.now()*0.0008 + i)*0.001;
+        pa[i+2] += (Math.random()-0.5)*0.004;
+        if(pa[i]>3) pa[i]-=6; if(pa[i]<-3) pa[i]+=6;
+        if(pa[i+1]>2.4) pa[i+1]=0; if(pa[i+1]<0) pa[i+1]=2.4;
+        if(pa[i+2]>0) pa[i+2]=-6; if(pa[i+2]<-6) pa[i+2]=0;
+      }
+      this.dust.geometry.attributes.position.needsUpdate = true;
+    }
+
+    // Footsteps
+    if(moving && horizSpeed>0.5){
+      this.lastFootstep += dt;
+      const stride = sprint? 0.32:0.45;
+      if(this.lastFootstep>stride){
+        this.lastFootstep=0;
+        this.audio.footstep(sprint);
+      }
+    }
+
+    // Battery passive drain
+    if(this.flashlightOn) this.drainBattery(dt * 0.6);
+
+    // Hover detect for labels
+    this._computeHover();
+  }
+
+  _moveAxis(axis, delta){
+    if(delta===0) return;
+    const old = this.pos[axis];
+    this.pos[axis] += delta;
+    // Resolve against colliders (circle vs AABB)
+    for(const c of this.collidersProvider()){
+      // Expand AABB by radius
+      const minX=c.min.x-this.radius, maxX=c.max.x+this.radius;
+      const minZ=c.min.y-this.radius, maxZ=c.max.y+this.radius;
+      if(this.pos.x>minX && this.pos.x<maxX && this.pos.z>minZ && this.pos.z<maxZ){
+        // Push out along this axis
+        if(axis==='x'){
+          if(delta>0) this.pos.x = minX;
+          else this.pos.x = maxX;
+        } else {
+          if(delta>0) this.pos.z = minZ;
+          else this.pos.z = maxZ;
+        }
+        this.vel[axis] = 0;
+      }
+    }
+  }
+
+  _computeHover(){
+    const origin = this.camera.position;
+    const dir = new THREE.Vector3(); this.camera.getWorldDirection(dir);
+    let best='', bd=2.4;
+    for(const it of this.itemsProvider()){
+      const to = it.pos.clone().sub(origin);
+      const d = to.length();
+      if(d<bd){
+        const dot = to.normalize().dot(dir);
+        if(dot>0.55 || d<1.4){ best = `[E] ${it.label}`; bd=d; }
+      }
+    }
+    for(const d of this.doorsProvider()){
+      const dp = d.position;
+      const to = new THREE.Vector3(dp.x-origin.x, 0, dp.z-origin.z);
+      const dist = to.length();
+      if(dist<bd+0.4){
+        const dot = to.normalize().dot(new THREE.Vector3(dir.x,0,dir.z).normalize());
+        if(dot>0.3 || dist<1.2){
+          best = d.userData.locked? '[E] Locked door' : `[E] ${d.userData.open?'Close':'Open'} ${d.userData.name}`;
+          bd = dist;
+        }
+      }
+    }
+    this.hoveredLabel = best;
+  }
+
+  dispose(){
+    this.scene.remove(this.camera);
+    this.spot.dispose?.();
+  }
+}
+```
+
+```js
+// src/systems/AudioEngine.js
+export class AudioEngine {
+  constructor(){
+    this.ctx=null; this.master=null; this.reverb=null;
+    this.started=false;
+    this.dangerLevel=0;
+  }
+
+  init(){
+    if(this.started) return;
+    this.ctx = new (window.AudioContext||window.webkitAudioContext)();
+    this.master = this.ctx.createGain();
+    this.master.gain.value = 0.7;
+    this.master.connect(this.ctx.destination);
+
+    // Reverb impulse
+    this.reverb = this.ctx.createConvolver();
+    this.reverb.buffer = this._impulseResponse(2.4, 3.5);
+    const revGain = this.ctx.createGain(); revGain.gain.value=0.35;
+    this.reverb.connect(revGain); revGain.connect(this.master);
+    this.revBus = this.ctx.createGain(); this.revBus.connect(this.reverb);
+
+    this.noiseBuf = this._noiseBuffer(2.0);
+    this.started = true;
+  }
+
+  resume(){ if(this.ctx?.state==='suspended') this.ctx.resume(); }
+
+  _noiseBuffer(seconds){
+    const sr=this.ctx.sampleRate, len=sr*seconds;
+    const buf=this.ctx.createBuffer(1,len,sr);
+    const d=buf.getChannelData(0);
+    for(let i=0;i<len;i++) d[i]=Math.random()*2-1;
+    return buf;
+  }
+
+  _impulseResponse(seconds, decay){
+    const sr=this.ctx.sampleRate, len=sr*seconds;
+    const buf=this.ctx.createBuffer(2,len,sr);
+    for(let c=0;c<2;c++){
+      const d=buf.getChannelData(c);
+      for(let i=0;i<len;i++){
+        d[i] = (Math.random()*2-1) * Math.pow(1 - i/len, decay);
+      }
+    }
+    return buf;
+  }
+
+  startAmbient(){
+    if(!this.started) return;
+    // Drone
+    const osc1=this.ctx.createOscillator(); osc1.type='sine'; osc1.frequency.value=55;
+    const osc2=this.ctx.createOscillator(); osc2.type='triangle'; osc2.frequency.value=82.5;
+    const lp=this.ctx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=180;
+    const dg=this.ctx.createGain(); dg.gain.value=0.08;
+    osc1.connect(lp); osc2.connect(lp); lp.connect(dg); dg.connect(this.master); dg.connect(this.revBus);
+    osc1.start(); osc2.start();
+    this.droneGain=dg;
+
+    // Rain bed
+    const rn=this.ctx.createBufferSource(); rn.buffer=this.noiseBuf; rn.loop=true;
+    const bp=this.ctx.createBiquadFilter(); bp.type='bandpass'; bp.frequency.value=1200; bp.Q.value=0.4;
+    const hp=this.ctx.createBiquadFilter(); hp.type='highpass'; hp.frequency.value=400;
+    const rg=this.ctx.createGain(); rg.gain.value=0.12;
+    rn.connect(bp); bp.connect(hp); hp.connect(rg); rg.connect(this.master);
+    rn.start();
+    this.rainGain=rg;
+
+    // Wind gusts
+    this.windInterval=setInterval(()=>{
+      const g=this.ctx.createGain(); g.gain.value=0;
+      const src=this.ctx.createBufferSource(); src.buffer=this.noiseBuf; src.loop=true;
+      const f=this.ctx.createBiquadFilter(); f.type='lowpass'; f.frequency.value=500;
+      src.connect(f); f.connect(g); g.connect(this.master);
+      src.start();
+      const now=this.ctx.currentTime;
+      g.gain.setValueAtTime(0, now);
+      g.gain.linearRampToValueAtTime(0.05+Math.random()*0.05, now+1.5);
+      g.gain.linearRampToValueAtTime(0, now+4.0);
+      setTimeout(()=>{ try{src.stop();}catch{} },4500);
+    }, 7000);
+  }
+
+  resumeAmbient(){ this.resume(); }
+
+  update(dt, danger){
+    this.dangerLevel = danger;
+    if(this.droneGain){
+      this.droneGain.gain.value = 0.08 + danger*0.12;
+    }
+    // Heartbeat schedule
+    if(danger>0.25){
+      this._hbAcc = (this._hbAcc||0) + dt;
+      const interval = 1.1 - danger*0.6;
+      if(this._hbAcc > interval){
+        this._heartbeat();
+        this._hbAcc = 0;
+      }
+    }
+  }
+
+  _heartbeat(){
+    const now=this.ctx.currentTime;
+    const mk=(t,freq,gain)=>{
+      const o=this.ctx.createOscillator(); o.type='sine'; o.frequency.setValueAtTime(freq,t);
+      o.frequency.exponentialRampToValueAtTime(freq*0.4, t+0.18);
+      const g=this.ctx.createGain(); g.gain.setValueAtTime(0,t);
+      g.gain.linearRampToValueAtTime(gain,t+0.02);
+      g.gain.exponentialRampToValueAtTime(0.001,t+0.22);
+      o.connect(g); g.connect(this.master);
+      o.start(t); o.stop(t+0.25);
+    };
+    mk(now, 60, 0.5*this.dangerLevel);
+    mk(now+0.22, 50, 0.35*this.dangerLevel);
+  }
+
+  thunder(intense=false){
+    const now=this.ctx.currentTime;
+    // Sharp crack
+    const src=this.ctx.createBufferSource(); src.buffer=this.noiseBuf;
+    const lp=this.ctx.createBiquadFilter(); lp.type='lowpass';
+    lp.frequency.setValueAtTime(2000, now);
+    lp.frequency.exponentialRampToValueAtTime(120, now+0.6);
+    const g=this.ctx.createGain(); g.gain.setValueAtTime(0.0001, now);
+    g.gain.exponentialRampToValueAtTime(intense?0.9:0.5, now+0.02);
+    g.gain.exponentialRampToValueAtTime(0.001, now+1.8);
+    src.connect(lp); lp.connect(g); g.connect(this.master); g.connect(this.revBus);
+    src.start(now); src.stop(now+2.0);
+    // Rumble tail
+    const rs=this.ctx.createBufferSource(); rs.buffer=this.noiseBuf; rs.loop=true;
+    const rl=this.ctx.createBiquadFilter(); rl.type='lowpass'; rl.frequency.value=80;
+    const rg=this.ctx.createGain(); rg.gain.value=0;
+    rs.connect(rl); rl.connect(rg); rg.connect(this.master);
+    rs.start(now+0.1);
+    rg.gain.linearRampToValueAtTime(0.25, now+0.3);
+    rg.gain.linearRampToValueAtTime(0.001, now+3.5);
+    setTimeout(()=>{try{rs.stop()}catch{}},3800);
+  }
+
+  stinger(){
+    const now=this.ctx.currentTime;
+    // Dissonant cluster
+    [220,233,330,466].forEach((f,i)=>{
+      const o=this.ctx.createOscillator(); o.type='sawtooth'; o.frequency.value=f;
+      const g=this.ctx.createGain(); g.gain.setValueAtTime(0.0001,now);
+      g.gain.exponentialRampToValueAtTime(0.25, now+0.01);
+      g.gain.exponentialRampToValueAtTime(0.001, now+0.7);
+      const dst=this.ctx.createWaveShaper();
+      const curve=new Float32Array(256);
+      for(let j=0;j<256;j++){const x=j/128-1;curve[j]=Math.tanh(x*4);}
+      dst.curve=curve;
+      o.connect(dst); dst.connect(g); g.connect(this.master); g.connect(this.revBus);
+      o.start(now); o.stop(now+0.8);
+    });
+    // Noise hit
+    const ns=this.ctx.createBufferSource(); ns.buffer=this.noiseBuf;
+    const ng=this.ctx.createGain(); ng.gain.setValueAtTime(0.6,now);
+    ng.gain.exponentialRampToValueAtTime(0.001, now+0.4);
+    ns.connect(ng); ng.connect(this.master);
+    ns.start(now); ns.stop(now+0.4);
+  }
+
+  deathStinger(){
+    const now=this.ctx.currentTime;
+    // Loud screech
+    const o=this.ctx.createOscillator(); o.type='sawtooth';
+    o.frequency.setValueAtTime(800, now);
+    o.frequency.exponentialRampToValueAtTime(120, now+1.2);
+    const g=this.ctx.createGain(); g.gain.setValueAtTime(0.0001,now);
+    g.gain.exponentialRampToValueAtTime(0.7, now+0.02);
+    g.gain.exponentialRampToValueAtTime(0.001, now+1.4);
+    const dst=this.ctx.createWaveShaper();
+    const curve=new Float32Array(256);
+    for(let j=0;j<256;j++){const x=j/128-1;curve[j]=Math.tanh(x*8);}
+    dst.curve=curve;
+    o.connect(dst); dst.connect(g); g.connect(this.master); g.connect(this.revBus);
+    o.start(now); o.stop(now+1.5);
+    this.stinger();
+  }
+
+  victoryDrone(){
+    const now=this.ctx.currentTime;
+    [196,262,330].forEach((f,i)=>{
+      const o=this.ctx.createOscillator(); o.type='sine'; o.frequency.value=f;
+      const g=this.ctx.createGain(); g.gain.setValueAtTime(0.0001,now);
+      g.gain.linearRampToValueAtTime(0.18, now+0.8+i*0.3);
+      g.gain.linearRampToValueAtTime(0.001, now+4.0);
+      o.connect(g); g.connect(this.master); g.connect(this.revBus);
+      o.start(now); o.stop(now+4.2);
+    });
+  }
+
+  footstep(sprint=false){
+    const now=this.ctx.currentTime;
+    const src=this.ctx.createBufferSource(); src.buffer=this.noiseBuf;
+    const bp=this.ctx.createBiquadFilter(); bp.type='bandpass'; bp.frequency.value=180; bp.Q.value=0.8;
+    const g=this.ctx.createGain(); g.gain.setValueAtTime(sprint?0.18:0.12, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now+0.12);
+    src.connect(bp); bp.connect(g); g.connect(this.master);
+    src.start(now); src.stop(now+0.15);
+  }
+
+  doorCreak(opening=true){
+    const now=this.ctx.currentTime;
+    const src=this.ctx.createBufferSource(); src.buffer=this.noiseBuf; src.loop=true;
+    const bp=this.ctx.createBiquadFilter(); bp.type='bandpass'; bp.frequency.value=420; bp.Q.value=6;
+    bp.frequency.linearRampToValueAtTime(opening?260:560, now+0.7);
+    const g=this.ctx.createGain(); g.gain.setValueAtTime(0.0001, now);
+    g.gain.linearRampToValueAtTime(0.18, now+0.1);
+    g.gain.linearRampToValueAtTime(0.001, now+0.8);
+    src.connect(bp); bp.connect(g); g.connect(this.master); g.connect(this.revBus);
+    src.start(now); src.stop(now+0.85);
+  }
+
+  click(){
+    const now=this.ctx.currentTime;
+    const o=this.ctx.createOscillator(); o.type='square'; o.frequency.value=1800;
+    const g=this.ctx.createGain(); g.gain.setValueAtTime(0.06, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now+0.04);
+    o.connect(g); g.connect(this.master);
+    o.start(now); o.stop(now+0.05);
+  }
+
+  pickup(){
+    const now=this.ctx.currentTime;
+    [880,1320].forEach((f,i)=>{
+      const o=this.ctx.createOscillator(); o.type='sine'; o.frequency.value=f;
+      const g=this.ctx.createGain(); g.gain.setValueAtTime(0.0001, now+i*0.08);
+      g.gain.exponentialRampToValueAtTime(0.18, now+i*0.08+0.01);
+      g.gain.exponentialRampToValueAtTime(0.001, now+i*0.08+0.4);
+      o.connect(g); g.connect(this.master); g.connect(this.revBus);
+      o.start(now+i*0.08); o.stop(now+i*0.08+0.45);
+    });
+  }
+
+  batteryPickup(){
+    const now=this.ctx.currentTime;
+    const o=this.ctx.createOscillator(); o.type='triangle'; o.frequency.setValueAtTime(440, now);
+    o.frequency.linearRampToValueAtTime(660, now+0.2);
+    const g=this.ctx.createGain(); g.gain.setValueAtTime(0.0001, now);
+    g.gain.exponentialRampToValueAtTime(0.15, now+0.02);
+    g.gain.exponentialRampToValueAtTime(0.001, now+0.3);
+    o.connect(g); g.connect(this.master);
+    o.start(now); o.stop(now+0.32);
+  }
+
+  lockedDoor(){
+    const now=this.ctx.currentTime;
+    const o=this.ctx.createOscillator(); o.type='square'; o.frequency.value=140;
+    const g=this.ctx.createGain(); g.gain.setValueAtTime(0.0001, now);
+    g.gain.exponentialRampToValueAtTime(0.18, now+0.01);
+    g.gain.exponentialRampToValueAtTime(0.001, now+0.18);
+    o.connect(g); g.connect(this.master);
+    o.start(now); o.stop(now+0.2);
+  }
+
+  whisper(){
+    const now=this.ctx.currentTime;
+    const src=this.ctx.createBufferSource(); src.buffer=this.noiseBuf; src.loop=true;
+    const bp=this.ctx.createBiquadFilter(); bp.type='bandpass'; bp.frequency.value=1800; bp.Q.value=4;
+    bp.frequency.linearRampToValueAtTime(900, now+0.6);
+    const g=this.ctx.createGain(); g.gain.setValueAtTime(0.0001, now);
+    g.gain.linearRampToValueAtTime(0.08, now+0.15);
+    g.gain.linearRampToValueAtTime(0.001, now+0.7);
+    const pan=this.ctx.createStereoPanner(); pan.pan.value=(Math.random()-0.5)*1.6;
+    src.connect(bp); bp.connect(g); g.connect(pan); pan.connect(this.master); pan.connect(this.revBus);
+    src.start(now); src.stop(now+0.75);
+  }
+
+  thump(){
+    const now=this.ctx.currentTime;
+    const o=this.ctx.createOscillator(); o.type='sine'; o.frequency.setValueAtTime(90, now);
+    o.frequency.exponentialRampToValueAtTime(30, now+0.25);
+    const g=this.ctx.createGain(); g.gain.setValueAtTime(0.0001, now);
+    g.gain.exponentialRampToValueAtTime(0.5, now+0.01);
+    g.gain.exponentialRampToValueAtTime(0.001, now+0.4);
+    o.connect(g); g.connect(this.master); g.connect(this.revBus);
+    o.start(now); o.stop(now+0.45);
+  }
+
+  growl(){
+    const now=this.ctx.currentTime;
+    const o=this.ctx.createOscillator(); o.type='sawtooth'; o.frequency.setValueAtTime(70, now);
+    o.frequency.linearRampToValueAtTime(45, now+1.2);
+    const lp=this.ctx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=200;
+    const g=this.ctx.createGain(); g.gain.setValueAtTime(0.0001, now);
+    g.gain.linearRampToValueAtTime(0.22, now+0.3);
+    g.gain.linearRampToValueAtTime(0.001, now+1.4);
+    o.connect(lp); lp.connect(g); g.connect(this.master); g.connect(this.revBus);
+    o.start(now); o.stop(now+1.5);
+  }
+
+  burnLoopStart(){
+    if(this._burnSrc) return;
+    const src=this.ctx.createBufferSource(); src.buffer=this.noiseBuf; src.loop=true;
+    const bp=this.ctx.createBiquadFilter(); bp.type='bandpass'; bp.frequency.value=2400; bp.Q.value=2;
+    const g=this.ctx.createGain(); g.gain.value=0.0;
+    g.gain.linearRampToValueAtTime(0.12, this.ctx.currentTime+0.1);
+    src.connect(bp); bp.connect(g); g.connect(this.master);
+    src.start();
+    this._burnSrc=src; this._burnGain=g;
+  }
+  burnLoopStop(){
+    if(!this._burnSrc) return;
+    const now=this.ctx.currentTime;
+    this._burnGain.gain.cancelScheduledValues(now);
+    this._burnGain.gain.setValueAtTime(this._burnGain.gain.value, now);
+    this._burnGain.gain.linearRampToValueAtTime(0, now+0.15);
+    const s=this._burnSrc; setTimeout(()=>{try{s.stop()}catch{}},250);
+    this._burnSrc=null; this._burnGain=null;
+  }
+
+  banishShriek(){
+    const now=this.ctx.currentTime;
+    const o=this.ctx.createOscillator(); o.type='sawtooth';
+    o.frequency.setValueAtTime(1200, now);
+    o.frequency.exponentialRampToValueAtTime(180, now+0.9);
+    const g=this.ctx.createGain(); g.gain.setValueAtTime(0.0001, now);
+    g.gain.exponentialRampToValueAtTime(0.45, now+0.02);
+    g.gain.exponentialRampToValueAtTime(0.001, now+1.0);
+    const dst=this.ctx.createWaveShaper();
+    const curve=new Float32Array(256);
+    for(let j=0;j<256;j++){const x=j/128-1;curve[j]=Math.tanh(x*6);}
+    dst.curve=curve;
+    o.connect(dst); dst.connect(g); g.connect(this.master); g.connect(this.revBus);
+    o.start(now); o.stop(now+1.1);
+  }
+
+  startChaseMusic(){
+    if(this._chaseOn) return;
+    this._chaseOn=true;
+    let step=0;
+    const tempo=140;
+    const beat=60/tempo/2;
+    this._chaseTimer=setInterval(()=>{
+      if(!this._chaseOn) return;
+      const now=this.ctx.currentTime;
+      // Bass thump
+      const o=this.ctx.createOscillator(); o.type='sine';
+      o.frequency.setValueAtTime(70, now);
+      o.frequency.exponentialRampToValueAtTime(40, now+0.15);
+      const g=this.ctx.createGain(); g.gain.setValueAtTime(0.3, now);
+      g.gain.exponentialRampToValueAtTime(0.001, now+0.2);
+      o.connect(g); g.connect(this.master);
+      o.start(now); o.stop(now+0.22);
+      // Hi arp
+      const arp=[220,277,330,415][step%4];
+      const ao=this.ctx.createOscillator(); ao.type='square'; ao.frequency.value=arp;
+      const ag=this.ctx.createGain(); ag.gain.setValueAtTime(0.06, now);
+      ag.gain.exponentialRampToValueAtTime(0.001, now+0.12);
+      ao.connect(ag); ag.connect(this.master);
+      ao.start(now); ao.stop(now+0.13);
+      step++;
+    }, beat*1000);
+  }
+  stopChaseMusic(){
+    this._chaseOn=false;
+    clearInterval(this._chaseTimer);
+  }
+}
+```
+
+```js
+// src/systems/Ghost.js
+import * as THREE from 'three';
+import * as Tex from '../world/Textures.js';
+
+export class Ghost {
+  constructor({ scene, audio, player }){
+    this.scene=scene; this.audio=audio; this.player=player;
+    this.group = new THREE.Group();
+    this.group.visible = false;
+    scene.add(this.group);
+
+    this.state = 'DORMANT'; // DORMANT, APPARITION, STALK, CHASE, BANISHED
+    this.burn = 0; this.maxBurn = 3.0;
+    this.banishCooldown = 0;
+    this.apparitionTimer = 0;
+    this.touchRange = 1.4;
+    this.justBanished = false;
+    this.faceExpr = 0;
+
+    this._buildBody();
+    this._setPositionFarFromPlayer();
+  }
+
+  _buildBody(){
+    const paleMat = new THREE.MeshStandardMaterial({
+      color:0x1a1620, roughness:1.0, metalness:0.0,
+      emissive:0x080404, emissiveIntensity:0.4
+    });
+    // Tall thin torso
+    const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.28, 1.4, 4, 12), paleMat);
+    torso.position.y = 1.7;
+    this.group.add(torso);
+    // Elongated neck/head
+    const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.06,0.1,0.4,8), paleMat);
+    neck.position.y = 2.55; this.group.add(neck);
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.22,16,16), paleMat);
+    head.position.y = 2.85; this.group.add(head);
+    this.head = head;
+    // Face plane
+    const faceMat = new THREE.MeshBasicMaterial({map:Tex.ghostFaceTex(0),transparent:true});
+    this.facePlane = new THREE.Mesh(new THREE.PlaneGeometry(0.4,0.4), faceMat);
+    this.facePlane.position.set(0,2.86,0.21);
+    this.group.add(this.facePlane);
+    this.faceMaterials = [0,1,2].map(i=>new THREE.MeshBasicMaterial({map:Tex.ghostFaceTex(i),transparent:true}));
+
+    // Eyes glow
+    const eyeMat = new THREE.MeshBasicMaterial({color:0xff2200,transparent:true,blending:THREE.AdditiveBlending,depthWrite:false});
+    const le = new THREE.Mesh(new THREE.SphereGeometry(0.04,8,8),eyeMat);
+    le.position.set(-0.07,2.9,0.22); this.group.add(le);
+    const re = new THREE.Mesh(new THREE.SphereGeometry(0.04,8,8),eyeMat.clone());
+    re.position.set(0.07,2.9,0.22); this.group.add(re);
+    this.eyes = [le,re];
+    // Eye point-light
+    this.eyeLight = new THREE.PointLight(0xff2010, 0.0, 4, 2);
+    this.eyeLight.position.set(0,2.9,0.3);
+    this.group.add(this.eyeLight);
+
+    // Arms — long, dangling
+    const armMat = paleMat;
+    for(const sx of [-1,1]){
+      const arm = new THREE.Mesh(new THREE.CapsuleGeometry(0.06,1.2,4,8), armMat);
+      arm.position.set(sx*0.32, 1.7, 0);
+      arm.rotation.z = sx*0.15;
+      this.group.add(arm);
+      // Claw hand
+      for(let i=0;i<4;i++){
+        const claw = new THREE.Mesh(new THREE.ConeGeometry(0.015,0.18,6),
+          new THREE.MeshStandardMaterial({color:0x2a1a18,roughness:0.6}));
+        claw.position.set(sx*0.42, 0.95 + (i-1.5)*0.04, 0.02*i);
+        claw.rotation.x = Math.PI;
+        this.group.add(claw);
+      }
+    }
+
+    // Tattered strips
+    const stripMat = new THREE.MeshStandardMaterial({color:0x12101a,roughness:1.0,transparent:true,opacity:0.85,side:THREE.DoubleSide});
+    this.strips=[];
+    for(let i=0;i<14;i++){
+      const w = 0.08+Math.random()*0.1;
+      const h = 0.6+Math.random()*0.8;
+      const s = new THREE.Mesh(new THREE.PlaneGeometry(w,h), stripMat);
+      s.position.set((Math.random()-0.5)*0.5, 1.2-Math.random()*0.6, (Math.random()-0.5)*0.3);
+      s.userData.phase = Math.random()*Math.PI*2;
+      s.userData.swayK = 0.4+Math.random()*0.6;
+      this.group.add(s); this.strips.push(s);
+    }
+
+    // Black vapor (sprite)
+    const vapMat = new THREE.SpriteMaterial({color:0x050505,transparent:true,opacity:0.55,depthWrite:false});
+    this.vapor = new THREE.Sprite(vapMat);
+    this.vapor.scale.set(1.6,2.4,1);
+    this.vapor.position.y = 1.7;
+    this.group.add(this.vapor);
+  }
+
+  _setPositionFarFromPlayer(){
+    // Pick a random spot in the house far from player
+    const pp = this.player.pos;
+    let bx=0,bz=0,bd=0;
+    for(let i=0;i<20;i++){
+      const x=(Math.random()-0.5)*18, z=(Math.random()-0.5)*14;
+      const d=Math.hypot(x-pp.x,z-pp.z);
+      if(d>bd){bd=d;bx=x;bz=z;}
+    }
+    this.group.position.set(bx, 0, bz);
+  }
+
+  position(){ return this.group.position; }
+  isAlive(){ return this.state!=='DORMANT' && this.state!=='BANISHED'; }
+  isVulnerable(){ return this.state==='STALK' || this.state==='CHASE' || this.state==='APPARITION'; }
+  canTouch(){ return this.state==='CHASE'; }
+  dangerLevel(){
+    if(this.state==='CHASE') return 1.0;
+    if(this.state==='STALK') return 0.6;
+    if(this.state==='APPARITION') return 0.35;
+    return 0.1;
+  }
+
+  manifest(state='APPARITION', duration=1.2){
+    this.state = state;
+    this.apparitionTimer = duration;
+    this.group.visible = true;
+    this._setPositionFarFromPlayer();
+    // Make sure he's somewhere visible-ish from afar
+  }
+
+  beginStalking(){
+    this.state = 'STALK';
+    this.group.visible = true;
+  }
+
+  beginChase(){
+    this.state = 'CHASE';
+    this.group.visible = true;
+    this.audio.startChaseMusic();
+  }
+
+  addBurn(amount){
+    if(!this.isVulnerable()) return;
+    this.burn += amount;
+    if(this.burn >= this.maxBurn){
+      this._banish();
+    }
+  }
+
+  burnFraction(){ return Math.min(1, this.burn/this.maxBurn); }
+
+  _banish(){
+    this.burn = 0;
+    this.state = 'BANISHED';
+    this.banishCooldown = 8.0; // reforms later
+    this.group.visible = false;
+    this.justBanished = true;
+    this.audio.stopChaseMusic();
+  }
+
+  update(dt){
+    // Animate strips
+    const t = performance.now()*0.001;
+    for(const s of this.strips){
+      s.rotation.x = Math.sin(t+s.userData.phase)*0.2*s.userData.swayK;
+      s.rotation.z = Math.cos(t*0.7+s.userData.phase)*0.15*s.userData.swayK;
+    }
+    // Vapor pulse
+    this.vapor.material.opacity = 0.4 + Math.sin(t*2)*0.1;
+    // Eye intensity pulses with state
+    const ei = this.state==='CHASE'?1.0:(this.state==='STALK'?0.5:0.2);
+    this.eyeLight.intensity = ei * (0.7+Math.sin(t*8)*0.3);
+    this.eyes.forEach(e=>e.material.opacity = 0.6+Math.sin(t*8)*0.3);
+
+    // Corrupted-frame flicker
+    if(this.group.visible && Math.random()<0.04){
+      this.group.position.x += (Math.random()-0.5)*0.05;
+    }
+
+    // Behavior FSM
+    if(this.state==='APPARITION'){
+      this.apparitionTimer -= dt;
+      // Drift slowly toward player but never reach
+      this._driftToward(dt, 0.6);
+      if(this.apparitionTimer<=0){ this.state='DORMANT'; this.group.visible=false; }
+    } else if(this.state==='STALK'){
+      this._driftToward(dt, 0.9);
+      // Keep mostly out of direct sight — teleport occasionally
+      if(Math.random()<dt*0.15) this._relocateStalk();
+    } else if(this.state==='CHASE'){
+      this._driftToward(dt, 1.7, true);
+    } else if(this.state==='BANISHED'){
+      this.banishCooldown -= dt;
+      if(this.banishCooldown<=0){
+        // Reform
+        this.state='CHASE';
+        this.group.visible=true;
+        this._setPositionFarFromPlayer();
+        this.audio.startChaseMusic();
+        this.audio.growl();
+      }
+    }
+
+    // Always face player
+    if(this.group.visible){
+      const dx = this.player.pos.x - this.group.position.x;
+      const dz = this.player.pos.z - this.group.position.z;
+      this.group.rotation.y = Math.atan2(dx, dz);
+    }
+  }
+
+  _driftToward(dt, speedMul, throughWalls=false){
+    const tx = this.player.pos.x, tz = this.player.pos.z;
+    const dx = tx - this.group.position.x;
+    const dz = tz - this.group.position.z;
+    const d = Math.hypot(dx,dz)||1;
+    const vx = dx/d * speedMul;
+    const vz = dz/d * speedMul;
+    this.group.position.x += vx*dt;
+    this.group.position.z += vz*dt;
+    // Bob weave
+    this.group.position.y = Math.sin(performance.now()*0.003)*0.05;
+    if(!throughWalls){
+      // Soft clamp inside house
+      this.group.position.x = Math.max(-9.5, Math.min(9.5, this.group.position.x));
+      this.group.position.z = Math.max(-7.5, Math.min(7.5, this.group.position.z));
+    }
+  }
+
+  _relocateStalk(){
+    // Teleport to a doorway-ish position near player but out of view
+    const pp = this.player.pos;
+    const candidates = [
+      [-6,-2],[1,-2],[4,-2],   // north doorways
+      [-7.5,2],[0,2],[7.5,2],  // south arches
+      [-3.3,-5],[3.3,-5]
+    ];
+    let best=null,bd=8;
+    for(const c of candidates){
+      const d = Math.hypot(c[0]-pp.x, c[1]-pp.z);
+      if(d>3 && d<bd){ bd=d; best=c; }
+    }
+    if(best) this.group.position.set(best[0],0,best[1]);
+  }
+
+  reset(){
+    this.state='DORMANT'; this.burn=0; this.group.visible=false;
+    this.audio.stopChaseMusic();
+  }
+
+  dispose(){
+    this.scene.remove(this.group);
+    this.audio.stopChaseMusic();
+  }
+}
+```
+
+```js
+// src/systems/ScareDirector.js
+import * as THREE from 'three';
+
+export class ScareDirector {
+  constructor({ scene, audio, player, house, ghost, game }){
+    this.scene=scene; this.audio=audio; this.player=player;
+    this.house=house; this.ghost=ghost; this.game=game;
+
+    this.flags = {
+      livingRoomThump:false,
+      hallwaySlam:false,
+      kitchenBang:false,
+      studyKeyApparition:false,
+      bedroomSlam:false,
+      secondKeyGrowl:false,
+      finalKeyChase:false
+    };
+
+    this.lightningTimer = 6 + Math.random()*10;
+    this.ambientTimer = 4 + Math.random()*6;
+    this.checksPerSec = 4;
+    this.acc = 0;
+  }
+
+  notifyKeyTaken(count){
+    if(count===1 && !this.flags.studyKeyApparition){
+      // Wait — first key could be anywhere; trigger apparition regardless
+      this.flags.studyKeyApparition = true;
+      setTimeout(()=>{
+        // Spawn ghost in a nearby doorway briefly
+        this.ghost.manifest('APPARITION', 1.2);
+        this.audio.whisper();
+        this.audio.thump();
+        this.game.hud.flash('#330000', 0.18);
+      }, 350);
+    }
+    if(count===2 && !this.flags.secondKeyGrowl){
+      this.flags.secondKeyGrowl = true;
+      this.audio.growl();
+      this.game.hud.shake(0.3, 0.3);
+      setTimeout(()=>this.ghost.beginStalking(), 1200);
+      this.game.hud.subtitle('Something stirs deeper in the house.');
+    }
+    if(count===3 && !this.flags.finalKeyChase){
+      this.flags.finalKeyChase = true;
+      this.triggerFinale();
+    }
+  }
+
+  triggerFinale(){
+    // Blackout beat → scream → chase
+    this.game.hud.blackout(0.6, ()=>{
+      this.audio.deathStingerLite?.();
+      this.audio.screamShort?.();
+      this.audio.stinger();
+      this.ghost.beginChase();
+      this.ghost._setPositionFarFromPlayer();
+      this.game.hud.subtitle('RUN.');
+      this.game.hud.flash('#660000', 0.4);
+      // Unlock front door conceptually (still requires 3 keys, already met)
+    });
+  }
+
+  update(dt){
+    this.acc += dt;
+    if(this.acc > 1/this.checksPerSec){
+      this._zoneChecks();
+      this.acc = 0;
+    }
+
+    // Ambient events
+    this.ambientTimer -= dt;
+    if(this.ambientTimer<=0){
+      this._ambientEvent();
+      this.ambientTimer = 8 + Math.random()*14;
+    }
+
+    // Lightning
+    this.lightningTimer -= dt;
+    if(this.lightningTimer<=0){
+      this._strikeLightning();
+      this.lightningTimer = 12 + Math.random()*20;
+    }
+  }
+
+  _zoneChecks(){
+    const p = this.player.pos;
+    // 1. Living room entry
+    if(!this.flags.livingRoomThump && p.x<-3.3 && p.z>2){
+      this.flags.livingRoomThump = true;
+      this.audio.thump();
+      setTimeout(()=>this.audio.whisper(), 800);
+      this.game.hud.subtitle('A distant thud echoes from somewhere deeper.');
+    }
+    // 2. First time in hallway
+    if(!this.flags.hallwaySlam && p.z>-2.2 && p.z<2.2 && Math.abs(p.x)<3.3){
+      this.flags.hallwaySlam = true;
+      this._flickerAll(0.6);
+      this.audio.doorCreak(false);
+      setTimeout(()=>this.audio.thump(), 300);
+      this.game.hud.subtitle('The air grows colder.');
+    }
+    // 3. Kitchen entry
+    if(!this.flags.kitchenBang && p.x>3.3 && p.z<-2){
+      this.flags.kitchenBang = true;
+      this.audio.stinger();
+      this.game.hud.shake(0.4, 0.25);
+      this.game.hud.flash('#220000', 0.15);
+      this.game.hud.subtitle('A cabinet slams. A chair drags across the floor.');
+      // Slide a chair visually — nudge kitchen chair position
+      this._slideChair();
+    }
+    // 5. Bedroom entry
+    if(!this.flags.bedroomSlam && p.x>-3.3 && p.x<3.3 && p.z<-2){
+      this.flags.bedroomSlam = true;
+      this.audio.doorCreak(false);
+      this.audio.thump();
+      this.game.hud.shake(0.3, 0.2);
+      this.game.hud.subtitle('The door slams behind you.');
+    }
+  }
+
+  _slideChair(){
+    // Find kitchen chair group children and animate one sliding backward
+    this.house.group.traverse(o=>{
+      if(o.geometry?.parameters?.width===0.45 && o.position.z<-3 && o.position.x>6 && o.position.x<9 && o.position.y<0.6){
+        if(!o.userData.sliding){
+          o.userData.sliding=true;
+          const startX=o.position.x, startZ=o.position.z;
+          const t0=performance.now();
+          const slide=()=>{
+            const t=Math.min((performance.now()-t0)/900,1);
+            o.position.z = startZ - t*0.6;
+            o.position.x = startX + Math.sin(t*8)*0.05;
+            if(t<1) requestAnimationFrame(slide);
+          };
+          slide();
+        }
+      }
+    });
+  }
+
+  _flickerAll(duration){
+    const saved = this.house.lights.map(L=>L.obj.intensity);
+    const t0=performance.now();
+    const step=()=>{
+      const t=(performance.now()-t0)/(duration*1000);
+      this.house.lights.forEach((L,i)=>{
+        L.obj.intensity = Math.random()<0.4? 0 : saved[i]*(0.3+Math.random()*0.7);
+      });
+      if(t<1) requestAnimationFrame(step);
+      else this.house.lights.forEach((L,i)=>L.obj.intensity=saved[i]);
+    };
+    step();
+  }
+
+  _ambientEvent(){
+    const ev = Math.random();
+    if(ev<0.3) this.audio.whisper();
+    else if(ev<0.55) this.audio.thump();
+    else if(ev<0.75) this.audio.doorCreak(Math.random()<0.5);
+    else this.audio.growl();
+  }
+
+  _strikeLightning(){
+    // Visual flash via window lights boost + scene bg brightening
+    const boosts = this.house.windowLights.map(l=>{
+      const orig=l.intensity;
+      l.intensity = 2.5;
+      l.color.set(0xbcd6ee);
+      return orig;
+    });
+    const oldBg = this.scene.background.clone();
+    this.scene.background = new THREE.Color(0x223344);
+    this.game.hud.flash('#bbccee', 0.18);
+    setTimeout(()=>{
+      this.house.windowLights.forEach((l,i)=>{
+        l.intensity = boosts[i];
+        l.color.set(0x305070);
+      });
+      this.scene.background = oldBg;
+    }, 120);
+    // Thunder follows
+    const delay = 600 + Math.random()*2200;
+    setTimeout(()=>this.audio.thunder(Math.random()<0.4), delay);
+  }
+
+  dispose(){}
+}
+```
+
+```js
+// src/ui/HUD.js
+export class HUD {
+  constructor(){
+    this.el = document.getElementById('hud');
+    this.obj = document.getElementById('objective');
+    this.batFill = document.getElementById('battery-fill');
+    this.cross = document.getElementById('crosshair');
+    this.burnWrap = document.getElementById('burn-wrap');
+    this.burnFill = document.getElementById('burn-fill');
+    this.hint = document.getElementById('hint');
+    this.sub = document.getElementById('subtitle');
+    this.noteOverlay = document.getElementById('note-overlay');
+    this.noteTitle = document.getElementById('note-title');
+    this.noteBody = document.getElementById('note-body');
+    this.flashEl = document.getElementById('flash');
+    this.redFlashEl = document.getElementById('red-flash');
+    this.vignette = document.getElementById('vignette');
+    this.grain = document.getElementById('grain');
+    this.jumpface = document.getElementById('jumpface');
+    this.jumpCanvas = document.getElementById('jumpface-canvas');
+    this.jctx = this.jumpCanvas.getContext('2d');
+
+    this._initGrain();
+    this._wireNote();
+  }
+
+  _initGrain(){
+    const g=this.grain, ctx=g.getContext('2d');
+    const draw=()=>{
+      g.width=128; g.height=128;
+      const img=ctx.createImageData(128,128);
+      for(let i=0;i<img.data.length;i+=4){
+        const v=Math.random()*255|0;
+        img.data[i]=img.data[i+1]=img.data[i+2]=v;
+        img.data[i+3]=255;
+      }
+      ctx.putImageData(img,0,0);
+    };
+    this._grainDraw=draw;
+    draw();
+    setInterval(draw, 80);
+    this.grain.classList.add('active');
+  }
+
+  _wireNote(){
+    this.noteOverlay.addEventListener('click', ()=>this.hideNote());
+  }
+
+  showHUD(on){ this.el.classList.toggle('show', on); }
+
+  objective(html){ this.obj.innerHTML = 'OBJECTIVE<br>'+html; }
+
+  setKey(i,on){
+    const slot=document.querySelector(`.key-slot[data-i="${i}"]`);
+    if(slot) slot.classList.toggle('got', on);
+  }
+  resetKeys(){ document.querySelectorAll('.key-slot').forEach(s=>s.classList.remove('got')); }
+
+  setBattery(v){
+    const pct=Math.max(0,Math.min(100,v));
+    this.batFill.style.width = pct+'%';
+    this.batFill.classList.toggle('warn', pct<40 && pct>=20);
+    this.batFill.classList.toggle('crit', pct<20);
+  }
+
+  setCrosshairInteract(on){ this.cross.classList.toggle('interact', on); }
+
+  setBurn(frac){
+    if(frac<=0.001){ this.burnWrap.style.opacity=0; this.burnFill.style.width='0%'; return; }
+    this.burnWrap.style.opacity=1;
+    this.burnFill.style.width=(frac*100)+'%';
+  }
+
+  setHint(text){ this.hint.textContent=text||''; this.hint.style.opacity=text?1:0; }
+
+  subtitle(msg, ms=3600){
+    this.sub.textContent=msg;
+    this.sub.style.opacity=1;
+    clearTimeout(this._subT);
+    this._subT=setTimeout(()=>this.sub.style.opacity=0, ms);
+  }
+
+  flash(color, intensity=0.3, ms=140){
+    this.flashEl.style.background=color;
+    this.flashEl.style.opacity=intensity;
+    clearTimeout(this._flashT);
+    this._flashT=setTimeout(()=>this.flashEl.style.opacity=0, ms);
+  }
+
+  redFlash(intensity=0.5, ms=300){
+    this.redFlashEl.style.opacity=intensity;
+    clearTimeout(this._rfT);
+    this._rfT=setTimeout(()=>this.redFlashEl.style.opacity=0, ms);
+  }
+
+  shake(intensity=0.4, duration=0.3){
+    const root=document.getElementById('game-root');
+    const t0=performance.now();
+    const step=()=>{
+      const t=(performance.now()-t0)/(duration*1000);
+      if(t>=1){ root.style.transform=''; return; }
+      const k=(1-t)*intensity*10;
+      root.style.transform=`translate(${(Math.random()-0.5)*k}px, ${(Math.random()-0.5)*k}px)`;
+      requestAnimationFrame(step);
+    };
+    step();
+  }
+
+  blackout(duration, cb){
+    this.vignette.style.transition='background '+duration+'s ease';
+    this.vignette.style.background='rgba(0,0,0,1)';
+    setTimeout(()=>{
+      this.vignette.style.transition='background 0.6s ease';
+      this.vignette.style.background='';
+      cb&&cb();
+    }, duration*1000);
+  }
+
+  showNote(title, body){
+    this.noteTitle.textContent=title;
+    this.noteBody.innerText=body;
+    this.noteOverlay.style.display='flex';
+  }
+  hideNote(){ this.noteOverlay.style.display='none'; }
+
+  jumpscare(cb){
+    // Draw a screaming face onto the canvas
+    const c=this.jumpCanvas, ctx=this.jctx;
+    ctx.fillStyle='#000'; ctx.fillRect(0,0,c.width,c.height);
+    // Skull shape
+    ctx.fillStyle='#c8c2b0';
+    ctx.beginPath(); ctx.ellipse(c.width/2,c.height/2,150,200,0,0,Math.PI*2); ctx.fill();
+    // Hollow black eyes
+    ctx.fillStyle='#000';
+    ctx.beginPath(); ctx.ellipse(c.width/2-70,c.height/2-50,40,60,0,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(c.width/2+70,c.height/2-50,40,60,0,0,Math.PI*2); ctx.fill();
+    // Red iris glow
+    ctx.fillStyle='#a01018';
+    ctx.beginPath(); ctx.arc(c.width/2-70,c.height/2-50,12,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(c.width/2+70,c.height/2-50,12,0,Math.PI*2); ctx.fill();
+    // Gaping mouth
+    ctx.fillStyle='#000';
+    ctx.beginPath(); ctx.ellipse(c.width/2,c.height/2+90,60,90,0,0,Math.PI*2); ctx.fill();
+    // Teeth
+    ctx.fillStyle='#cdbf9a';
+    for(let i=-3;i<=3;i++){
+      ctx.fillRect(c.width/2+i*18-7, c.height/2+30, 14, 30);
+      ctx.fillRect(c.width/2+i*18-7, c.height/2+150, 14, 30);
+    }
+    // Cracks
+    ctx.strokeStyle='#000'; ctx.lineWidth=2;
+    for(let i=0;i<8;i++){
+      ctx.beginPath();
+      ctx.moveTo(Math.random()*c.width, Math.random()*c.height);
+      ctx.lineTo(Math.random()*c.width, Math.random()*c.height);
+      ctx.stroke();
+    }
+
+    this.jumpface.style.opacity=1;
+    this.redFlashEl.style.opacity=0.9;
+    setTimeout(()=>{
+      this.jumpface.style.transition='opacity 0.4s';
+      this.jumpface.style.opacity=0;
+      this.redFlashEl.style.opacity=0;
+      cb&&cb();
+    }, 700);
+  }
+
+  clearJumpscare(){
+    this.jumpface.style.opacity=0;
+    this.redFlashEl.style.opacity=0;
+  }
+}
+```
+
+Now patching together the few remaining wires: `main.js` references `HUD`, but `Game.js` constructs its own internal `HUD` instance — let me reconcile by having `Game` accept the existing `hud` passed in (already does). And `Player` needs `setHouseInterface(...)` called from `Game.buildWorld()`.
+
+Also `ScareDirector.triggerFinale` calls `audio.deathStingerLite` and `audio.screamShort` which don't exist — replace with `stinger`.
+
+Add the missing bridge in `Game.buildWorld()`:
+
+```js
+this.player.setHouseInterface(this.house,(item)=>this.handlePickup(item),(note)=>this.openNote(note),()=>this.attemptExit());
+```
+
+Replace `_setPositionFarFromPlayer` external call in ScareDirector with public method (already accessible since defined on class).
+
+Fix `ScareDirector.triggerFinale`:
+
+```js
+triggerFinale(){
+  this.game.hud.blackout(0.6, ()=>{
+    this.audio.stinger();
+    this.ghost.beginChase();
+    this.game.hud.subtitle('RUN.');
+    this.game.hud.flash('#660000', 0.4);
+  });
+}
+```
+
+Below are the corrected snippets plus the final reconciled `Game.buildWorld` addition. Drop these in place of the corresponding sections shown earlier.
+
+```js
+// PATCH — Game.buildWorld tail (replace the four assignment lines ending the method)
+    this.house.onItemPickup = (item)=>this.handlePickup(item);
+    this.house.onNoteRead = (note)=>this.openNote(note);
+    this.house.onFrontDoorAttempt = ()=>this.attemptExit();
+
+    this.player.setHouseInterface(
+      this.house,
+      (item)=>this.handlePickup(item),
+      (note)=>this.openNote(note),
+      ()=>this.attemptExit()
+    );
+```
+
+```js
+// PATCH — ScareDirector.triggerFinale (replace whole method)
+  triggerFinale(){
+    this.game.hud.blackout(0.6, ()=>{
+      this.audio.stinger();
+      this.ghost.beginChase();
+      this.game.hud.subtitle('RUN.', 4000);
+      this.game.hud.flash('#660000', 0.4);
+    });
+  }
+```
+
+```js
+// PATCH — Player.interact locked-front-door branch (replace the if(d.userData.locked) block)
+        if(d.userData.locked){
+          this.audio.lockedDoor();
+        }
+```
+
+That completes the scaffold. Run with:
+
+```
+npm install
+npm run dev
