@@ -1,5 +1,5 @@
 id          = "game-mario-kart"
-title       = "Build a AAA-quality Mario Kart clone using Three.js with sub-agents"
+title       = "Build a AAA-quality Mario Kart clone using Three.js"
 category    = "game-generation"
 difficulty  = "hard"
 temperature = 0.2
@@ -9,5 +9,5 @@ file_prefix = "mario-kart"
 
 [user]
 text = '''
-I need you to launch five Fable 5.1 sub-agents and help me build a triple A quality game that is a clone of Mario Kart. What I want you to do is I want you to launch these sub-agents, build the game without asking me any questions at all, and use 3JS to build the game. And once you're done, report back to me.
+Help me build a triple-A quality game that is a clone of Mario Kart, using Three.js (3JS). Build the game without asking me any questions at all, and once you're done, report back to me.
 '''
