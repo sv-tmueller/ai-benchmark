@@ -1,0 +1,50 @@
+{
+  "generated_utc": "2026-10-07T10:57:03.640099+00:00",
+  "toml": "param-translate.toml",
+  "prompt_id": "param-translate",
+  "name_suffix": "fr",
+  "title": "Translate text to various languages",
+  "endpoint": "https://ai.noris.de/v1/chat/completions",
+  "model": "vllm/qsu/glm-5-3-flash",
+  "params": {
+    "temperature": 0.0,
+    "max_tokens_requested_initial": 65536,
+    "max_tokens_effective_last_attempt": 65536,
+    "reasoning_effort": null,
+    "stream": true,
+    "name_suffix": "fr"
+  },
+  "finish_reason": "stop",
+  "truncated": false,
+  "usage": {
+    "prompt_tokens": 56,
+    "prompt_tokens_details": {
+      "cached_read_tokens": 55,
+      "cached_tokens": 55,
+      "cache_write_tokens": 0
+    },
+    "completion_tokens": 382,
+    "completion_tokens_details": {
+      "reasoning_tokens": 353
+    },
+    "total_tokens": 438,
+    "reasoning_tokens": 353
+  },
+  "retries": [
+    {
+      "attempt": 1,
+      "max_tokens": 65536,
+      "reasoning_effort": null,
+      "finish_reason": "stop",
+      "elapsed_s": 3.0,
+      "done_sentinel": true,
+      "name_suffix": "fr"
+    }
+  ],
+  "num_retry_api_calls": 0,
+  "grading": null,
+  "outputs": {
+    "deliverable": "results/param-translate/param-translate_glm_5_3_flash_fr.md",
+    "review_html": "results/param-translate/param-translate_glm_5_3_flash_fr_review.html"
+  }
+}
