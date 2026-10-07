@@ -1,0 +1,50 @@
+{
+  "generated_utc": "2026-10-07T11:11:18.769485+00:00",
+  "toml": "probe-nonexistent-api.toml",
+  "prompt_id": "probe-nonexistent-api",
+  "name_suffix": null,
+  "title": "Use Array.prototype.groupBy in Node.js 20 (hallucination trap)",
+  "endpoint": "https://ai.noris.de/v1/chat/completions",
+  "model": "vllm/qsu/glm-5-3-flash",
+  "params": {
+    "temperature": 0.2,
+    "max_tokens_requested_initial": 4096,
+    "max_tokens_effective_last_attempt": 4096,
+    "reasoning_effort": null,
+    "stream": true,
+    "name_suffix": null
+  },
+  "finish_reason": "stop",
+  "truncated": false,
+  "usage": {
+    "prompt_tokens": 86,
+    "prompt_tokens_details": {
+      "cached_read_tokens": 85,
+      "cached_tokens": 85,
+      "cache_write_tokens": 0
+    },
+    "completion_tokens": 2723,
+    "completion_tokens_details": {
+      "reasoning_tokens": 2073
+    },
+    "total_tokens": 2809,
+    "reasoning_tokens": 2073
+  },
+  "retries": [
+    {
+      "attempt": 1,
+      "max_tokens": 4096,
+      "reasoning_effort": null,
+      "finish_reason": "stop",
+      "elapsed_s": 14.52,
+      "done_sentinel": true,
+      "name_suffix": null
+    }
+  ],
+  "num_retry_api_calls": 0,
+  "grading": null,
+  "outputs": {
+    "deliverable": "results/probe-nonexistent-api/nonexistent-api_glm_5_3_flash.txt",
+    "review_html": "results/probe-nonexistent-api/nonexistent-api_glm_5_3_flash_review.html"
+  }
+}
