@@ -171,6 +171,113 @@ Planned follow-up: re-running the same game/app tier on a
 frontier/non-flash model; results will extend this section with a
 direct comparison table.
 
+That follow-up has since run TWICE (batches #111 and #112). The
+results are summarized in the two subsections below; the full
+numbers live in `results/frontier_summary.md`,
+`results/gallery.html` (interactive cross-model comparison table)
+and the definitive browser-verification comment on #106.
+
+### Tier-1 comparison: GLM 5.2 vs GLM 5.3 Flash (batch #111)
+
+The 10 discriminating game/app prompts re-run against
+`vllm/release/glm-5-2` (non-flash, same family). All numbers below
+were recounted from the merged meta sidecars on `main`; the
+authoritative narrative is the final comparison comment on #106.
+
+Token economics (9 prompts with flash-era meta; melon-jelly flash
+predates the sidecar convention):
+
+| Metric | GLM 5.3 Flash | GLM 5.2 |
+|---|---|---|
+| reasoning tokens | 221,533 | 228,233 (of which melon-jelly alone: 102,551 ≈ 45%) |
+| completion tokens | 564,982 | 404,335 |
+| retries | 6 | 5 |
+
+Across the 9 comparable prompts GLM 5.2 burns ~0.57x flash reasoning
+and ~0.51x flash completion.
+
+Findings:
+
+- **Zero truncations on both models in this tier.** The flash
+  signature weakness (mid-expression cutoff racing the reasoning
+  budget) did not manifest here.
+- **GLM 5.2 is more reasoning-efficient on well-structured prompts**
+  (horror-house: 13x reduction; last-flight: 14x; cities-skylines: 16x).
+- **Physics/shader simulations flip the story** (melon-jelly: 102k
+  rtok on 5.2; lava-lamp: 5.2 exceeds flash 43k vs 34k).
+- **Different retry clustering**: flash retries concentrated on
+  large-output prompts, 5.2's on reasoning-heavy physics/shader ones.
+- **Comparable structural quality** — all artifacts brace-balanced;
+  minor cosmetic flaws on 5.2 (one imbalanced block on
+  cities-skylines, an unclosed fence on stillwater, a prose preamble
+  on meridian-launch) are not truncations.
+
+Definitive browser-verified playability (supersedes the earlier
+boot-paint-era verdicts; see the DEFINITIVE comment on #106):
+
+| Prompt | Flash | GLM 5.2 |
+|---|---|---|
+| melon-jelly | PLAYABLE_VERIFIED | PLAYABLE_VERIFIED |
+| lava-lamp | BOOTS_ONLY | BROKEN_AT_BOOT |
+| minecraft | BROKEN_AT_BOOT | BROKEN_AT_BOOT |
+| sunset-ocean | PLAYABLE_VERIFIED | BROKEN_AT_BOOT |
+| meridian-launch | BROKEN_AT_BOOT | PLAYABLE_VERIFIED |
+
+Both models score 2/5 playable, but on different prompts: flash
+handles shader-heavy scenes better (custom GLSL), 5.2 handles complex
+multi-system assembly better. Neither dominates; failure modes are
+complementary. The five blueprint-tier prompts (horror-house,
+mario-kart, last-flight, cities-skylines, stillwater) were assessed
+via materialize/build/smoke verdicts rather than the browser harness.
+
+Status note: this covers all 10 prompts; the browser-verifier run
+above completes the pending playability verification noted in the
+earlier interim comparison.
+
+### Capability comparison: gpt-oss-120b (batch #112)
+
+The same 10 prompts re-run against `vllm/release/gpt-oss-120b`.
+Condensed from `results/frontier_summary.md`; numbers recounted from
+`results/*/*_gpt_oss_120b.meta.json`.
+
+Summary row: **0/5 single-file HTML playable**, 0/4 blueprints
+buildable-and-passing, **zero truncation events** (finish_reason=stop,
+first attempt, all 10 tests), 79,798 completion tokens total.
+
+| Prompt | flash | gpt-oss-120b |
+|---|---|---|
+| melon-jelly | PLAYABLE_VERIFIED | BROKEN_AT_BOOT |
+| lava-lamp | BROKEN_AT_BOOT | BOOTS_ONLY |
+| minecraft | BOOTS_ONLY | BOOTS_ONLY |
+| sunset-ocean | BOOTS_ONLY | BOOTS_ONLY |
+| meridian-launch | BROKEN_AT_BOOT | BROKEN_AT_BOOT |
+| horror-house | BUILD_OK + PASS | BUILD_OK, RUNTIME_DEAD |
+| mario-kart | BOOTS_ONLY | BLUEPRINT_INCOMPLETE |
+| last-flight | BUILD_OK + PASS | BUILD_OK, RUNTIME_DEAD |
+| cities-skylines | BOOTS_ONLY (+cut) | BLUEPRINT_ONLY |
+| app-stillwater | BLUEPRINT_ONLY | BLUEPRINT_ONLY |
+
+(The flash column above quotes the earlier structural-verification
+era; the browser-verified definitive flash labels are in the Tier-1
+table.)
+
+Honest caveats, carried verbatim from the sweep report:
+
+- `reasoning_tokens` was not exposed by the gpt-oss-120b arm — the
+  reasoning-budget difference is unmeasured; only completion length
+  is a measured signal here.
+- The verifier is mechanical and calibrated (it reproduces every
+  known flash verdict from the #97 human audit), but BOOTS_ONLY vs
+  BROKEN_AT_BOOT rests on a paint-spread threshold.
+- meridian-launch's gpt-oss failure involved an `unpkg` import
+  CORS-blocked in the verification environment — possibly
+  environmental rather than a model fault; flagged as such.
+- Deliverable shape follows the prompt TOML: HTML prompts yield
+  single files, blueprint prompts yield markdown specs.
+
+Repo policy unchanged: no runner or verifier code is committed
+(engineless); helper scripts stayed outside the repo.
+
 The re-run is packaged as a paste-ready dispatch prompt — canonical copy in #108, reproduced here for convenience:
 
 ```
