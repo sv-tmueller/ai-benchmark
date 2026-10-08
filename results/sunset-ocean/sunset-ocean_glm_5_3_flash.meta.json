@@ -46,5 +46,16 @@
   "outputs": {
     "deliverable": "results/sunset-ocean/sunset-ocean_glm_5_3_flash.html",
     "review_html": null
+  },
+  "playability_verification": {
+    "playability_verdict": "PLAYABLE_VERIFIED",
+    "browser_verified": true,
+    "page_errors": [],
+    "console_errors": [
+      "shader compile warnings (but scene renders and animates)"
+    ],
+    "sustained_animation": true,
+    "click_through": true,
+    "click_result": "clicked canvas"
   }
 }

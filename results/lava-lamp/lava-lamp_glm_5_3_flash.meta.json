@@ -46,5 +46,17 @@
   "outputs": {
     "deliverable": "results/lava-lamp/lava-lamp_glm_5_3_flash.html",
     "review_html": null
+  },
+  "playability_verification": {
+    "playability_verdict": "BOOTS_ONLY",
+    "browser_verified": true,
+    "page_errors": [],
+    "console_errors": [
+      "shader compile errors (sgnpos undeclared, type mismatches)",
+      "WebGL2 unavailable — scene disabled"
+    ],
+    "sustained_animation": false,
+    "click_through": true,
+    "click_result": "clicked canvas (static page, shader disabled)"
   }
 }

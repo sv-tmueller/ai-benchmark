@@ -1,0 +1,18 @@
+{
+  "generated_utc": "pre-meta-convention",
+  "toml": "game-melon-jelly.toml",
+  "prompt_id": "game-melon-jelly",
+  "title": "Melon Jelly: XPBD soft-body watermelon slice",
+  "endpoint": "https://ai.noris.de/v1/chat/completions",
+  "model": "vllm/qsu/glm-5-3-flash",
+  "playability_verification": {
+    "playability_verdict": "PLAYABLE_VERIFIED",
+    "browser_verified": true,
+    "page_errors": [],
+    "console_errors": [],
+    "sustained_animation": true,
+    "click_through": true,
+    "click_result": "clicked canvas",
+    "note": "Meta reconstructed retroactively — original generation predates the meta sidecar convention."
+  }
+}

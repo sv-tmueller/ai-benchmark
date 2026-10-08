@@ -64,5 +64,16 @@
   "outputs": {
     "deliverable": "results/minecraft/minecraft_glm_5_3_flash.html",
     "review_html": null
+  },
+  "playability_verification": {
+    "playability_verdict": "BROKEN_AT_BOOT",
+    "browser_verified": true,
+    "page_errors": [
+      "Cannot read properties of undefined (reading '0')"
+    ],
+    "console_errors": [],
+    "sustained_animation": true,
+    "click_through": true,
+    "click_result": "clicked canvas (crashes on interaction)"
   }
 }
