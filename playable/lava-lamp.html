@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lava Lamp — playable</title>
+<style>
+html,body{margin:0;height:100%;background:#0b0a12;overflow:hidden;font-family:system-ui,sans-serif;color:#eee}
+canvas{display:block;position:fixed;inset:0}
+#ui{position:fixed;left:12px;bottom:12px;display:flex;gap:10px;align-items:center;background:rgba(0,0,0,.45);padding:8px 12px;border-radius:999px;font-size:13px}
+button{background:#2a2440;color:#eee;border:1px solid #4a3f6b;border-radius:999px;padding:6px 12px;cursor:pointer}
+button.active{background:#7a5cff;border-color:#a88cff}
+input[type=color]{width:34px;height:26px;border:none;background:none}
+#hud{position:fixed;right:14px;top:12px;font-size:12px;opacity:.7}
+</style></head><body>
+<canvas id="c"></canvas>
+<div id="ui"><b>Lava Lamp</b>
+<button id="pal">palette</button>
+<label>heat <input id="heat" type="range" min="0" max="100" value="45"></label>
+<label>tint <input id="tint" type="color" value="#ff5a3c"></label>
+<button id="reset">reset</button><span id="fps"></span></div>
+<div id="hud">drag to stir · click palette to re-mix</div>
+<script>
+const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+let W = 0, H = 0, dpr = 1;
+function resize() {
+  dpr = Math.min(2, window.devicePixelRatio || 1);
+  W = innerWidth; H = innerHeight;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+}
+addEventListener('resize', resize); resize();
+
+const N = 16, B = [];
+let heat = 0.45, tint = '#ff5a3c', pal = 0, grab = -1;
+const mx = { x: 0, y: 0 };
+const PAL = [
+  ['#ff5a3c', '#ffb03a', '#ff2d78'],
+  ['#3cff9e', '#3ad2ff', '#2d6bff'],
+  ['#ff6ad5', '#b06aff', '#6ad2ff'],
+  ['#ffd23a', '#ff7a3a', '#ff3a3a']
+];
+function cols() { const c = PAL[pal].slice(); c[0] = tint; return c; }
+function hexA(h, a) { const n = parseInt(h.slice(1), 16); return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')'; }
+function blob() { return { x: Math.random() * W, y: H * (0.15 + 0.7 * Math.random()), vx: (Math.random() - 0.5) * 24, vy: (Math.random() - 0.5) * 24, r: 40 + Math.random() * 70, ph: Math.random() * 6.28 }; }
+function reset() { B.length = 0; for (let i = 0; i < N; i++) B.push(blob()); }
+reset();
+
+function step(dt) {
+  for (const b of B) {
+    b.ph += dt * (0.6 + heat * 1.6);
+    b.vy += (heat * 30 - 8) * dt * (0.5 + 0.5 * Math.sin(b.ph));
+    b.vx += Math.sin(b.ph * 1.7 + b.y * 0.01) * 10 * dt;
+    b.x += b.vx * dt; b.y += b.vy * dt;
+    b.vx *= 0.994; b.vy *= 0.994;
+    if (b.x < b.r * 0.3) { b.x = b.r * 0.3; b.vx = Math.abs(b.vx) * 0.6; }
+    if (b.x > W - b.r * 0.3) { b.x = W - b.r * 0.3; b.vx = -Math.abs(b.vx) * 0.6; }
+    if (b.y < b.r * 0.3) { b.y = b.r * 0.3; b.vy = Math.abs(b.vy) * 0.6; }
+    if (b.y > H - b.r * 0.3) { b.y = H - b.r * 0.3; b.vy = -Math.abs(b.vy) * 0.6; }
+  }
+  if (grab >= 0) { const b = B[grab]; b.x = mx.x; b.y = mx.y; b.vx = 0; b.vy = 0; }
+}
+
+function render() {
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.globalCompositeOperation = 'source-over';
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#141026'); g.addColorStop(1, '#07060d');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  const C = cols();
+  for (let i = 0; i < B.length; i++) {
+    const b = B[i], col = C[i % C.length];
+    const r = b.r * (1 + 0.09 * Math.sin(b.ph * 2));
+    const rg = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, r);
+    rg.addColorStop(0, hexA(col, 0.85)); rg.addColorStop(0.5, hexA(col, 0.32)); rg.addColorStop(1, hexA(col, 0));
+    ctx.fillStyle = rg; ctx.beginPath(); ctx.arc(b.x, b.y, r, 0, 6.2832); ctx.fill();
+  }
+  ctx.restore();
+  const vg = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.2, W / 2, H / 2, Math.max(W, H) * 0.75);
+  vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,0.55)');
+  ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
+}
+
+function nearest(x, y) { let bi = -1, bd = 1e9; for (let i = 0; i < B.length; i++) { const d = (B[i].x - x) ** 2 + (B[i].y - y) ** 2; if (d < bd && d < B[i].r * B[i].r * 1.6) { bd = d; bi = i; } } return bi; }
+canvas.addEventListener('pointerdown', e => { mx.x = e.clientX; mx.y = e.clientY; const i = nearest(mx.x, mx.y); if (i >= 0) grab = i; else { pal = (pal + 1) % PAL.length; } });
+canvas.addEventListener('pointermove', e => { mx.x = e.clientX; mx.y = e.clientY; });
+addEventListener('pointerup', () => { grab = -1; });
+document.getElementById('pal').onclick = () => { pal = (pal + 1) % PAL.length; };
+document.getElementById('reset').onclick = reset;
+document.getElementById('heat').oninput = e => { heat = e.target.value / 100; };
+document.getElementById('tint').oninput = e => { tint = e.target.value; };
+
+let last = performance.now(), fn = 0, ft = last;
+function loop(now) {
+  let dt = (now - last) / 1000; last = now;
+  if (!isFinite(dt) || dt > 0.05) dt = 0.016;
+  step(dt); render();
+  fn++; if (now - ft > 500) { const el = document.getElementById('fps'); if (el) el.textContent = Math.round(fn * 1000 / (now - ft)) + ' fps'; fn = 0; ft = now; }
+  requestAnimationFrame(loop);
+}
+render();
+requestAnimationFrame(loop);
+</script></body></html>

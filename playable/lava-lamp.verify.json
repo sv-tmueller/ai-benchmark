@@ -1,0 +1,47 @@
+{
+  "html": "/tmp/probe_arts/lava-lamp-playable.html",
+  "bytes": 5303,
+  "label": "PLAYABLE_VERIFIED",
+  "scriptTruncated": null,
+  "painted": "PAINTED",
+  "bootFrameSpread": 15.444,
+  "console": {
+    "errors": 0,
+    "total": 0,
+    "earlyErrors": 0
+  },
+  "consoleSample": [],
+  "clickThrough": {
+    "attempted": true,
+    "selector": "CANVAS#c",
+    "transition": true,
+    "diff": {
+      "mad": 2.451482147031323,
+      "changedRatio": 0.20812916374474053
+    }
+  },
+  "motion": {
+    "samples": 7,
+    "window_s": 3.5,
+    "meanAbsDiff": 1.6825742412731806,
+    "meanChangedRatio": 0.17102727618045818,
+    "movingFramePairs": 6,
+    "sustained": true
+  },
+  "scripts": [
+    {
+      "index": 0,
+      "chars": 4094,
+      "isModule": false,
+      "balanced": true,
+      "minBrace": 0,
+      "minParen": 0,
+      "minBrack": 0,
+      "brace": 0,
+      "paren": 0,
+      "brack": 0,
+      "parse_ok": true,
+      "parse_error": null
+    }
+  ]
+}
