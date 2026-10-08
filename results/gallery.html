@@ -187,6 +187,97 @@
   </details>
 </section>
 
+
+
+<section id="gpt-oss-120b">
+  <h2><em>▣ Frontier baseline</em> — gpt-oss-120b · batch #112</h2>
+  <p class="cap" style="margin-bottom:14px;max-width:920px">
+    The 10 game/app prompts re-run against <strong>vllm/release/gpt-oss-120b</strong> (batch #112),
+    through the same headless-Chromium verifier as the flash sweep.
+    <strong>Result: 0 / 10 PLAYABLE_VERIFIED</strong> — a full capability verdict, not just a boot-paint.
+    Assessed collaboratively on issue <a href="https://github.com/sv-tmueller/ai-benchmark/issues/178" style="color:var(--accent);border-bottom:1px dotted var(--line)">#178</a>.
+  </p>
+  <div class="grid">
+    <article class="card">
+      <h3>Melon Jelly <span class="badge warn">BROKEN_AT_BOOT</span></h3>
+      <p class="cap"><code>const u/v</code> reassignment — a <code>const</code> declared then reassigned crashes at line 174. Boot dies before the simulation runs.</p>
+      <a class="btn" href="melon-jelly/melon-jelly_gpt_oss_120b.md">result ▸</a>
+    </article>
+    <article class="card">
+      <h3>Lava Lamp <span class="badge warn">BOOTS_ONLY</span></h3>
+      <p class="cap">Paints (spread 83, 0 console errors) but <strong>no sustained motion</strong>. The shader loop advances <code>iTime</code> but the wax displacement is too low-contrast to cross the motion bar.</p>
+      <a class="btn" href="lava-lamp/lava-lamp_gpt_oss_120b.md">result ▸</a>
+    </article>
+    <article class="card">
+      <h3>Minecraft <span class="badge warn">BROKEN_AT_BOOT</span></h3>
+      <p class="cap">After a CDN fix (cdnjs 404s in-sandbox; jsdelivr works) a real bug surfaces: <code>Cannot read properties of null (reading 'layers')</code> — a null scene/camera reaches <code>renderer.render()</code> every frame.</p>
+      <a class="btn" href="minecraft/minecraft_gpt_oss_120b.md">result ▸</a>
+    </article>
+    <article class="card">
+      <h3>Sunset over Ocean <span class="badge warn">BOOTS_ONLY</span></h3>
+      <p class="cap">Closest to playable — paints, animates sustained, has a click transition — but <strong>5 console errors</strong> from two independent bug clusters: a GLSL <code>vec3 = float</code> mismatch and four <code>gui.add</code> type errors. Two bugs, not one fix.</p>
+      <a class="btn" href="sunset-ocean/sunset-ocean_gpt_oss_120b.md">result ▸</a>
+    </article>
+    <article class="card">
+      <h3>Meridian Launch <span class="badge warn">BROKEN_AT_BOOT</span></h3>
+      <p class="cap">Crashes at boot — same <code>THREE</code> namespace-mismatch family as horror-house.</p>
+      <a class="btn" href="meridian-launch/meridian-launch_gpt_oss_120b.md">result ▸</a>
+    </article>
+    <article class="card">
+      <h3>Horror House <span class="badge warn">BUILD_OK · RUNTIME_BROKEN</span></h3>
+      <p class="cap">Builds green, breaks at runtime — a <code>THREE</code> namespace bug: <code>import {Vector3}</code> but calls <code>THREE.Vector3</code>. Highest-yield fix across all 10 (one line per file).</p>
+      <a class="btn" href="horror-house/horror-house_gpt_oss_120b.md">result ▸</a>
+    </article>
+    <article class="card">
+      <h3>Last Flight <span class="badge warn">BROKEN_AT_BOOT</span></h3>
+      <p class="cap">Same <code>THREE</code> namespace-mismatch family as horror-house.</p>
+      <a class="btn" href="last-flight/last-flight_gpt_oss_120b.md">result ▸</a>
+    </article>
+    <article class="card">
+      <h3>Cities: Skylines <span class="badge warn">BLUEPRINT_ONLY</span></h3>
+      <p class="cap">Emits a design blueprint, no runnable code.</p>
+      <a class="btn" href="cities/cities_gpt_oss_120b.md">result ▸</a>
+    </article>
+    <article class="card">
+      <h3>Mario Kart <span class="badge warn">BLUEPRINT_INCOMPLETE</span></h3>
+      <p class="cap">Blueprint + partial code — did not finish.</p>
+      <a class="btn" href="mario-kart/mario-kart_gpt_oss_120b.md">result ▸</a>
+    </article>
+    <article class="card">
+      <h3>Stillwater <span class="badge warn">BLUEPRINT_ONLY</span></h3>
+      <p class="cap">Emits a design blueprint, no runnable code.</p>
+      <a class="btn" href="stillwater/stillwater_gpt_oss_120b.md">result ▸</a>
+    </article>
+  </div>
+
+  <div class="callout" style="margin-top:18px;max-width:920px">
+    <p style="font-size:14px;color:var(--muted);line-height:1.6;margin-bottom:10px">
+      <strong>Token signal (measured, not assumed):</strong> output tokens
+      <span style="color:var(--accent2)">flash 85,963 · gpt-oss-120b 10,111</span>
+      — the flash model burned ~8.5× more and <em>still</em> failed the hard tier,
+      while gpt-oss-120b burned far less and also failed. The <code>reasoning_tokens</code>
+      field was not captured (<code>null</code>), so the reasoning-budget difference is
+      unmeasured here; the only measured signal is completion length.
+    </p>
+    <p style="font-size:14px;color:var(--muted);line-height:1.6;margin-bottom:10px">
+      <strong>Hypothesis read (this dataset):</strong> "flash trades depth for speed" is
+      <em>partly supported</em> (flash burned more output, still failed — "more tokens, not
+      smarter"), but the hard-tier results show both tiers failed the same 3D domain at
+      similar rates. <strong>There is no Claude verdict in this dataset</strong> —
+      gpt-oss-120b and flash are the only models run through the verifier here, so any
+      Claude/ChatGPT comparison is the owner's external hypothesis, not a result measured here.
+    </p>
+    <p style="font-size:14px;color:var(--muted);line-height:1.6">
+      <strong>ServiceNow implication (honest):</strong> gpt-oss-120b never ran the ServiceNow
+      prompt, so its behavior there is unknown. The flash ServiceNow catalog story
+      (<a href="#servicenow" style="color:var(--accent);border-bottom:1px dotted var(--line)">#138</a>)
+      was a complete, professional artifact — which cuts against "flash can't do technical work,"
+      but is unverified against a real ServiceNow schema. The 3D game benchmark is a poor
+      discriminator for ServiceNow work: different domain, different difficulty.
+    </p>
+  </div>
+</section>
+
 </main>
 <footer>batch #97 · glm-5-3-flash sweep · static gallery, no dependencies</footer>
 </body>
