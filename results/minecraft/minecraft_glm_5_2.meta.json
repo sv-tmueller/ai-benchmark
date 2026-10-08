@@ -55,5 +55,16 @@
   "outputs": {
     "deliverable": "results/minecraft/minecraft_glm_5_2.html",
     "review_html": null
+  },
+  "playability_verification": {
+    "playability_verdict": "BROKEN_AT_BOOT",
+    "browser_verified": true,
+    "page_errors": [
+      "Z is not defined"
+    ],
+    "console_errors": [],
+    "sustained_animation": false,
+    "click_through": true,
+    "click_result": "clicked PLAY button, crash on press"
   }
 }

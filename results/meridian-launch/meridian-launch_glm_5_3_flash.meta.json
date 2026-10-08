@@ -55,5 +55,16 @@
   "outputs": {
     "deliverable": "results/meridian-launch/meridian-launch_glm_5_3_flash.html",
     "review_html": null
+  },
+  "playability_verification": {
+    "playability_verdict": "BROKEN_AT_BOOT",
+    "browser_verified": true,
+    "page_errors": [
+      "pageError on load"
+    ],
+    "console_errors": [],
+    "sustained_animation": false,
+    "click_through": true,
+    "click_result": "clicked canvas (dead page)"
   }
 }
