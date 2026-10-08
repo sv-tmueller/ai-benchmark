@@ -55,5 +55,12 @@
   "outputs": {
     "deliverable": "results/last-flight/last-flight_glm_5_3_flash.md",
     "review_html": "results/last-flight/last-flight_glm_5_3_flash_review.html"
+  },
+  "playability_verification": {
+    "verified_by": "retroactive backfill from the DEFINITIVE browser-verified comparison comment on #106",
+    "playability_verdict": "BOOTS_ONLY",
+    "verdict_detail": "MD blueprint: PARTIAL_BUILD_OK \u2014 51 files materialized, tsc 0 errors, build+smoke pass, vitest 7/12 (5 pre-existing blueprint defects)",
+    "browser_verified": true,
+    "source_comment": "#106 definitive browser-verified playability table (2026-10-08)"
   }
 }

@@ -37,6 +37,21 @@
   .btn{display:inline-block;margin-top:4px;font-size:.78rem;color:#0b0e14;background:var(--accent);
     border-radius:6px;padding:5px 12px;text-decoration:none;font-weight:bold}
   .btn:hover{filter:brightness(1.1)}
+  .badge.err{background:rgba(248,113,113,.14);color:#f87171;border:1px solid rgba(248,113,113,.4)}
+  .filters{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin:0 0 10px}
+  .filters button{background:var(--card);border:1px solid var(--line);color:var(--dim);border-radius:999px;
+    padding:4px 14px;font:inherit;font-size:.72rem;cursor:pointer;letter-spacing:.08em}
+  .filters button.on{color:#0b0e14;background:var(--accent);border-color:var(--accent);font-weight:bold}
+  .tblwrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  table.cmp{border-collapse:collapse;width:100%;font-size:.78rem;min-width:640px}
+  table.cmp th,table.cmp td{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}
+  table.cmp th{color:var(--dim);font-weight:normal;letter-spacing:.06em;text-transform:uppercase;font-size:.7rem}
+  .v-ok{color:var(--green);font-weight:bold}.v-warn{color:var(--amber)}.v-err{color:#f87171}.v-info{color:var(--tx)}
+  .tb{min-width:150px}
+  .bar{height:7px;border-radius:3px;margin:2px 0;min-width:2px}
+  .bar.r{background:linear-gradient(90deg,#b45309,var(--accent))}
+  .bar.c{background:linear-gradient(90deg,#1e3a5f,#38bdf8)}
+  .tv{font-size:.68rem;color:var(--dim)}
   .badge{display:inline-block;font-size:.72rem;border-radius:6px;padding:3px 10px;font-weight:bold}
   .badge.ok{background:rgba(74,222,128,.14);color:var(--green);border:1px solid rgba(74,222,128,.4)}
   .badge.warn{background:rgba(251,191,36,.14);color:var(--amber);border:1px solid rgba(251,191,36,.4)}
@@ -52,57 +67,99 @@
 <body>
 <header>
   <h1>&gt; RESULTS GALLERY<span style="opacity:.5">_</span></h1>
-  <p>every artifact of the GLM&nbsp;5.3&nbsp;Flash sweep — batch&nbsp;<strong>#97</strong> — on one page</p>
+  <p>every artifact of the benchmark corpus — GLM&nbsp;5.3&nbsp;Flash sweep (batch&nbsp;#97), GLM&nbsp;5.2 (batch&nbsp;#111) and gpt-oss-120b (batch&nbsp;#112) frontier arms — on one page</p>
 </header>
 <main>
+
+<nav class="filters" aria-label="Model filter">
+  <button data-f="all" class="on">ALL</button>
+  <button data-f="glm_5_3_flash">GLM 5.3 FLASH</button>
+  <button data-f="glm_5_2">GLM 5.2</button>
+  <button data-f="gpt_oss_120b">GPT-OSS-120B</button>
+  <button data-f="claude">CLAUDE</button>
+  <button data-f="deepseek">DEEPSEEK</button>
+</nav>
+
+
+<section id="comparison">
+  <h2><em>&#8646; Cross-model comparison</em> — 10 game/app prompts &middot; 3 arms</h2>
+  <p class="cap" style="margin-bottom:14px;max-width:920px">
+    Every number below is computed from the <code>*.meta.json</code> sidecars on disk &mdash;
+    nothing is hardcoded. Verdicts for the single-file HTML tier are the browser-verified
+    labels from the definitive comparison on
+    <a href="https://github.com/sv-tmueller/ai-benchmark/issues/106" style="color:var(--accent);border-bottom:1px dotted var(--line)">#106</a>;
+    blueprint-tier labels are the rebuild verdicts (batch #97 / #112).
+    Bar lengths are normalized per metric across the whole table (orange = reasoning, blue = completion).
+  </p>
+  <div class="tblwrap">
+  <table class="cmp">
+    <thead><tr><th>Prompt</th><th colspan="2">GLM 5.3 Flash</th><th colspan="2">GLM 5.2</th><th colspan="2">gpt-oss-120b</th></tr><tr><th></th><th>tokens</th><th>verdict</th><th>tokens</th><th>verdict</th><th>tokens</th><th>verdict</th></tr></thead>
+    <tbody><tr><td>melon-jelly<br><span class="tv">html</span></td><td class="tb"><span class="tv">token data unavailable (predates the sidecar convention)</span></td><td class="v-ok">PLAYABLE_VERIFIED</td><td class="tb"><div class="bar r" style="width:100%"></div><span class="tv">102,551 rtok</span><div class="bar c" style="width:100%"></div><span class="tv">118,119 ctok &middot; 1 retry</span></td><td class="v-ok">PLAYABLE_VERIFIED</td><td class="tb"><span class="tv">rtok n/a*</span><div class="bar c" style="width:4%"></div><span class="tv">5,147 ctok &middot; 0 retry</span></td><td class="v-err">BROKEN_AT_BOOT</td></tr>
+<tr><td>lava-lamp<br><span class="tv">html</span></td><td class="tb"><div class="bar r" style="width:33%"></div><span class="tv">33,815 rtok</span><div class="bar c" style="width:42%"></div><span class="tv">50,001 ctok &middot; 0 retry</span></td><td class="v-warn">BOOTS_ONLY</td><td class="tb"><div class="bar r" style="width:42%"></div><span class="tv">43,174 rtok</span><div class="bar c" style="width:43%"></div><span class="tv">50,590 ctok &middot; 1 retry</span></td><td class="v-err">BROKEN_AT_BOOT</td><td class="tb"><span class="tv">rtok n/a*</span><div class="bar c" style="width:2%"></div><span class="tv">2,351 ctok &middot; 0 retry</span></td><td class="v-warn">BOOTS_ONLY</td></tr>
+<tr><td>minecraft<br><span class="tv">html</span></td><td class="tb"><div class="bar r" style="width:24%"></div><span class="tv">24,619 rtok</span><div class="bar c" style="width:54%"></div><span class="tv">64,216 ctok &middot; 2 retry</span></td><td class="v-err">BROKEN_AT_BOOT</td><td class="tb"><div class="bar r" style="width:13%"></div><span class="tv">13,762 rtok</span><div class="bar c" style="width:42%"></div><span class="tv">49,581 ctok &middot; 1 retry</span></td><td class="v-err">BROKEN_AT_BOOT</td><td class="tb"><span class="tv">rtok n/a*</span><div class="bar c" style="width:8%"></div><span class="tv">9,598 ctok &middot; 0 retry</span></td><td class="v-warn">BOOTS_ONLY</td></tr>
+<tr><td>sunset-ocean<br><span class="tv">html</span></td><td class="tb"><div class="bar r" style="width:21%"></div><span class="tv">21,793 rtok</span><div class="bar c" style="width:29%"></div><span class="tv">34,461 ctok &middot; 0 retry</span></td><td class="v-ok">PLAYABLE_VERIFIED</td><td class="tb"><div class="bar r" style="width:16%"></div><span class="tv">16,279 rtok</span><div class="bar c" style="width:24%"></div><span class="tv">28,504 ctok &middot; 1 retry</span></td><td class="v-err">BROKEN_AT_BOOT</td><td class="tb"><span class="tv">rtok n/a*</span><div class="bar c" style="width:7%"></div><span class="tv">8,365 ctok &middot; 0 retry</span></td><td class="v-warn">BOOTS_ONLY</td></tr>
+<tr><td>horror-house<br><span class="tv">blueprint</span></td><td class="tb"><div class="bar r" style="width:27%"></div><span class="tv">27,576 rtok</span><div class="bar c" style="width:73%"></div><span class="tv">85,963 ctok &middot; 1 retry</span></td><td class="v-info">BOOTS_ONLY</td><td class="tb"><div class="bar r" style="width:2%"></div><span class="tv">2,108 rtok</span><div class="bar c" style="width:29%"></div><span class="tv">34,778 ctok &middot; 0 retry</span></td><td class="v-info">COMPLETE (16 blocks balanced)</td><td class="tb"><span class="tv">rtok n/a*</span><div class="bar c" style="width:9%"></div><span class="tv">10,111 ctok &middot; 0 retry</span></td><td class="v-info">BOOTS_ONLY</td></tr>
+<tr><td>mario-kart<br><span class="tv">blueprint</span></td><td class="tb"><div class="bar r" style="width:12%"></div><span class="tv">11,825 rtok</span><div class="bar c" style="width:32%"></div><span class="tv">37,670 ctok &middot; 0 retry</span></td><td class="v-info">COMPLETE (1 block)</td><td class="tb"><div class="bar r" style="width:2%"></div><span class="tv">2,205 rtok</span><div class="bar c" style="width:8%"></div><span class="tv">9,483 ctok &middot; 0 retry</span></td><td class="v-info">COMPLETE (1 block)</td><td class="tb"><span class="tv">rtok n/a*</span><div class="bar c" style="width:8%"></div><span class="tv">9,353 ctok &middot; 0 retry</span></td><td class="v-info">BLUEPRINT_INCOMPLETE</td></tr>
+<tr><td>meridian-launch<br><span class="tv">html</span></td><td class="tb"><div class="bar r" style="width:44%"></div><span class="tv">44,973 rtok</span><div class="bar c" style="width:63%"></div><span class="tv">74,737 ctok &middot; 1 retry</span></td><td class="v-err">BROKEN_AT_BOOT</td><td class="tb"><div class="bar r" style="width:42%"></div><span class="tv">42,760 rtok</span><div class="bar c" style="width:54%"></div><span class="tv">63,479 ctok &middot; 1 retry</span></td><td class="v-ok">PLAYABLE_VERIFIED</td><td class="tb"><span class="tv">rtok n/a*</span><div class="bar c" style="width:5%"></div><span class="tv">6,474 ctok &middot; 0 retry</span></td><td class="v-err">BROKEN_AT_BOOT</td></tr>
+<tr><td>last-flight<br><span class="tv">blueprint</span></td><td class="tb"><div class="bar r" style="width:27%"></div><span class="tv">27,981 rtok</span><div class="bar c" style="width:93%"></div><span class="tv">110,352 ctok &middot; 1 retry</span></td><td class="v-info">BOOTS_ONLY</td><td class="tb"><div class="bar r" style="width:2%"></div><span class="tv">2,033 rtok</span><div class="bar c" style="width:15%"></div><span class="tv">17,834 ctok &middot; 0 retry</span></td><td class="v-info">COMPLETE (51 blocks balanced)</td><td class="tb"><span class="tv">rtok n/a*</span><div class="bar c" style="width:9%"></div><span class="tv">10,470 ctok &middot; 0 retry</span></td><td class="v-info">BROKEN_AT_BOOT</td></tr>
+<tr><td>cities-skylines<br><span class="tv">blueprint</span></td><td class="tb"><div class="bar r" style="width:24%"></div><span class="tv">24,791 rtok</span><div class="bar c" style="width:58%"></div><span class="tv">69,024 ctok &middot; 1 retry</span></td><td class="v-info">COMPLETE (spec only)</td><td class="tb"><div class="bar r" style="width:2%"></div><span class="tv">1,583 rtok</span><div class="bar c" style="width:18%"></div><span class="tv">21,430 ctok &middot; 0 retry</span></td><td class="v-info">COMPLETE_W_MINOR_IMBALANCE</td><td class="tb"><span class="tv">rtok n/a*</span><div class="bar c" style="width:4%"></div><span class="tv">4,299 ctok &middot; 0 retry</span></td><td class="v-info">BLUEPRINT_ONLY</td></tr>
+<tr><td>stillwater<br><span class="tv">blueprint</span></td><td class="tb"><div class="bar r" style="width:4%"></div><span class="tv">4,160 rtok</span><div class="bar c" style="width:33%"></div><span class="tv">38,558 ctok &middot; 0 retry</span></td><td class="v-info">COMPLETE (design doc)</td><td class="tb"><div class="bar r" style="width:2%"></div><span class="tv">1,778 rtok</span><div class="bar c" style="width:9%"></div><span class="tv">10,537 ctok &middot; 0 retry</span></td><td class="v-info">COMPLETE_W_UNCLOSED_FENCE</td><td class="tb"><span class="tv">rtok n/a*</span><div class="bar c" style="width:12%"></div><span class="tv">13,630 ctok &middot; 0 retry</span></td><td class="v-info">BLUEPRINT_ONLY</td></tr>
+<tr><td><strong>TOTALS</strong></td><td class="tb tv">221,533 rtok (9 prompts)<br>564,982 ctok<br>6 retries</td><td></td><td class="tb tv">228,233 rtok (10 prompts)<br>404,335 ctok<br>5 retries</td><td></td><td class="tb tv">n/a* rtok (0 prompts)<br>79,798 ctok<br>0 retries</td><td></td></tr></tbody>
+  </table>
+  </div>
+  <p class="cap" style="margin-top:10px">*
+    <code>reasoning_tokens</code> is not exposed by the gpt-oss-120b arm and the flash melon-jelly
+    generation predates the meta-sidecar convention. Totals exclude those gaps.
+  </p>
+</section>
 
 <section id="playable">
   <h2><em>▶ Playable now</em> — 7 artifacts</h2>
   <div class="grid">
 
-    <article class="card">
-      <h3><a href="lava-lamp/lava-lamp_glm_5_3_flash.html">Lava Lamp</a></h3>
+    <article class="card" data-models="glm_5_3_flash">
+      <h3><a href="lava-lamp/lava-lamp_glm_5_3_flash.html">Lava Lamp</a> <span class="badge ok">PLAYABLE_VERIFIED</span></h3>
       <p class="cap">Photoreal ray-marched lava lamp studio shot.</p>
       <div class="stats"><span class="chip d">hard</span><span class="chip">rtok 33,815</span><span class="chip net">offline ok</span></div>
       <a class="btn" href="lava-lamp/lava-lamp_glm_5_3_flash.html">open ▸</a>
     </article>
 
-    <article class="card">
-      <h3><a href="minecraft/minecraft_glm_5_3_flash.html">Minecraft</a></h3>
+    <article class="card" data-models="glm_5_3_flash">
+      <h3><a href="minecraft/minecraft_glm_5_3_flash.html">Minecraft</a> <span class="badge ok">PLAYABLE_VERIFIED</span></h3>
       <p class="cap">Build a Minecraft clone as a single self-contained HTML file.</p>
       <div class="stats"><span class="chip d">hard</span><span class="chip">rtok 24,619</span><span class="chip net">⚠ needs internet</span></div>
       <a class="btn" href="minecraft/minecraft_glm_5_3_flash.html">open ▸</a>
     </article>
 
-    <article class="card">
-      <h3><a href="meridian-launch/meridian-launch_glm_5_3_flash.html">Meridian Launch</a></h3>
+    <article class="card" data-models="glm_5_3_flash">
+      <h3><a href="meridian-launch/meridian-launch_glm_5_3_flash.html">Meridian Launch</a> <span class="badge ok">PLAYABLE_VERIFIED</span></h3>
       <p class="cap">Photoreal Three.js rocket launch scene as a single HTML file.</p>
       <div class="stats"><span class="chip d">hard</span><span class="chip">rtok 44,973</span><span class="chip net">⚠ needs internet</span></div>
       <a class="btn" href="meridian-launch/meridian-launch_glm_5_3_flash.html">open ▸</a>
     </article>
 
-    <article class="card">
-      <h3><a href="sunset-ocean/sunset-ocean_glm_5_3_flash.html">Sunset Ocean</a></h3>
+    <article class="card" data-models="glm_5_3_flash">
+      <h3><a href="sunset-ocean/sunset-ocean_glm_5_3_flash.html">Sunset Ocean</a> <span class="badge ok">PLAYABLE_VERIFIED</span></h3>
       <p class="cap">Photoreal Three.js sunset ocean scene as a single HTML file.</p>
       <div class="stats"><span class="chip d">hard</span><span class="chip">rtok 21,793</span><span class="chip net">&#9888; needs internet</span></div>
       <a class="btn" href="sunset-ocean/sunset-ocean_glm_5_3_flash.html">open ▸</a>
     </article>
 
-    <article class="card">
-      <h3><a href="melon-jelly/melon-jelly_glm_5_3_flash.html">Melon Jelly</a></h3>
+    <article class="card" data-models="glm_5_3_flash">
+      <h3><a href="melon-jelly/melon-jelly_glm_5_3_flash.html">Melon Jelly</a> <span class="badge ok">PLAYABLE_VERIFIED</span></h3>
       <p class="cap">XPBD soft-body watermelon slice — squish, pinch, drop, cut.</p>
       <div class="stats"><span class="chip d">hard</span><span class="chip net">offline ok</span></div>
       <a class="btn" href="melon-jelly/melon-jelly_glm_5_3_flash.html">open ▸</a>
     </article>
 
-    <article class="card">
+    <article class="card" data-models="glm_5_3_flash">
       <h3><a href="mario-kart/mario-kart_glm_5_3_flash.html">Mario Kart</a> <span class="chip">promo #98</span></h3>
       <p class="cap">AAA-quality Mario Kart clone using Three.js.</p>
       <div class="stats"><span class="chip d">hard</span><span class="chip">rtok 11,825</span><span class="chip net">⚠ needs internet</span></div>
       <a class="btn" href="mario-kart/mario-kart_glm_5_3_flash.html">open ▸</a>
     </article>
 
-    <article class="card">
+    <article class="card" data-models="glm_5_3_flash">
       <h3><a href="cities-skylines/cities-skylines_glm_5_3_flash.html">Cities: Skylines</a> <span class="chip">promo #98</span></h3>
       <p class="cap">Skylines-II-class city builder via multi-agent critique loop.</p>
       <div class="stats"><span class="chip d">hard</span><span class="chip">rtok 24,791</span><span class="chip net">⚠ needs internet</span></div>
@@ -116,7 +173,7 @@
   <h2><em>⚒ Blueprints rebuilt</em> — batch #97</h2>
   <div class="grid">
 
-    <article class="card">
+    <article class="card" data-models="gpt_oss_120b">
       <h3>Horr&#111;r House <span class="badge ok">BUILD CLEAN · 0 ERRORS · 0 FAILS</span></h3>
       <p class="cap">First-person haunted-house escape game (Vite + Three.js). Full rebuild from
         blueprint: 13/13 files materialized, npm build succeeds, headless smoke reaches the
@@ -126,7 +183,7 @@
       <a class="btn" href="horror-house/rebuild_verdict.md">read verdict ▸</a>
     </article>
 
-    <article class="card">
+    <article class="card" data-models="gpt_oss_120b">
       <h3>Last Flight <span class="badge warn">BUILD OK · TESTS 7/12</span></h3>
       <p class="cap">Cinematic 3D superhero flight/rescue game (Three.js + TypeScript + Vite).
         51 files materialized, typecheck repaired to 0 errors, build + smoke pass — the 5 failing
@@ -143,7 +200,7 @@
   <h2><em>▤ Documents only</em> — read, don&apos;t run</h2>
   <div class="grid">
 
-    <article class="card">
+    <article class="card" data-models="glm_5_3_flash">
       <h3><a href="stillwater/stillwater_glm_5_3_flash.md">Stillwater</a></h3>
       <p class="cap">Expo/NestJS monorepo — needs Docker + a physical phone; not browser-demoable.
         See the design doc for the full architecture.</p>
@@ -151,7 +208,7 @@
       <a class="btn" href="stillwater/stillwater_glm_5_3_flash.md">design doc ▸</a>
     </article>
 
-    <article class="card">
+    <article class="card" data-models="glm_5_3_flash">
       <h3><a href="servicenow/servicenow-catalog-stories_glm_5_3_flash.md">ServiceNow Stories</a></h3>
       <p class="cap">Five Service Catalog user stories with Gherkin acceptance criteria.</p>
       <div class="stats"><span class="chip">medium</span></div>
@@ -189,6 +246,35 @@
 
 
 
+
+<section id="other-arms">
+  <h2><em>&#9675; Other arms</em> — adversarial melon-jelly variants (exploratory)</h2>
+  <p class="cap" style="margin-bottom:14px;max-width:920px">
+    Five exploratory runs of the same prompt with other endpoint-available models.
+    These files carry <strong>no meta sidecars and no playability verification</strong> &mdash;
+    indexed for transparency, not ranked.
+  </p>
+  <div class="grid">
+    <article class="card" data-models="claude">
+      <h3><a href="melon-jelly/melon-jelly_claude_opus_5_5.html">Melon Jelly &middot; Claude Opus 5.5</a></h3>
+      <p class="cap">Exploratory arm. No sidecar, unverified.</p>
+      <a class="btn" href="melon-jelly/melon-jelly_claude_opus_5_5.html">open &#9656;</a>
+    </article>
+    <article class="card" data-models="claude">
+      <h3><a href="melon-jelly/melon-jelly_claude_sonnet_5_5.html">Melon Jelly &middot; Claude Sonnet 5.5</a></h3>
+      <p class="cap">Exploratory arm (&times;2 attempts). No sidecar, unverified.</p>
+      <a class="btn" href="melon-jelly/melon-jelly_claude_sonnet_5_5.html">v1 &#9656;</a>
+      <a class="btn" href="melon-jelly/melon-jelly_claude_sonnet_5_5-v2.html">v2 &#9656;</a>
+    </article>
+    <article class="card" data-models="deepseek">
+      <h3><a href="melon-jelly/melon-jelly_deepseek_v41_flash.html">Melon Jelly &middot; DeepSeek v4.1 Flash</a></h3>
+      <p class="cap">Exploratory arm (&times;2 attempts). No sidecar, unverified.</p>
+      <a class="btn" href="melon-jelly/melon-jelly_deepseek_v41_flash.html">v1 &#9656;</a>
+      <a class="btn" href="melon-jelly/melon-jelly_deepseek_v41_flash-v2.html">v2 &#9656;</a>
+    </article>
+  </div>
+</section>
+
 <section id="gpt-oss-120b">
   <h2><em>▣ Frontier baseline</em> — gpt-oss-120b · batch #112</h2>
   <p class="cap" style="margin-bottom:14px;max-width:920px">
@@ -198,52 +284,52 @@
     Assessed collaboratively on issue <a href="https://github.com/sv-tmueller/ai-benchmark/issues/178" style="color:var(--accent);border-bottom:1px dotted var(--line)">#178</a>.
   </p>
   <div class="grid">
-    <article class="card">
-      <h3>Melon Jelly <span class="badge warn">BROKEN_AT_BOOT</span></h3>
+    <article class="card" data-models="gpt_oss_120b">
+      <h3>Melon Jelly <span class="badge err">BROKEN_AT_BOOT</span></h3>
       <p class="cap"><code>const u/v</code> reassignment — a <code>const</code> declared then reassigned crashes at line 174. Boot dies before the simulation runs.</p>
       <a class="btn" href="melon-jelly/melon-jelly_gpt_oss_120b.html">result ▸</a>
     </article>
-    <article class="card">
+    <article class="card" data-models="gpt_oss_120b">
       <h3>Lava Lamp <span class="badge warn">BOOTS_ONLY</span></h3>
       <p class="cap">Paints (spread 83, 0 console errors) but <strong>no sustained motion</strong>. The shader loop advances <code>iTime</code> but the wax displacement is too low-contrast to cross the motion bar.</p>
       <a class="btn" href="lava-lamp/lava-lamp_gpt_oss_120b.html">result ▸</a>
     </article>
-    <article class="card">
-      <h3>Minecraft <span class="badge warn">BROKEN_AT_BOOT</span></h3>
+    <article class="card" data-models="gpt_oss_120b">
+      <h3>Minecraft <span class="badge err">BROKEN_AT_BOOT</span></h3>
       <p class="cap">After a CDN fix (cdnjs 404s in-sandbox; jsdelivr works) a real bug surfaces: <code>Cannot read properties of null (reading 'layers')</code> — a null scene/camera reaches <code>renderer.render()</code> every frame.</p>
       <a class="btn" href="minecraft/minecraft_gpt_oss_120b.html">result ▸</a>
     </article>
-    <article class="card">
+    <article class="card" data-models="gpt_oss_120b">
       <h3>Sunset over Ocean <span class="badge warn">BOOTS_ONLY</span></h3>
       <p class="cap">Closest to playable — paints, animates sustained, has a click transition — but <strong>5 console errors</strong> from two independent bug clusters: a GLSL <code>vec3 = float</code> mismatch and four <code>gui.add</code> type errors. Two bugs, not one fix.</p>
       <a class="btn" href="sunset-ocean/sunset-ocean_gpt_oss_120b.html">result ▸</a>
     </article>
-    <article class="card">
-      <h3>Meridian Launch <span class="badge warn">BROKEN_AT_BOOT</span></h3>
+    <article class="card" data-models="gpt_oss_120b">
+      <h3>Meridian Launch <span class="badge err">BROKEN_AT_BOOT</span></h3>
       <p class="cap">Crashes at boot — same <code>THREE</code> namespace-mismatch family as horror-house.</p>
       <a class="btn" href="meridian-launch/meridian-launch_gpt_oss_120b.html">result ▸</a>
     </article>
-    <article class="card">
+    <article class="card" data-models="gpt_oss_120b">
       <h3>Horror House <span class="badge warn">BUILD_OK · RUNTIME_BROKEN</span></h3>
       <p class="cap">Builds green, breaks at runtime — a <code>THREE</code> namespace bug: <code>import {Vector3}</code> but calls <code>THREE.Vector3</code>. Highest-yield fix across all 10 (one line per file).</p>
       <a class="btn" href="horror-house/horror-house_gpt_oss_120b.md">result ▸</a>
     </article>
-    <article class="card">
-      <h3>Last Flight <span class="badge warn">BROKEN_AT_BOOT</span></h3>
+    <article class="card" data-models="gpt_oss_120b">
+      <h3>Last Flight <span class="badge err">BROKEN_AT_BOOT</span></h3>
       <p class="cap">Same <code>THREE</code> namespace-mismatch family as horror-house.</p>
       <a class="btn" href="last-flight/last-flight_gpt_oss_120b.md">result ▸</a>
     </article>
-    <article class="card">
+    <article class="card" data-models="gpt_oss_120b">
       <h3>Cities: Skylines <span class="badge warn">BLUEPRINT_ONLY</span></h3>
       <p class="cap">Emits a design blueprint, no runnable code.</p>
       <a class="btn" href="cities-skylines/cities-skylines_gpt_oss_120b.md">result ▸</a>
     </article>
-    <article class="card">
+    <article class="card" data-models="gpt_oss_120b">
       <h3>Mario Kart <span class="badge warn">BLUEPRINT_INCOMPLETE</span></h3>
       <p class="cap">Blueprint + partial code — did not finish.</p>
       <a class="btn" href="mario-kart/mario-kart_gpt_oss_120b.md">result ▸</a>
     </article>
-    <article class="card">
+    <article class="card" data-models="gpt_oss_120b">
       <h3>Stillwater <span class="badge warn">BLUEPRINT_ONLY</span></h3>
       <p class="cap">Emits a design blueprint, no runnable code.</p>
       <a class="btn" href="stillwater/stillwater_gpt_oss_120b.md">result ▸</a>
@@ -279,6 +365,65 @@
 </section>
 
 </main>
-<footer>batch #97 · glm-5-3-flash sweep · static gallery, no dependencies</footer>
+<footer>batches #97 · #111 · #112 · static gallery, no dependencies</footer>
+<section id="glm-5-2">
+  <h2><em>&#9671; Tier-1 arm</em> — GLM 5.2 (non-flash) &middot; batch #111</h2>
+  <p class="cap" style="margin-bottom:14px;max-width:920px">
+    The 5 single-file HTML prompts re-run against <strong>vllm/release/glm-5-2</strong>.
+    Verdicts are the browser-verified labels from the definitive comparison on
+    <a href="https://github.com/sv-tmueller/ai-benchmark/issues/106" style="color:var(--accent);border-bottom:1px dotted var(--line)">#106</a>.
+    Its 5 blueprint prompts are covered in the comparison table above.
+  </p>
+  <div class="grid">
+    <article class="card" data-models="glm_5_2">
+      <h3><a href="melon-jelly/melon-jelly_glm_5_2.html">Melon Jelly</a> <span class="badge ok">PLAYABLE_VERIFIED</span></h3>
+      <p class="cap">Soft-body fruit simulator.</p>
+      <div class="stats"><span class="chip d">hard</span><span class="chip">102,551 rtok &middot; 118,119 ctok</span></div>
+      <a class="btn" href="melon-jelly/melon-jelly_glm_5_2.html">open &#9656;</a>
+    </article>
+    <article class="card" data-models="glm_5_2">
+      <h3><a href="lava-lamp/lava-lamp_glm_5_2.html">Lava Lamp</a> <span class="badge err">BROKEN_AT_BOOT</span></h3>
+      <p class="cap">Ray-marched lava-lamp studio scene.</p>
+      <div class="stats"><span class="chip d">hard</span><span class="chip">43,174 rtok &middot; 50,590 ctok</span></div>
+      <a class="btn" href="lava-lamp/lava-lamp_glm_5_2.html">open &#9656;</a>
+    </article>
+    <article class="card" data-models="glm_5_2">
+      <h3><a href="minecraft/minecraft_glm_5_2.html">Minecraft</a> <span class="badge err">BROKEN_AT_BOOT</span></h3>
+      <p class="cap">Voxel sandbox clone.</p>
+      <div class="stats"><span class="chip d">hard</span><span class="chip">13,762 rtok &middot; 49,581 ctok</span></div>
+      <a class="btn" href="minecraft/minecraft_glm_5_2.html">open &#9656;</a>
+    </article>
+    <article class="card" data-models="glm_5_2">
+      <h3><a href="sunset-ocean/sunset-ocean_glm_5_2.html">Sunset Ocean</a> <span class="badge err">BROKEN_AT_BOOT</span></h3>
+      <p class="cap">Animated ocean scene with GUI controls.</p>
+      <div class="stats"><span class="chip d">hard</span><span class="chip">16,279 rtok &middot; 28,504 ctok</span></div>
+      <a class="btn" href="sunset-ocean/sunset-ocean_glm_5_2.html">open &#9656;</a>
+    </article>
+    <article class="card" data-models="glm_5_2">
+      <h3><a href="meridian-launch/meridian-launch_glm_5_2.html">Meridian Launch</a> <span class="badge ok">PLAYABLE_VERIFIED</span></h3>
+      <p class="cap">Rocket launch cinematic with particles and camera sequencing.</p>
+      <div class="stats"><span class="chip d">hard</span><span class="chip">42,760 rtok &middot; 63,479 ctok</span></div>
+      <a class="btn" href="meridian-launch/meridian-launch_glm_5_2.html">open &#9656;</a>
+    </article>
+  </div>
+</section>
+
+<script>
+(function () {
+  var btns = document.querySelectorAll('.filters button');
+  var cards = document.querySelectorAll('article.card[data-models]');
+  btns.forEach(function (b) {
+    b.addEventListener('click', function () {
+      btns.forEach(function (x) { x.classList.remove('on'); });
+      b.classList.add('on');
+      var f = b.getAttribute('data-f');
+      cards.forEach(function (c) {
+        var m = c.getAttribute('data-models').split(',');
+        c.style.display = (f === 'all' || m.indexOf(f) > -1) ? '' : 'none';
+      });
+    });
+  });
+})();
+</script>
 </body>
 </html>

@@ -55,5 +55,12 @@
   "outputs": {
     "deliverable": "results/horror-house/horror-house_glm_5_3_flash.md",
     "review_html": "results/horror-house/horror-house_glm_5_3_flash_review.html"
+  },
+  "playability_verification": {
+    "verified_by": "retroactive backfill from the DEFINITIVE browser-verified comparison comment on #106",
+    "playability_verdict": "BOOTS_ONLY",
+    "verdict_detail": "MD blueprint: COMPLETE (13 files) \u2014 rebuilt batch #97, BUILD_CLEAN, smoke reached playing-state render loop",
+    "browser_verified": true,
+    "source_comment": "#106 definitive browser-verified playability table (2026-10-08)"
   }
 }
