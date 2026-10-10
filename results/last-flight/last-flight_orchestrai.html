@@ -303,9 +303,254 @@ function pollControls(dt){
   G.liftIn = !!KEYS.Space;
 }
 /* ===== SECTION: FLIGHT MODEL ===== */
+const _aimDir = new THREE.Vector3(), _tmp = new THREE.Vector3();
+
+function aimDir(out){
+  // forward = -Z rotated by yaw(Y) then pitch(X)
+  out.set(0,0,-1).applyAxisAngle(new THREE.Vector3(1,0,0), -G.pitch);
+  out.applyAxisAngle(new THREE.Vector3(0,1,0), G.yaw);
+  return out;
+}
+
+function stepFreeFlight(dt){
+  const sp = G.vel.length();
+  const dir = aimDir(_aimDir);
+  // Momentum: rotate velocity toward aim at speed-dependent turn rate
+  const turn = lerp(CFG.turnRateFast, CFG.turnRateBase, clamp(sp/CFG.maxSpeed,0,1));
+  if (sp > 1){
+    const angle = G.vel.angleTo(dir);
+    const maxRot = turn*dt;
+    if (angle > 1e-4){
+      const t = Math.min(1, maxRot/angle);
+      _tmp.copy(G.vel).lerp(dir, t).normalize().multiplyScalar(sp);
+      G.vel.copy(_tmp);
+    }
+  } else { G.vel.copy(dir).multiplyScalar(0.01); }
+  // Thrust tiers + gravity component bleed
+  const accel = CFG.tierAccel[G.speedTier];
+  G.vel.addScaledVector(dir, accel*dt);
+  if (G.braking) G.vel.multiplyScalar(1 - CFG.dragKClimb*dt*14);
+  // Quadratic drag; stronger when climbing
+  const climbing = G.vel.dot(new THREE.Vector3(0,1,0)) > 0;
+  const K = climbing ? CFG.dragKClimb : CFG.dragK;
+  const s2 = G.vel.lengthSq();
+  G.vel.addScaledVector(G.vel.clone().normalize(), -K*s2*dt*60*dt*60);
+  // Clamp speeds
+  const spd = G.vel.length();
+  if (spd > CFG.maxSpeed) G.vel.multiplyScalar(CFG.maxSpeed/spd);
+  if (spd < CFG.minSpeed && G.speedTier > 0) G.vel.multiplyScalar(lerp(1, CFG.minSpeed/Math.max(spd,0.01), 0.02));
+  G.pos.addScaledVector(G.vel, dt);
+  // Ceiling & floor
+  if (G.pos.y > CFG.ceiling){ G.pos.y = CFG.ceiling; G.vel.y = Math.min(G.vel.y, 0); }
+  collideHero(dt);
+}
+
+function collideHero(dt){
+  const r = CFG.heroRadius;
+  if (G.pos.y < r + CFG.floorPad){
+    G.pos.y = r + CFG.floorPad;
+    if (G.vel.y < -CFG.landHard) return failGame('hard-crash');
+    G.vel.y = Math.max(G.vel.y, 0) ;
+  }
+  const th = cityHit(G.pos, r);
+  if (th > 0){
+    // Push out horizontally to nearest face, damage on fast impacts
+    if (G.vel.length() > 150){ G.hp -= 34; G.msgFlash('TOWER HIT!'); }
+    const dx = G.pos.x - (cityNearestX ?? G.pos.x);
+    // simple push straight up if below roof, else bounce back
+    if (G.pos.y < th){ 
+      if (G.vel.length() > 200) return failGame('tower-crash');
+      G.pos.y = th + r + 0.5; G.vel.y = Math.max(G.vel.y, 6);
+      G.vel.multiplyScalar(0.55);
+    }
+  }
+}
+var cityNearestX = 0;
 /* ===== SECTION: MISSION FSM ===== */
+const _nose = new THREE.Vector3();
+
+function tryGrabOrRelease(){
+  if (G.ended || G.phase === 'TITLE') return;
+  if (!G.grabbed){
+    alNosePos(_nose);
+    if (dist(G.pos, _nose) < CFG.grabRange){
+      G.grabbed = true; G.phase = 'HOLD';
+      G.msgFlash('GOT THE NOSE — arrest the sink!', 2.5);
+    } else {
+      G.msgFlash('Too far from the nose.', 1.2);
+    }
+  } else if (!G.released){
+    // Release only over the stadium zone
+    if (inZone(G.al.pos)){ releaseOverStadium(); }
+    else G.msgFlash('Not over Metro Stadium — keep guiding!', 1.5);
+  }
+}
+
+function releaseOverStadium(){
+  G.released = true; G.phase = 'LAND';
+  G.al.held = false;
+  G.al.freeFall = true;                 // short drop onto the field
+  G.msgFlash('RELEASED — flare it down...', 2);
+}
+
+function stepAirlinerFree(dt){
+  const a = G.al;
+  if (!a || !a.alive) return;
+  if (a.held) return;                   // handled by holding physics
+  if (a.touchedDown) return;
+  // Ballistic: accelerating sink, slight bank drift
+  a.sinkPhase += dt;
+  const sink = lerp(CFG.sinkStart, CFG.sinkFinal, clamp((a.pos.y-120)/(CFG.spawnAlt-120), 0, 1))/60;
+  a.vel.y = -(sink + a.sinkPhase*a.sinkPhase*0.010);
+  a.bank += CFG.rollRate*dt*0.4;
+  a.pos.addScaledVector(a.vel, dt);
+  alGrp.position.copy(a.pos);
+  alGrp.rotation.set(0.12*Math.sin(a.sinkPhase*0.5), Math.PI, clamp(a.bank*0.06,-0.5,0.5));
+  // Impact checks
+  const th = cityHit(a.pos, CFG.fuseR);
+  if (a.pos.y < CFG.fuseR + 2 || th > 0){
+    a.alive = false; a.touchedDown = true;
+    if (!inZone(a.pos)) return failGame('downtown-impact');
+    gradeTouchdown(a.vel.y);
+  }
+}
+
+function stepHolding(dt){
+  // Merged body: hero grips the nose; WASD/mouse steers the pair.
+  const a = G.al;
+  const dir = aimDir(_aimDir);
+  const mass = 2.6;                               // heavy!
+  a.vel.addScaledVector(dir, CFG.holdThrust*dt/mass);
+  a.vel.y += CFG.holdGravity*dt;
+  if (G.liftIn) a.vel.y += CFG.holdLift*dt;       // Space hauls up
+  if (G.braking)  a.vel.multiplyScalar(1 - CFG.holdBrakeDrag*dt);
+  // Stress from aggressive maneuvering
+  const gs = a.vel.length()/50;
+  const stressRate = Math.max(0,(gs-1.4))*CFG.stressPerG + Math.abs(dir.y)*8*dt*10;
+  a.stress = clamp(a.stress + stressRate*dt - CFG.stressHeal*dt, 0, CFG.stressBuckleAt+1);
+  if (a.stress >= CFG.stressBuckleAt){
+    G.shake = CFG.buckleShake;
+    a.stress *= 0.55;                            // buckle bleeds stress
+    G.msgFlash('AIRFRAME BUCKLES — ease off!', 1.5);
+  }
+  a.pos.addScaledVector(a.vel, dt);
+  // Hero rides ahead of the nose
+  G.pos.copy(a.pos).addScaledVector(dir, -(CFG.airlinerLen/2 + CFG.grabRange*0.7));
+  G.vel.copy(a.vel);
+  alGrp.position.copy(a.pos);
+  alGrp.rotation.set(clamp(-a.vel.y*0.004,-0.3,0.3)+Math.PI, Math.atan2(-a.vel.x,-a.vel.z)+Math.PI, 0);
+  // Wing clips a tower?
+  const th = cityHit(a.pos, CFG.fuseR+20);
+  if (th > 0 && a.pos.y < th + 10){
+    a.stress += 40; G.shake = 6;
+    a.pos.y = th + 26; a.vel.y = Math.max(a.vel.y, 4);
+  }
+  // Released-drop over stadium
+  if (G.released && a.freeFall){
+    a.vel.y -= 6*dt;                             // continues below
+    if (a.pos.y < CFG.fuseR + 2){
+      a.touchedDown = true; gradeTouchdown(a.vel.y);
+    }
+  }
+  // Hull-zero from overstress
+  if (a.stress >= CFG.stressBuckleAt && a.stress >= 99.9) {/* reserved */}
+}
+
+function gradeTouchdown(vy){
+  G.al.touchedDown = true;
+  const av = Math.abs(vy);
+  if (av < CFG.landPerfect) winGame('perfect');
+  else if (av < CFG.landHard) winGame('saved');
+  else failGame('hard-crash');
+}
 /* ===== SECTION: FAIL STATES ===== */
+G.msgFlash = (txt, dur=1.5)=>{
+  const el = document.getElementById('centerMsg');
+  el.textContent = txt; el.style.display = 'block';
+  clearTimeout(G._mt); G._mt = setTimeout(()=>{ el.style.display='none'; }, dur*1000);
+};
+
+const FAIL_TEXT = {
+  'downtown-impact': 'FLIGHT 227 SLAMMED INTO DOWNTOWN',
+  'hard-crash': 'TOUCHDOWN TOO HARD — THE HULL BROKE APART',
+  'tower-crash': 'YOU BLACKED OUT AGAINST A HIGH-RISE',
+  'hull-zero': 'THE AIRFRAME CAME APART IN YOUR HANDS',
+};
+
+function failGame(reason){
+  if (G.ended) return;
+  G.ended = true; G.failReason = reason;
+  showOverlay(false, FAIL_TEXT[reason] || 'MISSION FAILED', '#ff8080');
+  G.phase = 'CRASH';
+}
+function winGame(kind){
+  if (G.ended) return;
+  G.ended = true; G.phase = 'DONE';
+  const tag = kind==='perfect' ? 'PERFECT LANDING — ' : '';
+  showOverlay(true, `${tag}${G.savedCount} SAVED`, '#ffd75e');
+}
+function showOverlay(win, big, color){
+  const ov = document.getElementById('overlay');
+  ov.querySelector('.big')?.remove();
+  ov.style.display = 'flex';
+  const h = document.createElement('div');
+  h.className = 'big'; h.style.color = color; h.textContent = big;
+  ov.appendChild(h);
+  const p = document.getElementById('ovSub');
+  p.innerHTML = win
+    ? 'Flight 227 is down safe on the Metro Stadium field.<br>Press <kbd>R</kbd> to fly it again'
+    : `${FAIL_TEXT[G.failReason] || ''}<br>Press <kbd>R</kbd> to retry`;
+  // hide the duplicate subtitle text on fail (already shown big)
+  if (!win) p.innerHTML = `Press <kbd>R</kbd> to retry`;
+}
+
+function restart(){
+  // Full state reset without reload (works from file:// with cached modules)
+  Object.assign(G, {
+    phase:'FLY', acc:0, elapsed:0, paused:false, ended:false,
+    grabbed:false, released:false, failReason:'', shake:0,
+  });
+  initHeroState();
+  spawnAirliner();
+  document.getElementById('overlay').style.display = 'none';
+  G.msgFlash('INTERCEPT FLIGHT 227 — PRESS E AT HER NOSE', 3);
+}
 /* ===== SECTION: HUD ===== */
+const hudEl = document.getElementById('hud');
+const hudREl = document.getElementById('hudR');
+
+function fmt(n){ return String(Math.round(n)).padStart(3,' '); }
+
+function updateHUD(){
+  const sp = G.vel.length(), alt = G.pos.y;
+  let objTxt = '', warnTxt = '';
+  if (!G.ended && G.phase !== 'TITLE'){
+    if (!G.grabbed){
+      const d = dist(G.pos, G.al.pos);
+      objTxt = `OBJECTIVE: reach Flight 227's nose (${fmt(d)} m) — press E close`;
+      const secs = estimateImpactSecs();
+      warnTxt = secs != null ? `IMPACT IN ${secs}s` : '';
+    } else if (!G.released){
+      const dz = Math.hypot(G.al.pos.x-STADIUM.x, G.al.pos.z-STADIUM.z);
+      objTxt = `GUIDE WEST to METRO STADIUM (${fmt(dz)} m) — E over the green ring`;
+      warnTxt = `STRESS ${Math.round(G.al.stress)}%`;
+    }
+  }
+  hudEl.innerHTML =
+    `<span>${objTxt}</span>`;
+  hudREl.innerHTML =
+    `SPD ${fmt(sp*3.6>>0)} km/h<br>ALT ${fmt(alt)} m<br>` +
+    `THR ${['IDLE','CRUISE','BOOST'][G.speedTier]}${G.braking?' · BRAKE':''}` +
+    (G.grabbed&&!G.released?`<br><span class="${G.al.stress>70?'warn':'good'}">${warnTxt}</span>`
+     : warnTxt?`<br><span class="warn">${warnTxt}</span>`:'');
+}
+
+function estimateImpactSecs(){
+  const a = G.al;
+  if (!a || a.touchedDown || a.held) return null;
+  const vy = Math.min(a.vel.y, -1);
+  return Math.max(0, Math.ceil((a.pos.y - CFG.fuseR) / -vy));
+}
 /* ===== SECTION: DEBUG HOOKS ===== */
 /* ===== SECTION: MAIN LOOP ===== */
 </script>
