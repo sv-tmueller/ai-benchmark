@@ -1,0 +1,1066 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Melon Jelly — Soft Body Playground</title>
+<style>
+  :root {
+    --panel-bg: rgba(18, 24, 18, 0.82);
+    --panel-border: rgba(140, 190, 120, 0.35);
+    --txt: #dcedd2;
+    --accent: #7fd96a;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #10160f; font-family: system-ui, sans-serif; }
+  #stage { position: absolute; inset: 0; display: block; touch-action: none; cursor: grab; }
+
+  /* ---------- Toolbar ---------- */
+  #toolbar {
+    position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 6px; align-items: center;
+    background: var(--panel-bg); border: 1px solid var(--panel-border);
+    border-radius: 14px; padding: 6px 8px;
+    backdrop-filter: blur(6px); z-index: 10;
+    user-select: none; -webkit-user-select: none;
+  }
+  #toolbar button {
+    appearance: none; border: 1px solid transparent; border-radius: 9px;
+    background: rgba(255,255,255,0.06); color: var(--txt);
+    font-size: 13px; font-weight: 600; padding: 7px 14px; cursor: pointer;
+    transition: background .15s, border-color .15s;
+  }
+  #toolbar button:hover { background: rgba(255,255,255,0.14); }
+  #toolbar button.on { background: rgba(127,217,106,0.22); border-color: var(--accent); color: #fff; }
+  #toolbar .sep { width: 1px; height: 22px; background: rgba(255,255,255,0.15); margin: 0 3px; }
+
+  /* ---------- Params panel ---------- */
+  #params {
+    position: absolute; top: 12px; right: 12px; width: 218px;
+    background: var(--panel-bg); border: 1px solid var(--panel-border);
+    border-radius: 12px; z-index: 10; color: var(--txt);
+    font-size: 12px; backdrop-filter: blur(6px);
+    user-select: none; -webkit-user-select: none;
+  }
+  #params summary {
+    cursor: pointer; padding: 9px 12px; font-weight: 700; letter-spacing: .04em;
+    list-style: none; outline: none;
+  }
+  #params summary::-webkit-details-marker { display: none; }
+  #params .body { padding: 2px 12px 10px; }
+  #params label { display: block; margin: 8px 0 3px; opacity: .85; }
+  #params input[type=range] { width: 100%; accent-color: var(--accent); }
+  #params .val { float: right; opacity: .65; font-variant-numeric: tabular-nums; }
+
+  /* ---------- Swatches ---------- */
+  #swatches {
+    position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
+    display: none; gap: 8px; align-items: center;
+    background: var(--panel-bg); border: 1px solid var(--panel-border);
+    border-radius: 14px; padding: 8px 10px; z-index: 10;
+    backdrop-filter: blur(6px); user-select: none;
+  }
+  #swatches.show { display: flex; }
+  .swatch {
+    width: 26px; height: 26px; border-radius: 50%;
+    border: 2px solid rgba(255,255,255,.55); cursor: pointer;
+    transition: transform .12s;
+  }
+  .swatch:hover { transform: scale(1.18); }
+  .swatch.sel { border-color: #fff; box-shadow: 0 0 0 2px rgba(255,255,255,.35); }
+  #customColor {
+    width: 26px; height: 26px; border: 2px dashed rgba(255,255,255,.55);
+    border-radius: 50%; background: conic-gradient(red, yellow, lime, cyan, blue, magenta, red);
+    cursor: pointer; padding: 0;
+  }
+
+  /* ---------- HUD / FPS ---------- */
+  #fps {
+    position: absolute; bottom: 12px; right: 14px; z-index: 10;
+    background: var(--panel-bg); border: 1px solid var(--panel-border);
+    color: var(--txt); border-radius: 8px; padding: 4px 10px;
+    font: 700 12px/1.5 ui-monospace, Menlo, Consolas, monospace;
+    display: none; user-select: none;
+  }
+  #hint {
+    position: absolute; bottom: 48px; left: 50%; transform: translateX(-50%);
+    color: rgba(220,237,210,.55); font-size: 12px; z-index: 9;
+    pointer-events: none; transition: opacity 1s; text-align: center;
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+
+<div id="toolbar">
+  <button id="btnGrab" class="on" title="Drag the jelly">✋ Grab</button>
+  <button id="btnKnife" title="Slice into pieces">🔪 Knife</button>
+  <div class="sep"></div>
+  <button id="btnColor" title="Recolor the flesh">🎨 Color</button>
+  <button id="btnReset" title="Regenerate the melon">↺ Reset</button>
+  <div class="sep"></div>
+  <button id="btnFps" title="Toggle FPS meter">FPS</button>
+</div>
+
+<details id="params">
+  <summary>⚙ Params</summary>
+  <div class="body">
+    <label>Rind stiffness <span class="val" id="vRind"></span></label>
+    <input type="range" id="rRind" min="0.000001" max="0.0001" step="0.000001">
+    <label>Flesh stiffness <span class="val" id="vFlesh"></span></label>
+    <input type="range" id="rFlesh" min="0.00001" max="0.0005" step="0.00001">
+    <label>Damping <span class="val" id="vDamp"></span></label>
+    <input type="range" id="rDamp" min="0" max="0.98" step="0.02">
+    <label>Gravity <span class="val" id="vGrav"></span></label>
+    <input type="range" id="rGrav" min="0" max="2600" step="100">
+    <label>Bounciness <span class="val" id="vBounce"></span></label>
+    <input type="range" id="rBounce" min="0" max="0.6" step="0.05">
+  </div>
+</details>
+
+<div id="swatches"></div>
+<div id="fps">-- fps</div>
+<div id="hint">grab &amp; fling the jelly · press from above to squash · pick 🔪 Knife and swipe to slice</div>
+
+<script>
+"use strict";
+/* =====================================================================
+   Melon Jelly — substepped XPBD soft body, knife cutting, Canvas 2D.
+   Sections: CONFIG → MESH GEN → PHYSICS (XPBD) → PIECES/CUTTING →
+             INPUT → RENDERING → UI/LIFECYCLE
+   Zero external resources. Everything below is procedural.
+   ===================================================================== */
+
+/* ============================== CONFIG ============================== */
+const CFG = {
+  // --- timing ---
+  FIXED_DT:      1 / 480,   // physics tick (s): 8 ticks per 60Hz frame
+  MAX_FRAME:     1 / 30,    // clamp huge frame gaps (tab-switch protection)
+  SUBSTEPS_MIN:  8,         // >= 8 substeps per frame at 60 Hz
+  SETTLE_VY:     42,        // below this impact speed, no bounce (rest)
+  // --- mesh ---
+  RINGS:         14,        // concentric half-disc rings (outermost = rind)
+  SEGMENTS:      56,        // arc divisions per ring (=> 14*57+1 = 799 particles)
+  MELON_R:       170,       // resting radius (css px)
+  FLATTEN:       0.78,      // vertical squash of the half-disc at rest
+  DROP_H:        130,       // spawn height above floor
+  // --- xpbd ---
+  // Compliance units: alpha_tilde = comp / h^2 (h = FIXED_DT). Calibrated
+  // so per-substep correction fractions land at rind ~0.55, flesh ~0.18,
+  // area ~0.3 — stiff skin, soft jelly interior, stable at 8 substeps.
+  COMPLIANCE_RIND:  6e-6,
+  COMPLIANCE_FLESH: 4e-5,
+  AREA_COMPLIANCE:  1.5e-5,
+  DAMPING_K:        0.55,   // air/global damping (slider 0..0.98)
+  GRAVITY:          1600,
+  BOUNCE:           0.18,
+  FRICTION:         0.72,
+  WALL_PAD:         8,      // side-wall collision inset
+  // --- safety ---
+  VMAX:          4200,     // velocity clamp (px/s)
+  AMIN_EPS:      0.9,      // skip area solve below this triangle area (px^2)
+  POS_CLAMP:     1e6,
+
+  // --- colors (procedural palette; hex literals only, no urls) ---
+  PALETTE: [
+    "#ff5470", // classic watermelon red
+    "#ff7ba9",
+    "#ffb347", // mango
+    "#ffe066", // lemon
+    "#7dd95f", // lime green flesh
+    "#63c7ff", // blueberry
+    "#b07aff", // grape
+    "#ffffff", // ghost
+  ],
+};
+
+/* ============================= MESH GEN ==============================
+   Concentric half-disc rings stitched radially. Outermost ring gets
+   tag=rind (stiff), everything else tag=flesh (soft). Half-disc = NO
+   wrap-around: each ring has SEGMENTS+1 points spanning theta [0, PI].
+   Triangles are the ground truth for area constraints, rendering, and
+   connectivity (cutting rebuilds from survivors).
+
+   Dome up, flat chord down. Apex point caps the innermost ring.
+*/
+function buildMelon(cx, cy) {
+  const R = CFG.MELON_R, NR = CFG.RINGS, NS = CFG.SEGMENTS;
+  const pts = [];              // particle records
+  const idxOf = [];            // [ring][seg] -> particle index
+  for (let ri = 0; ri < NR; ri++) {
+    const rr = R * Math.pow((ri + 1) / NR, 0.92); // denser near rim
+    const row = new Array(NS + 1);
+    for (let si = 0; si <= NS; si++) {
+      const th = (si / NS) * Math.PI;                // 0 .. PI inclusive
+      const x = cx + Math.cos(th) * rr;
+      const y = cy - Math.sin(th) * rr * CFG.FLATTEN; // dome UP
+      row[si] = pts.length;
+      pts.push({
+        x, y,
+        vx: 0, vy: 0,
+        gx: 0, gy: 0,             // predicted pos (xpbd buffer)
+        invW: 1,
+        rind: ri === NR - 1 ? 1 : 0,
+        alive: 1,
+        piece: 0,
+      });
+    }
+    idxOf.push(row);
+  }
+  // --- triangulate ring bands: each quad cell -> 2 triangles ---
+  const tris = [];
+  for (let ri = 0; ri < NR - 1; ri++) {
+    for (let si = 0; si < NS; si++) {
+      const a = idxOf[ri][si],     b = idxOf[ri][si + 1];
+      const c = idxOf[ri + 1][si], d = idxOf[ri + 1][si + 1];
+      tris.push([a, b, c]);
+      tris.push([b, d, c]);
+    }
+  }
+  // --- apex caps the innermost ring (fan) ---
+  const apex = pts.length;
+  pts.push({ x: cx, y: cy, vx: 0, vy: 0, gx: 0, gy: 0, invW: 1, rind: 0, alive: 1, piece: 0 });
+  for (let si = 0; si < NS; si++) {
+    tris.push([idxOf[0][si], idxOf[0][si + 1], apex]);
+  }
+  return { pts, tris };
+}
+
+/* Distance constraints from CURRENT triangle edges (rest lengths taken
+   from the spawn pose, so the mesh starts perfectly consistent). Every
+   unique edge in any triangle becomes one constraint; compliance picks
+   rind vs flesh by endpoint membership. Band triangles inherently brace
+   the flat chord columns, keeping the underside shut when pressed. */
+function distConstraintsFromTris(pts, tris) {
+  const seen = new Set();
+  const cons = [];
+  const pushCon = (a, b, compMul) => {
+    const key = a < b ? a * 100000 + b : b * 100000 + a;
+    if (seen.has(key)) return;
+    seen.add(key);
+    const dx = pts[b].x - pts[a].x, dy = pts[b].y - pts[a].y;
+    cons.push({
+      a, b,
+      rl: Math.hypot(dx, dy),
+      comp: ((pts[a].rind || pts[b].rind) ? CFG.COMPLIANCE_RIND : CFG.COMPLIANCE_FLESH) * (compMul || 1),
+      kind: 0, // distance
+    });
+  };
+  for (const t of tris) {
+    for (let k = 0; k < 3; k++) pushCon(t[k], t[(k + 1) % 3], 1);
+  }
+  return cons;
+}
+
+/* Seeds: sample random triangles weighted toward the middle radii, store
+   barycentric coords + owning triangle so they ride the deformation. */
+function scatterSeeds(world, count) {
+  const seeds = [];
+  const cand = world.tris.filter(t => !isEdgeTri(world, t));
+  for (let i = 0; i < count && cand.length; i++) {
+    const t = cand[(Math.random() * cand.length) | 0];
+    let u = Math.random(), v = Math.random();
+    if (u + v > 1) { u = 1 - u; v = 1 - v; }
+    seeds.push({ tri: t, u, v, ang: Math.random() * Math.PI, sz: 3 + Math.random() * 3 });
+  }
+  return seeds;
+}
+
+/* An "edge" triangle touches the outer rim (has a rind vertex) or the
+   flat chord (both seg indices at the extremes 0 / NS-1 chord side). */
+function isEdgeTri(world, t) {
+  return t.some(i => world.pts[i].rind);
+}
+
+/* ============================ WORLD STATE =========================== */
+const World = {
+  pts: [], tris: [], cons: [], areas: [],
+  pieces: [],          // [{cons:[...], tris:[...], ptIdx:Set}]
+  seeds: [],
+  fleshColor: CFG.PALETTE[0],
+  acc: 0,              // fixed-timestep accumulator (s)
+  frame: 0,
+  grabbedBy: {},      // pointerId -> {indices:[], target:{x,y}, radius}
+  pinchPair: null,    // {pa,pb,targetDist} when two pointers hold it
+  knifeTrail: [],     // recent knife samples for the slash visual
+  tool: "grab",
+  floorY: 0,          // css-space floor line (bottom minus margin)
+  W: 0, H: 0,         // css-space viewport
+};
+
+function initWorld() {
+  World.W = innerWidth; World.H = innerHeight;
+  World.floorY = World.H - 36;
+  const cx = World.W / 2;
+  const spawnCy = World.floorY - CFG.DROP_H - CFG.MELON_R * CFG.FLATTEN;
+  const m = buildMelon(cx, spawnCy);
+  World.pts = m.pts;
+  World.tris = m.tris;
+  World.cons = distConstraintsFromTris(m.pts, m.tris);
+  // per-triangle SIGNED rest areas for area constraints (sign preserved!)
+  World.areas = World.tris.map(t => triArea(World.pts, t));
+  World.pieces = [{
+    cons: World.cons.slice(),
+    tris: World.tris.slice(),
+    ptSet: new Set(World.pts.map((_, i) => i)),
+  }];
+  World.seeds = scatterSeeds(World, 42);
+  World.grabbedBy = {};
+  World.pinchPair = null;
+  World.knifeTrail = [];
+  World.acc = 0;
+}
+
+function triArea(pts, t) {
+  const a = pts[t[0]], b = pts[t[1]], c = pts[t[2]];
+  return 0.5 * ((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y));
+}
+
+/* ======================== PHYSICS (XPBD CORE) =======================
+   Small-steps XPBD: lambda implicit-reset per substep (we fold alpha
+   into the scaling factor; no multiplier storage needed for 1-pass).
+   Per substep: integrate -> solve distances -> solve areas -> collide.
+   Compliance units scaled by dt_sub^-2 per Macklin et al. */
+function physTick(dtFrame) {
+  World.acc += Math.min(dtFrame, CFG.MAX_FRAME);
+  const TICK = CFG.FIXED_DT;
+  let steps = 0;
+  while (World.acc >= TICK && steps < 40) {
+    substep(TICK);
+    World.acc -= TICK;
+    steps++;
+  }
+  if (World.acc >= TICK) World.acc = 0; // drop backlog, never spiral
+}
+
+function substep(h) {
+  const g = CFG.GRAVITY, damp = CFG.DAMPING_K;
+  const pts = World.pts;
+
+  // ---- integrate: semi-implicit Euler into predicted positions ----
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    if (!p.alive) continue;
+    p.vy += g * h;
+    // linear velocity damping: exp decay, slider-controlled strength
+    const df = Math.exp(-damp * h);
+    p.vx *= df; p.vy *= df;
+    // clamp velocities (NaN/exploded guard)
+    const sp = Math.hypot(p.vx, p.vy);
+    if (!isFinite(sp)) { p.vx = 0; p.vy = 0; }
+    else if (sp > CFG.VMAX) { const s = CFG.VMAX / sp; p.vx *= s; p.vy *= s; }
+    p.gx = p.x + p.vx * h;
+    p.gy = p.y + p.vy * h;
+  }
+
+  // ---- solve: attachments (pointer grabs) first, they win ties ----
+  solveAttachments(h);
+
+  // ---- solve distance constraints (Gauss-Seidel single pass) ----
+  const alphaScale = 1 / (h * h);
+  for (const c of World.cons) {
+    if (c.dead) continue;
+    const pa = pts[c.a], pb = pts[c.b];
+    if (!pa.alive || !pb.alive) continue;
+    let dx = pb.gx - pa.gx, dy = pb.gy - pa.gy;
+    let len = Math.hypot(dx, dy);
+    if (len < 1e-9) continue;
+    const alpha = c.comp * alphaScale;
+    const wSum = pa.invW + pb.invW;
+    if (wSum <= 0) continue;
+    const dl = (len - c.rl) / (len * (wSum + alpha));
+    const sx = dx * dl, sy = dy * dl;
+    pa.gx += sx * pa.invW; pa.gy += sy * pa.invW;
+    pb.gx -= sx * pb.invW; pb.gy -= sy * pb.invW;
+  }
+
+  // ---- solve per-triangle signed area constraints ----
+  // Constraint: signed area A(p) = 0.5*cross(b-a, c-a) must equal rest
+  // area (sign preserved so flipped triangles get pushed back, not
+  // locked inverted). Gradient wrt each vertex is the perpendicular of
+  // the opposite edge. Degenerate guard skips near-zero rest areas.
+  const acAlpha = CFG.AREA_COMPLIANCE * alphaScale;
+  const tris = World.tris;
+  for (let ti = 0; ti < tris.length; ti++) {
+    const t = tris[ti];
+    if (t.dead) continue;
+    const a = pts[t[0]], b = pts[t[1]], cc = pts[t[2]];
+    if (!a.alive || !b.alive || !cc.alive) continue;
+    const cur = 0.5 * ((b.gx - a.gx) * (cc.gy - a.gy) -
+                       (cc.gx - a.gx) * (b.gy - a.gy));
+    const rest = World.areas[ti];
+    if (Math.abs(rest) < CFG.AMIN_EPS) continue;    // degenerate guard
+    const diff = cur - rest;
+    if (Math.abs(diff) < 1e-9) continue;
+    // gradients of the doubled area wrt a,b,c
+    const ga_x = (b.gy - cc.gy), ga_y = (cc.gx - b.gx);
+    const gb_x = (cc.gy - a.gy), gb_y = (a.gx - cc.gx);
+    const gc_x = (a.gy - b.gy), gc_y = (b.gx - a.gx);
+    const gn = (ga_x * ga_x + ga_y * ga_y) * a.invW +
+               (gb_x * gb_x + gb_y * gb_y) * b.invW +
+               (gc_x * gc_x + gc_y * gc_y) * cc.invW;
+    if (gn < 1e-12) continue;
+    const lam = -diff / (gn + acAlpha);
+    a.gx += ga_x * lam * a.invW; a.gy += ga_y * lam * a.invW;
+    b.gx += gb_x * lam * b.invW; b.gy += gb_y * lam * b.invW;
+    cc.gx += gc_x * lam * cc.invW; cc.gy += gc_y * lam * cc.invW;
+  }
+
+  // ---- collisions: floor + walls (predicted space) ----
+  collidePredicted(h);
+
+  // ---- finalize: velocity from position delta (XPBD v-next) ----
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    if (!p.alive) continue;
+    let nvx = (p.gx - p.x) / h, nvy = (p.gy - p.y) / h;
+    if (!isFinite(nvx) || !isFinite(nvy) ||
+        Math.abs(p.gx) > CFG.POS_CLAMP || Math.abs(p.gy) > CFG.POS_CLAMP) {
+      // exploded particle: freeze in place rather than poison the sim
+      p.gx = p.x; p.gy = p.y; p.vx = 0; p.vy = 0;
+      p.contact = 0;
+      continue;
+    }
+    // floor contact response: reflect with restitution, or settle
+    if (p.contact) {
+      const ivy = p.impVy || 0;
+      if (ivy > CFG.SETTLE_VY) {
+        nvy = -ivy * CFG.BOUNCE;                 // bounce
+      } else {
+        nvy = 0;                                  // rest on floor
+      }
+      nvx *= Math.max(0, 1 - CFG.FRICTION * 4 * h); // tangential friction
+      p.contact = 0;
+    }
+    p.vx = nvx; p.vy = nvy;
+    p.x = p.gx; p.y = p.gy;
+  }
+}
+
+/* Pointer attachments solved as very compliant distance constraints
+   toward the pointer target: elastic grab feel, no teleporting. Alpha
+   calibrated for ~25% correction per substep — firm but stretchy. */
+function solveAttachments(h) {
+  const ids = Object.keys(World.grabbedBy);
+  if (!ids.length) return;
+  const alphaScale = 1 / (h * h);
+  const ATTACH_COMP = 1.3e-5; // alpha_tilde ~= 3
+  for (const id of ids) {
+    const gr = World.grabbedBy[id];
+    const tx = gr.target.x, ty = gr.target.y;
+    const alpha = ATTACH_COMP * alphaScale;
+    for (const pi of gr.indices) {
+      const p = World.pts[pi];
+      if (!p || !p.alive) continue;
+      const dx = tx - p.gx, dy = ty - p.gy;
+      const d = Math.hypot(dx, dy);
+      if (d < 1e-6) continue;
+      const dl = (d - 0) / (d * (p.invW + alpha));
+      p.gx += dx * dl * p.invW; p.gy += dy * dl * p.invW;
+    }
+  }
+}
+
+/* Floor/wall collision on predicted positions. Penetration depth beyond
+   projection stores the implied downward speed so finalize can decide
+   bounce vs rest, plus tangential friction. Walls just clamp. */
+function collidePredicted(h) {
+  const fy = World.floorY, pad = CFG.WALL_PAD;
+  for (const p of World.pts) {
+    if (!p.alive) continue;
+    if (p.gy > fy) {
+      p.impVy = (p.gy - p.y) / h; // this substep's descent speed
+      p.gy = fy;
+      p.contact = 1;
+    }
+    if (p.gx < pad) p.gx = pad;
+    else if (p.gx > World.W - pad) p.gx = World.W - pad;
+    // ceiling far above rarely matters; skip
+  }
+}
+
+/* ========================= PIECES / CUTTING =========================
+   Knife stroke arrives as polyline segments (css space). Every triangle
+   whose interior intersects a segment dies; every constraint touching
+   ONLY dead triangles dies; then connected components over surviving
+   triangles (sharing a LIVE particle) flood-fill into independent Piece
+   objects. Particles belonging to no live triangle die too (freed dust).
+   Each resulting piece keeps its own constraint subset, so halves of a
+   sliced melon simulate COMPLETELY independently afterwards. */
+
+function segVsTri(px1, py1, px2, py2, ax, ay, bx, by, cx, cy) {
+  // broad phase: bbox overlap
+  const minX = Math.min(ax, bx, cx), maxX = Math.max(ax, bx, cx);
+  const minY = Math.min(ay, by, cy), maxY = Math.max(ay, by, cy);
+  if (Math.max(px1, px2) < minX || Math.min(px1, px2) > maxX ||
+      Math.max(py1, py2) < minY || Math.min(py1, py2) > maxY) return false;
+  // any edge crossing?
+  const ec = (x1, y1, x2, y2, x3, y3, x4, y4) => {
+    const d = (x2 - x1) * (y4 - y3) - (y2 - y1) * (x4 - x3);
+    if (Math.abs(d) < 1e-12) return false;
+    const t = ((x3 - x1) * (y4 - y3) - (y3 - y1) * (x4 - x3)) / d;
+    const u = ((x3 - x1) * (y2 - y1) - (y3 - y1) * (x2 - x1)) / d;
+    return t >= 0 && t <= 1 && u >= 0 && u <= 1;
+  };
+  if (ec(px1, py1, px2, py2, ax, ay, bx, by) ||
+      ec(px1, py1, px2, py2, bx, by, cx, cy) ||
+      ec(px1, py1, px2, py2, cx, cy, ax, ay)) return true;
+  // fully inside?
+  const s = (x1, y1, x2, y2, x3, y3) =>
+    (x1 - x3) * (y2 - y3) - (x2 - x3) * (y1 - y3);
+  const d1 = s(px1, py1, ax, ay, bx, by);
+  const d2 = s(px2, py2, ax, ay, bx, by);
+  if ((d1 < 0) !== (d2 < 0)) return false; // handled by edge test anyway
+  const d3 = s(px1, py1, bx, by, cx, cy);
+  const d4 = s(px2, py2, bx, by, cx, cy);
+  const d5 = s(px1, py1, cx, cy, ax, ay);
+  const d6 = s(px2, py2, cx, cy, ax, ay);
+  const neg = (d1 < 0) || (d2 < 0) || (d3 < 0) || (d4 < 0) || (d5 < 0) || (d6 < 0);
+  const pos = (d1 > 0) || (d2 > 0) || (d3 > 0) || (d4 > 0) || (d5 > 0) || (d6 > 0);
+  return !(neg && pos);
+}
+
+/* Squared distance from point to segment (css px). */
+function distPtSeg2(px, py, x1, y1, x2, y2) {
+  const dx = x2 - x1, dy = y2 - y1;
+  const L2 = dx * dx + dy * dy;
+  let t = L2 > 1e-12 ? ((px - x1) * dx + (py - y1) * dy) / L2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  const qx = x1 + dx * t, qy = y1 + dy * t;
+  return (px - qx) * (px - qx) + (py - qy) * (py - qy);
+}
+
+/* Kerf width: triangles whose vertices lie this close to the blade die
+   too. Without this, a 1-triangle-wide cut leaves boundary particles
+   owned by live triangles on BOTH banks, welding the halves together
+   through shared particles. A particle-wide gap guarantees a split. */
+const KNIFE_GAP = 9;
+
+function applyKnifeStroke(segments) {
+  if (!segments.length) return 0;
+  const pts = World.pts, tris = World.tris;
+  const G2 = KNIFE_GAP * KNIFE_GAP;
+  let killed = 0;
+  for (const t of tris) {
+    if (t.dead) continue;
+    const a = pts[t[0]], b = pts[t[1]], c = pts[t[2]];
+    let hit = false;
+    for (const sg of segments) {
+      if (segVsTri(sg[0], sg[1], sg[2], sg[3], a.x, a.y, b.x, b.y, c.x, c.y) ||
+          distPtSeg2(a.x, a.y, sg[0], sg[1], sg[2], sg[3]) < G2 ||
+          distPtSeg2(b.x, b.y, sg[0], sg[1], sg[2], sg[3]) < G2 ||
+          distPtSeg2(c.x, c.y, sg[0], sg[1], sg[2], sg[3]) < G2) {
+        hit = true;
+        break;
+      }
+    }
+    if (hit) { t.dead = 1; killed++; }
+  }
+  if (!killed) return 0;
+  rebuildPieces();
+  return killed;
+}
+
+/* Flood-fill surviving triangles into components; a particle shared by
+   triangles of DIFFERENT components welds them (they are still one body).
+   Constraints die iff BOTH their particles belong to no live triangle
+   OR the constraint borders only dead triangles. Simpler robust rule:
+   a constraint survives iff at least one live triangle contains it. */
+function rebuildPieces() {
+  const pts = World.pts, tris = World.tris;
+  // union-find over particles via live triangles
+  const parent = new Array(pts.length).fill(-1);
+  const find = i => { while (parent[i] >= 0) i = parent[i]; return i; };
+  const uni = (a, b) => {
+    a = find(a); b = find(b);
+    if (a !== b) { parent[Math.max(a, b)] = Math.min(a, b); }
+  };
+
+  const liveTris = tris.filter(t => !t.dead);
+  for (const t of liveTris) { uni(t[0], t[1]); uni(t[1], t[2]); }
+
+  // constraints: survive iff contained in >=1 live triangle
+  const edgeOwnerAlive = new Set();
+  for (const t of liveTris) {
+    for (let k = 0; k < 3; k++) {
+      const a = t[k], b = t[(k + 1) % 3];
+      edgeOwnerAlive.add(a < b ? a * 100000 + b : b * 100000 + a);
+    }
+  }
+  for (const c of World.cons) {
+    const key = c.a < c.b ? c.a * 100000 + c.b : c.b * 100000 + c.a;
+    c.dead = edgeOwnerAlive.has(key) ? 0 : 1;
+  }
+
+  // particles with no live triangle die
+  const inLive = new Uint8Array(pts.length);
+  for (const t of liveTris) { inLive[t[0]] = 1; inLive[t[1]] = 1; inLive[t[2]] = 1; }
+  for (let i = 0; i < pts.length; i++) if (!inLive[i]) pts[i].alive = 0;
+
+  // group roots -> pieces
+  const comps = new Map(); // root -> {tris:[], ptSet:Set}
+  for (const t of liveTris) {
+    const r = find(t[0]);
+    let pc = comps.get(r);
+    if (!pc) { pc = { tris: [], ptSet: new Set() }; comps.set(r, pc); }
+    pc.tris.push(t);
+    pc.ptSet.add(t[0]); pc.ptSet.add(t[1]); pc.ptSet.add(t[2]);
+  }
+  // partition constraints by component of their (surviving) endpoints
+  for (const pc of comps.values()) pc.cons = [];
+  for (const c of World.cons) {
+    if (c.dead) continue;
+    const owner = comps.get(find(c.a));
+    if (owner) owner.cons.push(c);
+  }
+  World.pieces = [...comps.values()];
+  // seeds riding dead triangles vanish
+  World.seeds = World.seeds.filter(sd => sd.tri && !sd.tri.dead);
+}
+
+/* =============================== INPUT ==============================
+   Pointer Events only. GRAB: pointerdown attaches nearby particles
+   (within GRAB_RADIUS, nearest first, capped count) as compliant
+   spring targets; move updates the target; up detaches -> drop.
+   PINCH: a second concurrent grab pointer pulls its own region, so
+   pressing from two sides squeezes/stretches the jelly between them.
+   KNIFE: move samples the blade line; short segments accumulate and
+   are flushed to applyKnifeStroke periodically (cheap + responsive). */
+
+const GRAB_RADIUS = 90;
+const GRAB_MAX_PTS = 26;
+const knifeSegsAccum = [];   // pending segments for interim flushes
+const knifeStrokeAll = [];   // the ENTIRE stroke, reapplied on release
+
+function pickPieceAt(x, y) {
+  // topmost piece whose AABB contains the point (pieces drawn in order)
+  for (let i = World.pieces.length - 1; i >= 0; i--) {
+    const pc = World.pieces[i];
+    let minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
+    for (const pi of pc.ptSet) {
+      const p = World.pts[pi];
+      if (!p.alive) continue;
+      if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+    }
+    if (x >= minX && x <= maxX && y >= minY && y <= maxY) return pc;
+  }
+  return null;
+}
+
+function beginGrab(id, x, y) {
+  const pc = pickPieceAt(x, y);
+  if (!pc) return false;
+  // nearest live particles of that piece within radius
+  const cand = [];
+  for (const pi of pc.ptSet) {
+    const p = World.pts[pi];
+    if (!p.alive) continue;
+    const d = Math.hypot(p.x - x, p.y - y);
+    if (d < GRAB_RADIUS) cand.push([d, pi]);
+  }
+  if (!cand.length) return false;
+  cand.sort((a, b) => a[0] - b[0]);
+  const indices = cand.slice(0, GRAB_MAX_PTS).map(c => c[1]);
+  World.grabbedBy[id] = { indices, target: { x, y }, piece: pc };
+  return true;
+}
+
+function endGrab(id) { delete World.grabbedBy[id]; }
+
+function flushKnife() {
+  if (!knifeSegsAccum.length) return;
+  const segs = knifeSegsAccum.splice(0, knifeSegsAccum.length);
+  applyKnifeStroke(segs);
+}
+
+function onDown(e) {
+  const x = e.clientX, y = e.clientY;
+  if (World.tool === "knife") {
+    World.knifeTrail.length = 0;
+    knifeStrokeAll.length = 0;              // full stroke accumulates fresh
+    World.knifeTrail.push({ x, y, t: performance.now() });
+    World._knifing = true;
+    return;
+  }
+  // grab tool (also serves pinch when a second pointer joins)
+  if (beginGrab(e.pointerId, x, y)) {
+    World._knifing = false;
+    canvasEl.setPointerCapture?.(e.pointerId);
+  }
+}
+
+function onMove(e) {
+  const x = e.clientX, y = e.clientY;
+  if (World._knifing && World.tool === "knife") {
+    const prev = World.knifeTrail[World.knifeTrail.length - 1];
+    if (prev) {
+      const d = Math.hypot(x - prev.x, y - prev.y);
+      if (d > 3) {
+        const seg = [prev.x, prev.y, x, y];
+        knifeSegsAccum.push(seg);
+        knifeStrokeAll.push(seg);           // remember for the full re-apply
+        World.knifeTrail.push({ x, y, t: performance.now() });
+        if (knifeSegsAccum.length >= 4) flushKnife();
+      }
+    }
+    return;
+  }
+  const gr = World.grabbedBy[e.pointerId];
+  if (gr) { gr.target.x = x; gr.target.y = y; }
+}
+
+function onUp(e) {
+  if (World._knifing) {
+    flushKnife();
+    // Re-apply the WHOLE stroke at release: interim flushes cut a moving
+    // melon and can leave thin bridges; one atomic polyline kills cleanly.
+    if (knifeStrokeAll.length) applyKnifeStroke(knifeStrokeAll.splice(0));
+    World._knifing = false;
+  }
+  endGrab(e.pointerId);
+}
+
+/* ============================= RENDERING ============================
+   Canvas 2D, DPR-aware (backing store scaled, all drawing in css px).
+   Per piece: soft elliptical floor shadow from its bbox footprint ->
+   translucent flesh fill (current color) -> white pith band along the
+   rind rim -> dark green rind stroke -> seeds (barycentric riders) ->
+   radial specular highlight -> knife trail overlay. */
+
+const canvasEl = document.getElementById("stage");
+const ctx = canvasEl.getContext("2d");
+
+function fitCanvas() {
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  canvasEl.width = Math.round(innerWidth * dpr);
+  canvasEl.height = Math.round(innerHeight * dpr);
+  canvasEl.style.width = innerWidth + "px";
+  canvasEl.style.height = innerHeight + "px";
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+function shade(hex, mul) {
+  // multiply rgb by mul (clamped) — cheap procedural shading
+  const n = parseInt(hex.slice(1), 16);
+  let r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  r = Math.max(0, Math.min(255, Math.round(r * mul)));
+  g = Math.max(0, Math.min(255, Math.round(g * mul)));
+  b = Math.max(0, Math.min(255, Math.round(b * mul)));
+  return `rgb(${r},${g},${b})`;
+}
+
+function drawScene(now) {
+  const W = World.W, H = World.H;
+  // background: subtle vignette gradient (procedural, cached)
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, "#16211a");
+  bg.addColorStop(1, "#0b1210");
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // floor slab
+  ctx.fillStyle = "#141d16";
+  ctx.fillRect(0, World.floorY, W, H - World.floorY);
+  ctx.strokeStyle = "rgba(160,210,150,0.25)";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(0, World.floorY + 0.5);
+  ctx.lineTo(W, World.floorY + 0.5);
+  ctx.stroke();
+
+  // shadows first (under everything)
+  for (const pc of World.pieces) drawShadow(pc);
+
+  // pieces
+  for (const pc of World.pieces) drawPiece(pc);
+
+  drawSeeds();
+  drawSpecularPerPiece();
+  drawKnifeTrail(now);
+}
+
+function drawShadow(pc) {
+  let minX = 1e9, maxX = -1e9, hi = -1e9, lo = 1e9;
+  for (const pi of pc.ptSet) {
+    const p = World.pts[pi];
+    if (!p.alive) continue;
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < lo) lo = p.y;
+    if (p.y > hi) hi = p.y;
+  }
+  if (minX > maxX) return;
+  const cx = (minX + maxX) / 2;
+  const rx = Math.max((maxX - minX) / 2, 6) * 1.06;
+  const lift = Math.max(0, World.floorY - hi);      // hover height
+  const spread = 1 + Math.min(lift / 320, 0.9);
+  const alpha = 0.38 * Math.max(0.25, 1 - lift / 520);
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = "#000";
+  ctx.beginPath();
+  ctx.ellipse(cx, World.floorY + 8, rx * spread, 12 * spread, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function pieceOutline(pc) {
+  // walk hull of live particles: simply trace rind particles in angle
+  // order around centroid; fall back to convex hull for fragments.
+  const pts = World.pts;
+  const live = [...pc.ptSet].filter(i => pts[i].alive);
+  if (!live.length) return null;
+  let cx = 0, cy = 0;
+  for (const i of live) { cx += pts[i].x; cy += pts[i].y; }
+  cx /= live.length; cy /= live.length;
+  const rindPts = live.filter(i => pts[i].rind);
+  let ring = rindPts.length >= 3 ? rindPts : live;
+  ring = ring.slice().sort((ia, ib) =>
+    Math.atan2(pts[ia].y - cy, pts[ia].x - cx) - Math.atan2(pts[ib].y - cy, pts[ib].x - cx));
+  return { ring, cx, cy };
+}
+
+function drawPiece(pc) {
+  const ol = pieceOutline(pc);
+  if (!ol) return;
+  const pts = World.pts;
+  const col = World.fleshColor;
+
+  // --- flesh blob (slightly inflated for smooth silhouette) ---
+  ctx.save();
+  ctx.globalAlpha = 0.93;
+  ctx.beginPath();
+  const infl = 3;
+  for (let k = 0; k < ol.ring.length; k++) {
+    const p = pts[ol.ring[k]];
+    const nx = p.x + (p.x - ol.cx) / (Math.hypot(p.x - ol.cx, p.y - ol.cy) || 1) * infl;
+    const ny = p.y + (p.y - ol.cy) / (Math.hypot(p.x - ol.cx, p.y - ol.cy) || 1) * infl;
+    if (k === 0) ctx.moveTo(nx, ny); else ctx.lineTo(nx, ny);
+  }
+  ctx.closePath();
+  // flesh gradient: brighter top-left, deeper bottom-right
+  const fg = ctx.createRadialGradient(
+    ol.cx - 40, ol.cy - 60, 8, ol.cx, ol.cy, 230);
+  fg.addColorStop(0, shade(col, 1.25));
+  fg.addColorStop(0.65, col);
+  fg.addColorStop(1, shade(col, 0.72));
+  ctx.fillStyle = fg;
+  ctx.fill();
+
+  // --- white pith band just inside the rim ---
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = "rgba(245,250,235,0.9)";
+  ctx.lineWidth = 9;
+  ctx.stroke();
+  // --- dark green rind on the very rim ---
+  ctx.strokeStyle = "#1d4d20";
+  ctx.lineWidth = 4.5;
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawSeeds() {
+  const pts = World.pts;
+  for (const sd of World.seeds) {
+    const t = sd.tri;
+    if (t.dead) continue;
+    const a = pts[t[0]], b = pts[t[1]], c = pts[t[2]];
+    const w = 1 - sd.u - sd.v;
+    const x = a.x * w + b.x * sd.u + c.x * sd.v;
+    const y = a.y * w + b.y * sd.u + c.y * sd.v;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(sd.ang);
+    ctx.fillStyle = "#20150b";
+    ctx.beginPath();
+    ctx.ellipse(0, 0, sd.sz, sd.sz * 0.62, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "rgba(255,240,215,0.35)";
+    ctx.beginPath();
+    ctx.ellipse(-sd.sz * 0.25, -sd.sz * 0.15, sd.sz * 0.32, sd.sz * 0.2, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+/* Glossy specular: elongated soft highlight near each piece's upper-
+   left quadrant, clipped to the piece silhouette so it never bleeds. */
+function drawSpecularPerPiece() {
+  for (const pc of World.pieces) {
+    const ol = pieceOutline(pc);
+    if (!ol || ol.ring.length < 3) continue;
+    const pts = World.pts;
+    ctx.save();
+    ctx.beginPath();
+    for (let k = 0; k < ol.ring.length; k++) {
+      const p = pts[ol.ring[k]];
+      if (k === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+    }
+    ctx.closePath();
+    ctx.clip();
+    const hx = ol.cx - 42, hy = ol.cy - 52;
+    const g = ctx.createRadialGradient(hx, hy, 2, hx, hy, 74);
+    g.addColorStop(0, "rgba(255,255,255,0.34)");
+    g.addColorStop(0.5, "rgba(255,255,255,0.10)");
+    g.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.ellipse(hx, hy, 74, 46, -0.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+/* Slash visual: fading polyline of recent knife samples. */
+function drawKnifeTrail(now) {
+  const tr = World.knifeTrail;
+  while (tr.length && now - tr[0].t > 450) tr.shift();
+  if (tr.length < 2) return;
+  ctx.save();
+  ctx.lineCap = "round";
+  for (let k = 1; k < tr.length; k++) {
+    const a = tr[k - 1], b = tr[k];
+    const age = (now - b.t) / 450;
+    ctx.strokeStyle = `rgba(255,255,255,${(1 - age) * 0.8})`;
+    ctx.lineWidth = (1 - age) * 5 + 1;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/* ============================ UI / LIFECYCLE ========================
+   Toolbar buttons, swatch rack, params panel bindings, FPS meter,
+   DPR-aware resize, RAF render loop. No external anything. */
+
+const el = id => document.getElementById(id);
+const btnGrab = el("btnGrab"), btnKnife = el("btnKnife"),
+      btnColor = el("btnColor"), btnReset = el("btnReset"),
+      btnFps = el("btnFps");
+
+function setTool(t) {
+  World.tool = t;
+  btnGrab.classList.toggle("on", t === "grab");
+  btnKnife.classList.toggle("on", t === "knife");
+  canvasEl.style.cursor = t === "knife" ? "crosshair" : "grab";
+}
+
+btnGrab.addEventListener("click", () => setTool("grab"));
+btnKnife.addEventListener("click", () => setTool("knife"));
+
+const swatchBar = el("swatches");
+let swatchBtns = [];
+function buildSwatches() {
+  swatchBar.innerHTML = "";
+  swatchBtns = [];
+  CFG.PALETTE.forEach((hex, i) => {
+    const b = document.createElement("button");
+    b.className = "swatch" + (i === 0 ? " sel" : "");
+    b.style.background = hex;
+    b.title = hex;
+    b.addEventListener("click", () => setColor(hex, b));
+    swatchBar.appendChild(b);
+    swatchBtns.push(b);
+  });
+  const inp = document.createElement("input");
+  inp.type = "color";
+  inp.id = "customColor";
+  inp.value = "#ff5470";
+  inp.title = "Custom color";
+  inp.addEventListener("input", () => setColor(inp.value, null));
+  swatchBar.appendChild(inp);
+}
+function setColor(hex, btn) {
+  World.fleshColor = hex;
+  swatchBtns.forEach(b => b.classList.remove("sel"));
+  if (btn) btn.classList.add("sel");
+}
+
+btnColor.addEventListener("click", () => {
+  swatchBar.classList.toggle("show");
+});
+btnReset.addEventListener("click", () => {
+  initWorld();
+  hideHintSoon();
+});
+
+let fpsVisible = false, fpsFrames = 0, fpsLast = performance.now();
+btnFps.addEventListener("click", () => {
+  fpsVisible = !fpsVisible;
+  el("fps").style.display = fpsVisible ? "block" : "none";
+});
+
+/* --- params panel: ranges write straight into CFG live; compliance
+   sliders also retrofit existing constraints (comp is baked at build) --- */
+function refreshConstraintCompliance() {
+  for (const c of World.cons) {
+    if (c.dead) continue;
+    c.comp = (World.pts[c.a].rind || World.pts[c.b].rind)
+      ? CFG.COMPLIANCE_RIND : CFG.COMPLIANCE_FLESH;
+  }
+}
+function bindRange(id, valId, obj, key, fmt, onchange) {
+  const r = el(id), v = el(valId);
+  r.value = obj[key];
+  v.textContent = fmt(obj[key]);
+  r.addEventListener("input", () => {
+    obj[key] = parseFloat(r.value);
+    v.textContent = fmt(obj[key]);
+    if (onchange) onchange();
+  });
+}
+bindRange("rRind", "vRind", CFG, "COMPLIANCE_RIND",
+  x => x.toExponential(1), refreshConstraintCompliance);
+bindRange("rFlesh", "vFlesh", CFG, "COMPLIANCE_FLESH",
+  x => x.toExponential(1), refreshConstraintCompliance);
+bindRange("rDamp", "vDamp", CFG, "DAMPING_K", x => x.toFixed(2));
+bindRange("rGrav", "vGrav", CFG, "GRAVITY", x => String(Math.round(x)));
+bindRange("rBounce", "vBounce", CFG, "BOUNCE", x => x.toFixed(2));
+
+/* --- pointer plumbing --- */
+canvasEl.addEventListener("pointerdown", onDown);
+canvasEl.addEventListener("pointermove", onMove);
+window.addEventListener("pointerup", onUp);
+window.addEventListener("pointercancel", onUp);
+
+addEventListener("resize", () => {
+  fitCanvas();
+  World.W = innerWidth; World.H = innerHeight;
+  World.floorY = World.H - 36;
+});
+
+/* --- hint fade --- */
+let hintHidden = false;
+function hideHintSoon() {
+  if (hintHidden) return;
+  setTimeout(() => { el("hint").style.opacity = "0"; }, 3500);
+}
+
+/* --- main loop: fixed-timestep physics + render every RAF --- */
+let lastT = performance.now();
+function frameLoop(now) {
+  const dt = (now - lastT) / 1000;
+  lastT = now;
+  physTick(dt);
+  drawScene(now);
+  // FPS meter
+  fpsFrames++;
+  if (now - fpsLast >= 500) {
+    const fps = Math.round(fpsFrames * 1000 / (now - fpsLast));
+    if (fpsVisible) el("fps").textContent = fps + " fps";
+    fpsFrames = 0; fpsLast = now;
+  }
+  requestAnimationFrame(frameLoop);
+}
+
+fitCanvas();
+buildSwatches();
+initWorld();
+hideHintSoon();
+requestAnimationFrame(frameLoop);
+</script>
+</body>
+</html>
