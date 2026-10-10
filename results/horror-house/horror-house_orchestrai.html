@@ -187,6 +187,7 @@ const G={
   clock:new THREE.Clock(),
   startTime:0,survivalTime:0,banishes:0,
   keysFound:0,keysTotal:3,
+  deaths:0,caughtCount:0,lastKeyRoom:"",
   pointerLocked:false,
   paused:false,
 };
@@ -367,6 +368,52 @@ Tex.__more=null;
     const tx=new THREE.CanvasTexture(cv);
     tx.colorSpace=THREE.SRGBColorSpace;
     return tx;
+  };
+
+  // --- jumpscare face (procedural screaming visage) --------------
+  Tex.scareFaceDataURL=()=>{
+    const cv=document.createElement("canvas");
+    cv.width=768;cv.height=768;
+    const ctx=cv.getContext("2d");
+    ctx.fillStyle="#000";ctx.fillRect(0,0,768,768);
+    // pale gaunt head emerging from darkness
+    const hg=ctx.createRadialGradient(384,340,60,384,360,380);
+    hg.addColorStop(0,"#cfc8bd");hg.addColorStop(.75,"#6d675e");
+    hg.addColorStop(1,"#000");
+    ctx.fillStyle=hg;
+    ctx.beginPath();ctx.ellipse(384,360,230,290,0,0,7);ctx.fill();
+    // hollow eye pits
+    ctx.fillStyle="#050403";
+    ctx.beginPath();ctx.ellipse(300,320,52,64,0,0,7);ctx.fill();
+    ctx.beginPath();ctx.ellipse(468,320,52,64,0,0,7);ctx.fill();
+    // pinpoint glowing pupils
+    ctx.fillStyle="#ffe9b0";
+    ctx.beginPath();ctx.arc(300,328,9,0,7);ctx.fill();
+    ctx.beginPath();ctx.arc(468,328,9,0,7);ctx.fill();
+    // gaping mouth
+    ctx.fillStyle="#0a0503";
+    ctx.beginPath();ctx.ellipse(384,540,74,110,0,0,7);ctx.fill();
+    // teeth rim
+    ctx.fillStyle="#b8ae9c";
+    for(let i=0;i<9;i++)
+      ctx.fillRect(310+i*17,436,10,rand(10,22));
+    for(let i=0;i<9;i++)
+      ctx.fillRect(310+i*17,640-rand(10,22),10,rand(10,22));
+    // cracks / veins
+    ctx.strokeStyle="rgba(60,20,20,.5)";
+    for(let i=0;i<26;i++){
+      ctx.lineWidth=rand(.5,2);
+      ctx.beginPath();
+      let vx=rand(160,608),vy=rand(120,600);
+      ctx.moveTo(vx,vy);
+      for(let s=0;s<5;s++){vx+=rand(-30,30);vy+=rand(-30,30);ctx.lineTo(vx,vy);}
+      ctx.stroke();
+    }
+    // vignette
+    const vg=ctx.createRadialGradient(384,384,280,384,384,560);
+    vg.addColorStop(0,"rgba(0,0,0,0)");vg.addColorStop(1,"rgba(0,0,0,.95)");
+    ctx.fillStyle=vg;ctx.fillRect(0,0,768,768);
+    return cv.toDataURL("image/png");
   };
 
   // --- cobweb alpha texture (corner fan) ---
@@ -950,6 +997,7 @@ function handleInteract(){
     if(it&&!it.taken){
       it.taken=true;G.scene.remove(it.mesh);
       G.keysFound++;
+      P.lastKeyRoom=it.mesh.userData.room||"";
       HUD.updateKeys();
       Audio.pickup();
       subtitle("A brass key. "+(3-G.keysFound)+" remain.");
@@ -1184,13 +1232,14 @@ Audio.win=function(){
 };
 
 // continuous controllers ------------------------------------------
+const fin=(v,alt=0)=>Number.isFinite(v)?v:alt; // audio params must never see NaN/Inf
 Audio.setHeart=function(v){ // 0..1 intensity
   if(!this.ready)return;
-  this.heartGain.gain.setTargetAtTime(v*.5,this.ctx.currentTime,.4);
+  this.heartGain.gain.setTargetAtTime(fin(v)*.5,this.ctx.currentTime,.4);
 };
 Audio.setProximity=function(v){
   if(!this.ready)return;
-  this.proxGain.gain.setTargetAtTime(v*.35,this.ctx.currentTime,.3);
+  this.proxGain.gain.setTargetAtTime(fin(v)*.35,this.ctx.currentTime,.3);
 };
 Audio.setChase=function(on){
   if(!this.ready)return;
@@ -1207,6 +1256,193 @@ Audio.tickHeartbeat=function(rate){ // called from loop; rate Hz
       setTimeout(()=>this.blip({freq:52,type:"sine",dur:.12,gain:.6,
         freqEnd:38,dest:this.heartGain}),150);
     }
+  }
+};
+
+// §6 THE GHOST ====================================================
+// Stalker entity: dormant until the first key is taken, then manifests
+// harder per key (apparitions → stalking → full chase). Contact kills.
+const Ghost={
+  active:false,stalking:false,chasing:false,
+  group:null,eyeMatL:null,eyeMatR:null,
+  pos:new THREE.Vector3(),
+  speed:1.5,
+  visibility:0,visTarget:0,
+  regroupT:0,           // >0 = despawned, waiting to reform
+  contactCd:0,          // grace after respawn so it can't insta-touch
+  footstepT:0,
+  spawned:false,
+};
+Ghost.build=function(){
+  if(this.group)return;
+  const g=new THREE.Group();
+  // tattered shroud: cone sheets, slightly irregular
+  const sheetMat=new THREE.MeshStandardMaterial({
+    color:0x8a8f98,roughness:1,transparent:true,opacity:0});
+  const body=new THREE.Mesh(new THREE.ConeGeometry(.42,1.7,10,3,true),
+    sheetMat);
+  body.position.y=.85;g.add(body);
+  const hood=new THREE.Mesh(new THREE.SphereGeometry(.24,10,8),sheetMat);
+  hood.position.y=1.62;hood.scale.set(1,.9,1);g.add(hood);
+  // ragged hem strips
+  for(let i=0;i<7;i++){
+    const r=new THREE.Mesh(new THREE.ConeGeometry(.09,rand(.3,.6),5),sheetMat);
+    const a=i/7*Math.PI*2;
+    r.position.set(Math.cos(a)*.36,.28,Math.sin(a)*.36);
+    g.add(r);
+  }
+  // eyes: emissive spheres on black sockets
+  const sockMat=new THREE.MeshBasicMaterial({color:0x000000});
+  [[-.09],[.09]].forEach(off=>{
+    const socket=new THREE.Mesh(
+      new THREE.SphereGeometry(.075,8,8),sockMat);
+    socket.position.set(off[0],1.63,.185);g.add(socket);
+  });
+  this.eyeMatL=new THREE.MeshBasicMaterial({color:0xffefbf});
+  this.eyeMatR=new THREE.MeshBasicMaterial({color:0xffefbf});
+  const eL=new THREE.Mesh(new THREE.SphereGeometry(.045,8,8),this.eyeMatL);
+  eL.position.set(-.09,1.63,.245);g.add(eL);
+  const eR=new THREE.Mesh(new THREE.SphereGeometry(.045,8,8),this.eyeMatR);
+  eR.position.set(.09,1.63,.245);g.add(eR);
+  // faint cold aura light
+  const glow=new THREE.PointLight(0x9fd8ff,.0,4,2);
+  glow.position.y=1.2;g.add(glow);
+  this.glowLight=glow;
+  g.visible=false;
+  this.group=g;
+  G.scene.add(g);
+};
+Ghost.show=function(x,z){
+  this.build();
+  this.active=true;this.spawned=true;
+  this.pos.set(x,0,z);
+  this.group.position.set(x,0,z);
+  this.group.visible=true;
+  this.visTarget=.85;
+  this.contactCd=.8;
+};
+Ghost.hide=function(regroupSec){
+  this.active=false;this.stalking=false;this.chasing=false;
+  this.visibility=0;this.visTarget=0;
+  this.regroupT=regroupSec||0;
+  if(this.group)this.group.visible=false;
+};
+Ghost.apparitionAt=function(x,z,dur){
+  // brief manifestation that fades away — pure dread beat
+  this.show(x,z);
+  this.stalking=false;
+  const gm=this.group;
+  setTimeout(()=>{
+    if(!this.chasing)this.hide(0);
+  },(dur||1.2)*1000);
+};
+Ghost.beginStalking=function(){
+  // appear at a far corner and roam slowly toward the player
+  const corners=[[9.2,-7.2],[-9.2,-7.2],[9.2,7.2]];
+  const c=corners[Math.floor(Math.random()*corners.length)];
+  this.show(c[0],c[1]);
+  this.stalking=true;this.chasing=false;
+  this.speed=1.5;
+  Audio.setProximity(.3);
+};
+Ghost.beginChase=function(){
+  if(!this.active)this.beginStalking();
+  this.chasing=true;this.stalking=false;
+  this.speed=2.9;                 // slower than sprint (4.4), faster than walk
+  this.regroupT=0;
+  Audio.setChase(true);
+};
+Ghost.distToPlayer=function(){
+  return Math.hypot(P.pos.x-this.pos.x,P.pos.z-this.pos.z);
+};
+Ghost.moveTowards=function(tx,tz,dt,jitter){
+  const dx=tx-this.pos.x,dz=tz-this.pos.z;
+  const dist=Math.hypot(dx,dz)||1;
+  let mx=dx/dist*this.speed*dt;
+  let mz=dz/dist*this.speed*dt;
+  if(jitter){                     // eerie sideways drift while stalking
+    const wob=Math.sin(performance.now()/900+jitter)*(dist>3?.45:0);
+    mx+=-dz/dist*wob*dt; mz+=dx/dist*wob*dt;
+  }
+  // crude slide-along-wall collision (reuse player resolver, bigger radius)
+  const nx=this.pos.x+mx,nz=this.pos.z+mz;
+  this.pos.x=resolveAxis(nx,this.pos.z,.38,true);
+  this.pos.z=resolveAxis(this.pos.x,nz,.38,false);
+};
+Ghost.teleportNear=function(minD,maxD){
+  // relocate to a random walkable point at distance minD..maxD
+  for(let tries=0;tries<40;tries++){
+    const x=rand(-9.2,9.2),z=rand(-7.2,7.2);
+    const d=Math.hypot(x-P.pos.x,z-P.pos.z);
+    if(d>=minD&&d<=maxD){
+      // reject points buried inside furniture AABBs
+      let bad=false;
+      for(const b of WORLD.colliders){
+        if(b.furn&&Math.abs(x-b.x)<b.w/2+.4&&Math.abs(z-b.z)<b.d/2+.4)
+          {bad=true;break;}
+      }
+      if(!bad){this.pos.set(x,0,z);return true;}
+    }
+  }
+  return false;
+};
+Ghost.update=function(dt){
+  if(this.regroupT>0){
+    this.regroupT-=dt;
+    if(this.regroupT<=0&&G.keysFound>0){
+      // reform: hunt resumes after the grace period
+      this.beginStalking();
+      if(Scares.fired["s7_chase"])this.chasing=true;
+    }
+    return;
+  }
+  if(!this.active)return;
+  this.contactCd=Math.max(0,this.contactCd-dt);
+
+  // face the player
+  if(this.group){
+    const ang=Math.atan2(P.pos.x-this.pos.x,P.pos.z-this.pos.z);
+    this.group.rotation.y=ang;
+  }
+
+  if(this.chasing){
+    this.moveTowards(P.pos.x,P.pos.z,dt,0);
+    // heavy pursuit footsteps
+    this.footstepT-=dt;
+    if(this.footstepT<=0){
+      this.footstepT=.34;
+      const pan=clamp((this.pos.x-P.pos.x)/6,-1,1);
+      Audio.blip({freq:60,type:"sine",dur:.09,gain:.25,freqEnd:35,pan});
+    }
+  }else if(this.stalking){
+    // lurk: hold 4-7 units away, reposition when player gets close
+    const d=this.distToPlayer();
+    if(d<3.4){
+      this.moveTowards(this.pos.x-(P.pos.x-this.pos.x),
+        this.pos.z-(P.pos.z-this.pos.z),dt,0);
+      if(d<2.6)this.hide(rand(6,10));   // melts away, reforms later
+    }else{
+      this.moveTowards(P.pos.x,P.pos.z,dt,2.1);
+    }
+  }
+
+  // fade visibility toward target
+  this.visibility+=(this.visTarget-this.visibility)*Math.min(1,dt*3);
+  if(this.group){
+    this.group.traverse(o=>{
+      if(o.material&&o.material.transparent)
+        o.material.opacity=this.visibility*.85;
+    });
+    this.glowLight.intensity=this.visibility*.55+
+      (this.chasing?.35:0)+(Math.random()-.5)*.08;
+    // hover bob
+    this.group.position.set(this.pos.x,
+      Math.sin(performance.now()/430)*.06,this.pos.z);
+  }
+
+  // CONTACT = DEATH
+  if(this.contactCd<=0&&this.distToPlayer()<.62){
+    killPlayer();
   }
 };
 
@@ -1372,6 +1608,185 @@ function subtitle(txt){
   el("subtitle").textContent=txt;
   HUD.subT=4;
 }
+
+// §9 STATES, WIN / DEATH FLOWS =====================================
+function fmtTime(sec){
+  sec=Math.max(0,Math.floor(sec));
+  return Math.floor(sec/60)+"m "+String(sec%60).padStart(2,"0")+"s";
+}
+function startGame(){
+  G.startTime=performance.now()/1000;
+  G.state=GS.PLAYING;
+  el("titleScreen").classList.add("hidden");
+  el("hud").classList.remove("hidden");
+  HUD.updateKeys();HUD.updateBattery();
+  Audio.init();Audio.resume();
+  requestLook(true);
+}
+function winGame(){
+  if(G.state===GS.ESCAPED)return;
+  G.survivalTime=performance.now()/1000-G.startTime;
+  G.state=GS.ESCAPED;
+  Ghost.hide(9999);
+  Audio.setChase(false);Audio.setProximity(0);Audio.setHeart(0);
+  Audio.win();
+  el("winStats").textContent=
+    "Escaped in "+fmtTime(G.survivalTime)+" · "+
+    (G.keysFound+"/"+G.keysTotal)+" keys · deaths: "+G.deaths;
+  el("winScreen").classList.remove("hidden");
+  el("hud").classList.add("hidden");
+  if(document.exitPointerLock)try{document.exitPointerLock();}catch(e){}
+}
+function killPlayer(){
+  if(G.state!==GS.PLAYING)return;
+  G.survivalTime=performance.now()/1000-G.startTime;
+  G.caughtCount++;G.deaths++;
+  G.state=GS.CAUGHT;
+  Ghost.hide(9999);
+  Audio.setChase(false);Audio.setProximity(0);Audio.setHeart(0);
+  // jumpscare: fullscreen face flash, then death screen
+  jumpscareFX(()=>{
+    Audio.death();
+    el("deathStats").textContent=
+      "Survived "+fmtTime(G.survivalTime)+" · "+
+      G.keysFound+"/3 keys recovered";
+    el("deathScreen").classList.remove("hidden");
+    el("hud").classList.add("hidden");
+  });
+}
+function jumpscareFX(done){
+  const fx=el("jumpscareFace"),img=el("scareImg");
+  if(!img.src){
+    img.src=Tex.scareFaceDataURL();
+  }
+  fx.style.display="block";
+  Audio.stinger();Audio.scream();
+  P.shake=1.6;
+  setTimeout(()=>{fx.style.display="none";done&&done();},850);
+}
+function resetToTitle(){
+  location.reload();   // simplest correct reset: rebuild deterministic-enough world
+}
+
+// §10 MAIN LOOP ===================================================
+let _rafId=null;
+function frame(){
+  _rafId=requestAnimationFrame(frame);
+  const dt=Math.min(G.clock.getDelta(),.05);
+  if(G.state===GS.PLAYING){
+    // --- gameplay ---
+    collideMove(dt);
+    updateHover();
+    Scares.update(dt);
+    Ghost.update(dt);
+    // torch battery drain (torch is life)
+    if(P.torchOn){
+      P.battery=Math.max(0,P.battery-P.batteryDrain*dt);
+      HUD.updateBattery();
+      if(P.battery<=0)P.torchOn=false;
+    }
+    P.torch.intensity=P.torchOn
+      ?26*(P.battery<.15?rand(.55,1):(P.blackout?0:1))
+      :0;
+
+    // --- atmosphere ---
+    updateAtmosphere(dt,G.clock.elapsedTime);
+
+    // --- ghost proximity feedback: heartbeat + breathing ---
+    let prox=0;
+    if(Ghost.active){
+      prox=clamp(1-Ghost.distToPlayer()/9,0,1);
+    }
+    Audio.setProximity(prox*.8);
+    Audio.setHeart(prox>0?clamp(.25+prox*.75,0,1):0);
+    Audio.tickHeartbeat(prox>0?prox*2.6+.4:0);
+  }else if(G.state===GS.NOTE){
+    updateAtmosphere(dt,G.clock.elapsedTime);
+  }else{
+    // TITLE / CAUGHT / ESCAPED: idle drift so scene still breathes
+    updateAtmosphere(dt,G.clock.elapsedTime);
+  }
+
+  // door swing tween (always animates, cheap)
+  for(const k in WORLD.doors){
+    const d=WORLD.doors[k];
+    d.angle+=(d.targetAngle-d.angle)*Math.min(1,dt*4.5);
+    d.group.rotation.y=d.angle;
+  }
+  G.renderer.render(G.scene,G.camera);
+}
+
+function updateAtmosphere(dt,t){
+  // candle flames: sprite scale jitter + light flicker
+  WORLD.flames.forEach(fl=>{
+    const jig=.8+Math.sin(t*13+fl.seed)*.14+Math.random()*.12;
+    fl.sprite.scale.set(.14*jig,.2*jig,1);
+    fl.light.intensity=.55*jig;
+  });
+  // bulbs: brownian flicker; extra chaos while HUD.flickerT active
+  if(HUD.flickerT>0)HUD.flickerT-=dt;
+  WORLD.bulbs.forEach(b=>{
+    let base=b.base;
+    if(HUD.flickerT>0)base*=Math.random()<.5?rand(0,.5):rand(.7,1.3);
+    b.light.intensity=base*(0.82+Math.sin(t*7+b.seed)*.1+Math.random()*.08);
+  });
+  // fog pulse: slow inhale/exhale, denser when chased
+  const chased=Ghost.chasing?1:0;
+  const targetDensity=.11+Math.sin(t*.5)*.012+chased*.05;
+  G.scene.fog.density+=(targetDensity-G.scene.fog.density)*Math.min(1,dt*2);
+  // subtitle decay
+  if(HUD.subT>0){
+    HUD.subT-=dt;
+    if(HUD.subT<=0)el("subtitle").textContent="";
+  }
+}
+
+// ---- boot -------------------------------------------------------
+function boot(){
+  initRendererWorld();
+  initInput();
+  Ghost.build();
+  frame();
+  // expose debug/test hooks
+  window.__HH__={
+    G,GS,P,World:WORLD,Ghost,Scares,HUD,Audio,
+    start:startGame,
+    giveKey(n){
+      let got=0;
+      WORLD.items.forEach(it=>{
+        if(it.kind==="key"&&!it.taken&&got<(n||1)){
+          it.taken=true;G.scene.remove(it.mesh);
+          G.keysFound++;got++;
+          P.lastKeyRoom=it.mesh.userData.room;
+          HUD.updateKeys();Scares.onKeyTaken();
+        }
+      });
+      return G.keysFound;
+    },
+    teleport(x,z,yaw){
+      P.pos.set(x,0,z);if(yaw!=null)P.yaw=yaw;
+      G.camera.position.set(x,P.eyeH,z);
+    },
+    keysInfo(){
+      return WORLD.items.filter(i=>i.kind==="key")
+        .map(i=>({pos:i.pos,room:i.mesh.userData.room,taken:i.taken}));
+    },
+    frontDoor(){return WORLD.doors.front;},
+    // Drives the real escape path headlessly: teleports the player to the
+    // front door, grants the 3 keys, sets hover state exactly as the
+    // raycaster would, and presses E (handleInteract).
+    simulateEscape(){
+      const d=WORLD.doors.front;
+      P.pos.set(d.x-1.2,0,d.z);
+      G.keysFound=3;
+      P.hoverKind="door";P.doorHit="front";P.hoverTarget=d.pivot||d.group||null;
+      handleInteract();
+      P.hoverKind=null;P.doorHit=null;P.hoverTarget=null;
+    },
+    version:"CP4",
+  };
+}
+boot();
 
 </script>
 </body>
