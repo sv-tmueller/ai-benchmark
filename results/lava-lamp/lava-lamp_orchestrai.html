@@ -1,0 +1,937 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lava Lamp</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #14100d;
+  }
+  #lamp-stage {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: #14100d;
+  }
+</style>
+</head>
+<body>
+<canvas id="lamp-stage"></canvas>
+<script>
+"use strict";
+/* ============================================================
+   Lava Lamp — hand-written WebGL ray-marched scene.
+   Fully self-contained: no external resources, no fonts,
+   no textures, no libraries. Everything below is authored
+   specifically for this artifact.
+   ============================================================ */
+
+var CONFIG = {
+  HEAT: 0.65,                 // fixed operating heat
+  PALETTE_INDEX: 0,           // Ember
+  SIM_RATE: 120,              // fixed sim substeps per second
+  FRAME_RATE: 60,             // canonical frames for the replay clock
+  DT: 1.0 / 120.0,            // fixed timestep (seconds)
+  MAX_STEPS_PER_FRAME: 8,     // accumulator clamp (spiral-of-death guard)
+  BLOB_COUNT: 9,
+  FIELD_THRESHOLD: 1.0,      // metaball iso-level
+  COMPOSE_FRACTION: 0.78,     // lamp fits inside central 78% (< 80% rule)
+};
+
+/* ---------- deterministic RNG (mulberry32) ---------- */
+function Mulberry32(seed) {
+  var a = seed >>> 0;
+  return function () {
+    a |= 0;
+    a = (a + 0x6D2B79F5) | 0;
+    var t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/* ---------- Ember palette ---------- */
+var PALETTE = {
+  name: "Ember",
+  index: 0,
+  waxCore:    [1.00, 0.28, 0.06],
+  waxMid:     [0.98, 0.38, 0.10],
+  waxEdge:    [1.00, 0.72, 0.28],
+  poolGlow:   [1.00, 0.68, 0.18],
+  liquid:     [0.86, 0.44, 0.16],
+  bgTop:      [0.055, 0.042, 0.034],
+  bgBot:      [0.115, 0.086, 0.062],
+  stripCool:  [0.70, 0.76, 0.82],
+  stripWarm:  [1.00, 0.74, 0.42],
+  silver:     [0.83, 0.84, 0.86],
+};
+
+/* ============================================================
+   Renderer bootstrap: WebGL2 preferred, WebGL1 fallback.
+   ============================================================ */
+var GLHolder = {
+  canvas: null,
+  gl: null,
+  isGL2: false,
+
+  acquire: function (canvas) {
+    var opts = {
+      alpha: false,
+      antialias: false,
+      depth: false,
+      stencil: false,
+      preserveDrawingBuffer: false,
+      powerPreference: "high-performance",
+    };
+    var gl = canvas.getContext("webgl2", opts);
+    var isGL2 = !!gl;
+    if (!gl) gl = canvas.getContext("webgl", opts) || canvas.getContext("experimental-webgl", opts);
+    if (!gl) return false;
+    this.canvas = canvas;
+    this.gl = gl;
+    this.isGL2 = isGL2;
+
+    /* Fullscreen triangle-strip quad (positions in clip space). */
+    var verts = new Float32Array([
+      -1.0, -1.0,
+       1.0, -1.0,
+      -1.0,  1.0,
+       1.0,  1.0,
+    ]);
+    var buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
+
+    var extDeriv = gl.getExtension("OES_standard_derivatives");
+    this.quadBuf = buf;
+    return true;
+  },
+
+  /* Device pixel ratio aware sizing, capped for perf on hi-dpi. */
+  resize: function () {
+    var dpr = Math.min(window.devicePixelRatio || 1, 2.0);
+    var cssW = Math.max(1, window.innerWidth);
+    var cssH = Math.max(1, window.innerHeight);
+    var w = Math.round(cssW * dpr);
+    var h = Math.round(cssH * dpr);
+    if (this.canvas.width !== w || this.canvas.height !== h) {
+      this.canvas.width = w;
+      this.canvas.height = h;
+    }
+    this.cssW = cssW;
+    this.cssH = cssH;
+    this.dpr = dpr;
+    return { w: w, h: h, aspect: cssW / cssH };
+  },
+};
+
+/* ============================================================
+   Shaders. Vertex shader is trivial clip-space passthrough.
+   The fragment shader ray-marches the entire scene. It is
+   written in GLSL ES 1.00 which also validates under WebGL2.
+   Camera placement is computed on the CPU so the lamp always
+   fits inside the central 80% of both viewport axes.
+   ============================================================ */
+var VERT_SRC = [
+  "attribute vec2 aPos;",
+  "void main() {",
+  "  gl_Position = vec4(aPos, 0.0, 1.0);",
+  "}",
+].join("\n");
+
+var FRAG_BODY = [];
+
+FRAG_BODY.push(
+"precision highp float;",
+"",
+"uniform vec2  uRes;",
+"uniform float uTime;",
+"uniform float uHeat;",
+"uniform vec3  uCamPos;",
+"uniform mat3  uCamMat;",
+"uniform float uTanHalfFov;",
+"uniform vec4  uBlobs[" + CONFIG.BLOB_COUNT + "];",  // xyz center, w radius
+"uniform float uPoolRise;",                        // pooled wax surface height
+"uniform vec4  uNeckA;",
+"uniform vec4  uNeckB;",
+"",
+"#define PI 3.14159265359",
+""
+);
+
+/* ---- Scene constants (world units; lamp ~3.4 tall) ---- */
+FRAG_BODY.push(
+"const float BASE_H   = 0.52;",   // metal base height
+"const float CAP_H    = 0.34;",   // metal cap height
+"const float BOT_R    = 0.62;",   // bottle outer radius at widest
+"const float TOP_R     = 0.30;",   // bottle outer radius at shoulder
+"const float GLASS_T   = 0.045;",  // wall thickness
+"const float LIQ_TOP   = 2.92;",   // liquid fill line (below cap)",
+"const float TABLE_Y   = 0.0;",
+""
+);
+
+/* ---- SDF primitives ---- */
+FRAG_BODY.push(
+"float sdSphere(vec3 p, float r) {",
+"  return length(p) - r;",
+"}",
+"",
+"float sdCapsule(vec3 p, vec3 a, vec3 b, float r) {",
+"  vec3 pa = p - a, ba = b - a;",
+"  float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);",
+"  return length(pa - ba * h) - r;",
+"}",
+"",
+"float sminExp(float a, float b, float k) {",
+"  float h = exp(-k * a) + exp(-k * b);",
+"  return -log(max(h, 1e-6)) / k;",
+"}",
+""
+);
+
+/* ---- Bottle silhouette: exact round-cone (tapered capsule)
+       between a fat sphere at the bottom and a slimmer one at
+       the shoulder, plus an smin-blended belly bulge. This is
+       a true SDF (Inigo Quilez's formulation), safe to trace. ---- */
+FRAG_BODY.push(
+"float dot2(vec2 v) { return dot(v, v); }",
+"",
+"float sdRoundConeY(vec3 p, float r1, float r2, float h) {",
+"  // Vertical round cone: bottom sphere r1 at y=0, top sphere r2 at y=h.",
+"  vec2 q = vec2(length(p.xz), p.y);",
+"  float b = (r1 - r2) / h;",
+"  float a = sqrt(1.0 - b * b);",
+"  float k = dot(q, vec2(-b, a));",
+"  if (k <= 0.0) return length(q) - r1;",
+"  if (k >= (r1 - r2) * a) return length(q - vec2(0.0, h)) - r2;",
+"  return length(q - vec2(b * r1, a * r1)) - r1;",
+"}",
+""
+);
+
+
+
+
+
+FRAG_BODY.push(
+"float sdBottleSolid(vec3 p) {",
+"  // Glass outer envelope: taper from bulb to shoulder.",
+"  float d = sdRoundConeY(p - vec3(0.0, 0.16, 0.0), BOT_R, TOP_R, LIQ_TOP - 0.16);",
+"  // Belly bulge near the heated bottom",
+"  float belly = length(p - vec3(0.0, 0.62, 0.0)) - 0.56;",
+"  d = sminExp(d, belly, 3.0);",
+"  return d;",
+"}",
+""
+);
+
+/* ---- Metal hardware: sculpted base cup and cap. ---- */
+FRAG_BODY.push(
+"float sdBase(vec3 p) {",
+"  // Flared foot ring + tapered cradle holding the bottle.",
+"  vec3 q = p;",
+"  float foot = sdRoundConeY(q, 0.66, 0.44, BASE_H * 0.92);",
+"  // Cradle lip that hugs the bottle bottom",
+"  float lip = sdRoundConeY(q - vec3(0.0, BASE_H - 0.10, 0.0), 0.48, 0.52, 0.10);",
+"  float d = min(foot, lip);",
+"  // Hollow: carve inner cavity so the bottle seats into it",
+"  float cav = sdRoundConeY(q - vec3(0.0, 0.06, 0.0), 0.60, 0.40, BASE_H);",
+"  d = max(d, -cav * 0.9);",
+"  return d;",
+"}",
+""
+);
+
+FRAG_BODY.push(
+"float sdCap(vec3 p) {",
+"  // Small finned cap seated on the bottle shoulder.",
+"  vec3 q = p - vec3(0.0, LIQ_TOP + 0.02, 0.0);",
+"  float body = sdRoundConeY(q, TOP_R + 0.035, TOP_R - 0.02, CAP_H);",
+"  // Top knob",
+"  float knob = length(q - vec3(0.0, CAP_H + 0.05, 0.0)) - 0.09;",
+"  return min(body, knob);",
+"}",
+""
+);
+
+/* ---- Wax: metaball field from CPU-driven blobs, plus a
+       bottom pool and a guaranteed neck (capsule bridge). ---- */
+FRAG_BODY.push(
+"float waxField(vec3 p) {",
+"  float f = 0.0;",
+"  for (int i = 0; i < " + CONFIG.BLOB_COUNT + "; i++) {",
+"    vec4 b = uBlobs[i];",
+"    vec3 d = p - b.xyz;",
+"    float r = max(b.w, 0.02);",
+"    f += (r * r) / dot(d, d);",
+"  }",
+"  // Bottom pool: flat slab of molten wax with a wobbling top",
+"  float poolY = 0.34 + uPoolRise;",
+"  float pool = (poolY - p.y) * 4.0 + 0.55;",
+"  f += max(pool, 0.0);",
+"  // Guaranteed neck connecting a riser to the pool",
+"  f += 0.85 / pow(sdCapsule(p, uNeckA.xyz, uNeckB.xyz, 0.0001) + 0.09, 2.0) * 0.010;",
+"  return f;",
+"}",
+""
+);
+
+FRAG_BODY.push(
+"float sdTable(vec3 p) {",
+"  return p.y - TABLE_Y;",
+"}",
+""
+);
+
+/* ---- Scene map: returns distance + material id in a vec2. ---- */
+FRAG_BODY.push(
+"const float MAT_GLASS = 1.0;",
+"const float MET_BASE  = 2.0;",
+"const float MET_CAP   = 3.0;",
+"const float MAT_WAX   = 4.0;",
+"const float MAT_TABLE = 5.0;",
+""
+);
+
+FRAG_BODY.push(
+"vec2 mapScene(vec3 p) {",
+"  float dg = sdBottleSolid(p);",
+"  float db = sdBase(p);",
+"  float dc = sdCap(p);",
+"  // Wax isosurface: field==threshold encodes a distance proxy;",
+"  // scaled conservatively so sphere tracing stays stable.",
+"  float fw = waxField(p);",
+"  float dw = (1.0 - fw) * 0.22;",
+"  // Table",
+"  float dt = sdTable(p);",
+"  vec2 res = vec2(dt, MAT_TABLE);",
+"  if (dg < res.x) res = vec2(dg, MAT_GLASS);",
+"  if (dw < res.x) res = vec2(dw, MAT_WAX);",
+"  if (db < res.x) res = vec2(db, MET_BASE);",
+"  if (dc < res.x) res = vec2(dc, MET_CAP);",
+"  return res;",
+"}",
+""
+);
+
+FRAG_BODY.push(
+"vec3 calcNormal(vec3 p, float mat) {",
+"  vec2 e = vec2(0.0022, 0.0);",
+"  if (mat == MAT_WAX) {",
+"    return normalize(vec3(",
+"      waxField(p + e.xyy) - waxField(p - e.xyy),",
+"      waxField(p + e.yxy) - waxField(p - e.yxy),",
+"      waxField(p + e.yyx) - waxField(p - e.yyx)));",
+"  }",
+"  return normalize(vec3(",
+"    mapScene(p + e.xyy).x - mapScene(p - e.xyy).x,",
+"    mapScene(p + e.yxy).x - mapScene(p - e.yxy).x,",
+"    mapScene(p + e.yyx).x - mapScene(p - e.yyx).x));",
+"}",
+""
+);
+
+/* ---- Lighting & materials ---- */
+FRAG_BODY.push(
+"vec3 tonemapFilmic(vec3 x) {",
+"  // ACES-inspired filmic curve",
+"  vec3 a = x * (2.51 * x + 0.03);",
+"  vec3 b = x * (2.43 * x + 0.59) + 0.14;",
+"  return clamp(a / b, 0.0, 1.0);",
+"}",
+""
+);
+
+FRAG_BODY.push(
+"vec3 shadeMetal(vec3 p, vec3 n, vec3 rd, float warmMix) {",
+"  // Brushed silver: broad anisotropic-ish specular from two",
+"  // studio softboxes plus warm heater bounce from below.",
+"  vec3 v = reflect(rd, n);",
+"  vec3 col = vec3(0.0);",
+"  // Strip light 1: tall cool softbox upper-left",
+"  vec3 s1Dir = normalize(vec3(-0.55, 0.75, 0.55));",
+"  float s1 = pow(max(dot(v, s1Dir), 0.0), 24.0);",
+"  col += vec3(0.70, 0.76, 0.82) * s1 * 1.4;",
+"  // Strip light 2: warm softbox lower-right",
+"  vec3 s2Dir = normalize(vec3(0.6, 0.35, 0.7));",
+"  float s2 = pow(max(dot(v, s2Dir), 0.0), 16.0);",
+"  col += vec3(1.00, 0.74, 0.42) * s2 * 1.1;",
+"  // Heater bounce: strong warm glow from the base upward",
+"  float hb = pow(max(-n.y * 0.5 + 0.5, 0.0), 2.0) * smoothstep(1.2, 0.0, p.y);",
+"  col += vec3(1.0, 0.45, 0.12) * hb * 0.55;",
+"  // Ambient sky term so silhouettes stay readable",
+"  col += vec3(0.08, 0.085, 0.10) * (0.35 + 0.65 * max(n.y, 0.0));",
+"  return mix(col, col * vec3(1.1, 0.9, 0.75), warmMix);",
+"}",
+""
+);
+
+FRAG_BODY.push(
+"vec3 waxColorAt(vec3 p, float thick) {",
+"  // Thick cores rich red-orange; thin edges transmit warm gold.",
+"  vec3 core = vec3(1.00, 0.24, 0.05);",
+"  vec3 edge = vec3(1.00, 0.62, 0.20);",
+"  return mix(edge, core, clamp(thick, 0.0, 1.0));",
+"}",
+""
+);
+
+FRAG_BODY.push(
+"vec3 shadeWax(vec3 p, vec3 n, vec3 rd, float fieldVal) {",
+"  // Fake subsurface: brightness keyed to field density",
+"  float dens = clamp(fieldVal - 1.0, 0.0, 2.5);",
+"  float thick = clamp((fieldVal - 1.0) * 0.7, 0.0, 1.0);",
+"  vec3 base = waxColorAt(p, thick);",
+"  // Rim transmission: backlight bleeding through thin wax",
+"  float rim = pow(1.0 - max(dot(-rd, n), 0.0), 2.2);",
+"  vec3 trans = vec3(1.0, 0.55, 0.16) * rim * 1.35;",
+"  // Self illumination from hot core",
+"  vec3 emis = base * (0.55 + 0.85 * dens);",
+"  // Soft key light from the upper strip",
+"  vec3 kd = normalize(vec3(-0.35, 0.85, 0.45));",
+"  float dif = max(dot(n, kd), 0.0);",
+"  vec3 lit = base * (dif * 0.45 + 0.25);",
+"  return emis * 0.75 + lit + trans;",
+"}",
+""
+);
+
+FRAG_BODY.push(
+"vec3 shadeGlass(vec3 p, vec3 n, vec3 rd) {",
+"  // Fresnel-weighted reflection of the studio strips; the",
+"  // interior (wax/liquid) contribution is added by caller.",
+"  float fres = 0.04 + 0.96 * pow(1.0 - max(dot(-rd, n), 0.0), 5.0);",
+"  vec3 refl = vec3(0.0);",
+"  vec3 v = reflect(rd, n);",
+"  vec3 s1Dir = normalize(vec3(-0.55, 0.75, 0.55));",
+"  vec3 s2Dir = normalize(vec3(0.6, 0.35, 0.7));",
+"  refl += vec3(0.70, 0.76, 0.82) * pow(max(dot(v, s1Dir), 0.0), 90.0) * 2.0;",
+"  refl += vec3(1.00, 0.74, 0.42) * pow(max(dot(v, s2Dir), 0.0), 60.0) * 1.6;",
+"  // Broad sheen so the whole silhouette reads as glass",
+"  refl += mix(vec3(0.10, 0.105, 0.12), vec3(0.16, 0.15, 0.17), n.y * 0.5 + 0.5) * 0.5;",
+"  return refl * (0.25 + 0.75 * fres);",
+"}",
+""
+);
+
+/* ---- Main ray-march + composite ---- */
+FRAG_BODY.push(
+"struct Hit { float t; float mat; };",
+""
+);
+
+FRAG_BODY.push(
+"Hit marchScene(vec3 ro, vec3 rd) {",
+"  float t = 0.0;",
+"  float mat = 0.0;",
+"  float tMax = 14.0;",
+"  for (int i = 0; i < 110; i++) {",
+"    vec3 p = ro + rd * t;",
+"    vec2 h = mapScene(p);",
+"    if (h.x < 0.0012) { mat = h.y; break; }",
+"    t += h.x;",
+"    if (t > tMax) break;",
+"  }",
+"  Hit h; h.t = t; h.mat = mat; return h;",
+"}",
+""
+);
+
+FRAG_BODY.push(
+"bool marchInterior(vec3 ro, vec3 rd, out float tOut, out float fieldOut) {",
+"  // March INSIDE the glass envelope looking for the wax surface.",
+"  float t = 0.0;",
+"  for (int i = 0; i < 48; i++) {",
+"    vec3 p = ro + rd * t;",
+"    float f = waxField(p);",
+"    if (f >= 1.0) { tOut = t; fieldOut = f; return true; }",
+"    // Step proportional to remaining field gap",
+"    t += max((1.0 - f) * 0.22, 0.01);",
+"    if (t > 4.5) break;",
+"  }",
+"  tOut = t; fieldOut = 0.0; return false;",
+"}",
+""
+);
+
+FRAG_BODY.push(
+"vec3 backgroundCol(vec2 uvScreen) {",
+"  // Quiet warm-charcoal studio gradient",
+"  vec3 top = vec3(0.055, 0.042, 0.034);",
+"  vec3 bot = vec3(0.115, 0.086, 0.062);",
+"  return mix(bot, top, clamp(uvScreen.y * 0.5 + 0.5, 0.0, 1.0));",
+"}",
+""
+);
+
+FRAG_BODY.push(
+"void main() {",
+"  vec2 frag = gl_FragCoord.xy / uRes;",
+"  vec2 sc = (frag * 2.0 - 1.0);",               // -1..1 screen
+"  sc.x *= uRes.x / uRes.y;",                    // aspect corrected
+"  vec3 rd = normalize(uCamMat * vec3(sc * uTanHalfFov, 1.0));",
+"  vec3 ro = uCamPos;",
+"",
+"  vec3 col = backgroundCol(frag * 2.0 - 1.0);",
+"",
+"  Hit h = marchScene(ro, rd);",
+"  if (h.mat != 0.0) {",
+"    vec3 p = ro + rd * h.t;",
+"    vec3 n = calcNormal(p, h.mat);",
+"    if (h.mat == MAT_TABLE) {",
+"      // Dark tabletop with soft lamp reflection + contact shadow",
+"      float occ = smoothstep(1.1, 0.25, length(p.xz));",
+"      vec3 tav = vec3(0.045, 0.036, 0.030) * (0.35 + 0.65 * occ);",
+"      // Blurred vertical reflection of the glowing bottle",
+"      vec3 rp = vec3(p.x, 0.0, p.z);",
+"      float reflMask = smoothstep(0.9, 0.1, length(rp.xz));",
+"      tav += vec3(1.0, 0.36, 0.08) * reflMask * 0.10;",
+"      // Heater glow pooling under the base",
+"      tav += vec3(1.0, 0.5, 0.15) * smoothstep(0.85, 0.0, length(p.xz - vec2(0.0, 0.0))) * 0.05;",
+"      col = tav;",
+"    } else if (h.mat == MET_BASE) {",
+"      col = shadeMetal(p, n, rd, 0.35);",
+"    } else if (h.mat == MET_CAP) {",
+"      col = shadeMetal(p, n, rd, 0.12);",
+"    } else if (h.mat == MAT_GLASS) {",
+"      vec3 gcol = shadeGlass(p, n, rd);",
+"      // Refract into the interior and sample wax/liquid",
+"      vec3 rin = refract(rd, n, 1.0 / 1.5);",
+"      if (dot(rin, rin) > 0.001) {",
+"        rin = normalize(rin);",
+"        float tw; float fw2;",
+"        if (marchInterior(p - n * 0.01, rin, tw, fw2)) {",
+"          vec3 wp = (p - n * 0.01) + rin * tw;",
+"          vec3 wn = calcNormal(wp, MAT_WAX);",
+"          vec3 inner = shadeWax(wp, wn, rin, fw2);",
+"          // Beer-Lambert attenuation through warm liquid",
+"          float pathLen = tw;",
+"          vec3 atten = exp(-vec3(0.55, 1.35, 2.6) * pathLen * 0.55);",
+"          gcol += inner * mix(vec3(1.0), atten, 0.6);",
+"        } else {",
+"          // Clear warm liquid column",
+"          vec3 liq = vec3(0.86, 0.44, 0.16);",
+"          float glowNearBottom = smoothstep(1.1, 0.2, p.y);",
+"          gcol += liq * (0.16 + 0.20 * glowNearBottom);",
+"        }",
+"      }",
+"      col = gcol;",
+"    } else if (h.mat == MAT_WAX) {",
+"      // Bare wax (should rarely win over glass, kept for safety)",
+"      float fv = waxField(p);",
+"      col = shadeWax(p, n, rd, fv);",
+"    }",
+"  }",
+"",
+"  // Filmic tonemap + gentle grade",
+"  col = tonemapFilmic(col * 1.05);",
+"  col = pow(col, vec3(1.0 / 2.2));",
+"  gl_FragColor = vec4(col, 1.0);",
+"}",
+""
+);
+
+var FRAG_SRC = FRAG_BODY.join("\n");
+
+/* ============================================================
+   Engine: program setup, camera fit, wax simulation, loop.
+   ============================================================ */
+var Engine = {
+  prog: null,
+  uni: {},
+  attrib: null,
+  rafId: 0,
+  running: false,
+  destroyed: false,
+  startTime: 0,
+  simTime: 0,
+  accum: 0,
+  substeps: 0,
+  frameCount: 0,
+  playing: true,
+};
+
+Engine.compileShaders = function () {
+  var gl = GLHolder.gl;
+  function mk(type, src) {
+    var s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+      throw new Error("shader compile failed: " + gl.getShaderInfoLog(s));
+    }
+    return s;
+  }
+  var vs = mk(gl.VERTEX_SHADER, VERT_SRC);
+  var fs = mk(gl.FRAGMENT_SHADER, FRAG_SRC);
+  var p = gl.createProgram();
+  gl.attachShader(p, vs);
+  gl.attachShader(p, fs);
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    throw new Error("program link failed: " + gl.getProgramInfoLog(p));
+  }
+  gl.deleteShader(vs);
+  gl.deleteShader(fs);
+  Engine.prog = p;
+  gl.useProgram(p);
+  Engine.attrib = gl.getAttribLocation(p, "aPos");
+  gl.enableVertexAttribArray(Engine.attrib);
+  gl.vertexAttribPointer(Engine.attrib, 2, gl.FLOAT, false, 0, 0);
+  var names = ["uRes", "uTime", "uHeat", "uCamPos", "uCamMat", "uTanHalfFov",
+               "uBlobs", "uPoolRise", "uNeckA", "uNeckB"];
+  for (var i = 0; i < names.length; i++) {
+    Engine.uni[names[i]] = gl.getUniformLocation(p, names[i]);
+  }
+};
+
+/* Camera fit: place the camera so the WHOLE lamp (bounding
+   sphere, center y≈1.85, radius ≈1.98) projects inside the
+   central COMPOSE_FRACTION of BOTH viewport axes, any aspect.
+   Method: fix the vertical half-FOV from the fraction bound,
+   solve the camera distance; then verify the horizontal bound
+   (wide/portrait aspects) and retreat if needed. */
+Engine.fitCamera = function (aspect) {
+  var cy = 1.85, cr = 1.98;
+  var frac = CONFIG.COMPOSE_FRACTION; // allowed NDC half-extent per axis
+  var eps = 0.999;
+
+  // Angular radius subtended by the bounding sphere at distance d:
+  //   sinAng = cr/d  ->  projected NDC half-extent =
+  //   tan(ang)/tan(halfFov)  where  ang = atan(cr / sqrt(d^2-cr^2))
+  function ndcExtent(d, tanHalf) {
+    var z = Math.sqrt(Math.max(d * d - cr * cr, 1e-9));
+    return (cr / z) / tanHalf;
+  }
+
+  // Fit vertically with a comfortable vertical half-FOV.
+  var tanHalfV = 0.62;                       // ~63.8deg total vfov
+  var dMin = 2.02, dMax = 40.0;
+  var dist = dMin;
+  for (var i = 0; i < 60; i++) {
+    if (ndcExtent(dist, tanHalfV) <= frac * eps) break;
+    dist *= 1.06;
+  }
+  // Horizontal bound (fails on ultrawide): widen distance.
+  var tanHalfH = tanHalfV * aspect;
+  for (var j = 0; j < 60; j++) {
+    if (ndcExtent(dist, tanHalfH) <= frac * eps) break;
+    dist *= 1.06;
+  }
+  Engine.camPos = [0.0, cy + 0.35, -dist];
+  Engine.lookAt([0.0, cy, 0.0]);
+  Engine.tanHalfFov = tanHalfV;
+};
+
+Engine.lookAt = function (target) {
+  var eye = Engine.camPos;
+  var f = norm3(sub3(target, eye));
+  var up = [0, 1, 0];
+  var r = norm3(cross3(f, up));
+  var u = cross3(r, f);
+  // Column-major mat3: columns = (right, up, forward)
+  Engine.camMat = [r[0], r[1], r[2],
+                   u[0], u[1], u[2],
+                   f[0], f[1], f[2]];
+};
+
+function sub3(a, b) { return [a[0]-b[0], a[1]-b[1], a[2]-b[2]]; }
+function cross3(a, b) {
+  return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+}
+function norm3(a) {
+  var l = Math.hypot(a[0], a[1], a[2]) || 1;
+  return [a[0]/l, a[1]/l, a[2]/l];
+}
+
+/* ============================================================
+   Wax simulation: CPU metaballs, deterministic, fixed 120Hz.
+   Physics sketch:
+   - Blobs carry temperature; heating zone near the base pool
+     warms them (buoyancy up), cooling band near the top chills
+     them (sink back down).
+   - Radial confinement mirrors the bottle taper: narrower higher.
+   - Blob pairs softly repel (surface tension keeps identities),
+     and nearby cold-bottom blobs feed the pool rise.
+   - Two special blobs form a guaranteed neck/bridge at spawn:
+     a tether pair whose capsules the shader draws as connective
+     tissue until separation distance exceeds a threshold.
+   ============================================================ */
+var WaxSim = {
+  blobs: [],
+  rng: null,
+  seed: 0,
+  poolPhase: 0,
+  neckLife: 1.0,
+};
+
+WaxSim.init = function (seed) {
+  var rng = Mulberry32(seed);
+  WaxSim.rng = rng;
+  WaxSim.seed = seed;
+  WaxSim.blobs = [];
+  // Deterministic spawn spread: sizes staggered, positions varied.
+  var radii = [0.30, 0.24, 0.27, 0.19, 0.22, 0.17, 0.26, 0.20, 0.31];
+  for (var i = 0; i < CONFIG.BLOB_COUNT; i++) {
+    var r = radii[i % radii.length];
+    var y = 0.45 + rng() * 1.9;
+    var confine = WaxSim.confineRadius(y) * (0.55 + 0.25 * rng());
+    var ang = rng() * Math.PI * 2;
+    var px = Math.cos(ang) * confine * 0.7;
+    var pz = Math.sin(ang) * confine * 0.7;
+    WaxSim.blobs.push({
+      x: px, y: y, z: pz,
+      vx: (rng() - 0.5) * 0.10,
+      vy: 0.04 + rng() * 0.10 * CONFIG.HEAT,
+      vz: (rng() - 0.5) * 0.10,
+      r: r,
+      temp: 0.3 + rng() * 0.5,   // 0 cold .. 1 hot
+      phase: rng() * Math.PI * 2,
+    });
+  }
+  // Guarantee a bridge: designate blobs 0 and 1 as a tethered pair
+  // placed close so the metaball blend forms a visible neck.
+  var b0 = WaxSim.blobs[0];
+  var b1 = WaxSim.blobs[1];
+  b0.y = 0.85; b0.temp = 0.95; b0.r = 0.30;
+  b1.y = 1.45; b1.temp = 0.88; b1.r = 0.24;
+  b1.x = b0.x + 0.12; b1.z = b0.z - 0.06;
+  WaxSim.neckLife = 1.0;
+  WaxSim.poolPhase = rng() * Math.PI * 2;
+};
+
+/* Interior radius available at height y (follows bottle taper). */
+WaxSim.confineRadius = function (y) {
+  // Mirrors sdRoundConeY profile roughly: BOT_R->TOP_R over 0.16..LIQ_TOP
+  var t = Math.min(Math.max((y - 0.16) / (2.92 - 0.16), 0), 1);
+  return 0.62 + (0.30 - 0.62) * t - 0.10;
+};
+
+WaxSim.step = function (dt) {
+  var heat = CONFIG.HEAT;
+  var blobs = WaxSim.blobs;
+  // Pool wobble drives uPoolRise
+  WaxSim.poolPhase += dt * (0.4 + heat * 0.9);
+  // Heat exchange: near bottom pool -> warm up; near top -> cool.
+  for (var i = 0; i < blobs.length; i++) {
+    var b = blobs[i];
+    var heatZone = Math.exp(-(b.y - 0.42) * (b.y - 0.42) * 3.0);
+    var coolZone = Math.exp(-(2.92 - 0.55 - b.y) *
+                            (2.92 - 0.55 - b.y) * 2.2);
+    b.temp += (heatZone * heat * 1.6 - coolZone * 0.9) * dt;
+    b.temp = Math.min(Math.max(b.temp, 0.05), 1.0);
+    // Buoyancy: hotter than neutral 0.5 -> rise; colder -> sink
+    var buoy = (b.temp - 0.5) * 0.9 * (0.35 + b.r);
+    b.vy += buoy * dt;
+    // Gentle convection swirl
+    b.phase += dt * 0.7;
+    b.vx += Math.cos(b.phase * 1.3 + i) * 0.05 * dt;
+    b.vz += Math.sin(b.phase * 1.1 + i * 2.0) * 0.05 * dt;
+    // Drag
+    var drag = Math.pow(0.985, dt * 120);
+    b.vx *= drag; b.vy *= drag; b.vz *= drag;
+    // Integrate (velocities are in world-units/second)
+    b.x += b.vx * dt;
+    b.y += b.vy * dt;
+    b.z += b.vz * dt;
+    // Clamp inside bottle interior
+    var lim = WaxSim.confineRadius(b.y) - b.r * 0.55;
+    var rad = Math.hypot(b.x, b.z);
+    if (rad > lim && rad > 1e-6) {
+      var s = lim / rad;
+      b.x *= s; b.z *= s;
+      b.vx *= -0.35; b.vz *= -0.35;
+    }
+    var lo = 0.36 + b.r * 0.4, hi = 2.92 - 0.42 - b.r * 0.4;
+    if (b.y < lo) { b.y = lo; b.vy = Math.abs(b.vy) * 0.25; }
+    if (b.y > hi) { b.y = hi; b.vy = -Math.abs(b.vy) * 0.35; b.temp -= 0.4 * dt; }
+  }
+  // Soft pairwise repulsion (identity preservation)
+  for (var ii = 0; ii < blobs.length; ii++) {
+    for (var jj = ii + 1; jj < blobs.length; jj++) {
+      var A = blobs[ii], B = blobs[jj];
+      var dx = B.x - A.x, dy = B.y - A.y, dz = B.z - A.z;
+      var d2 = dx*dx + dy*dy + dz*dz;
+      var minD = (A.r + B.r) * 0.62;
+      if (d2 < minD * minD && d2 > 1e-8) {
+        var d = Math.sqrt(d2);
+        var push = (minD - d) * 0.5 * 0.35;
+        var nx = dx/d, ny = dy/d, nz = dz/d;
+        A.x -= nx * push; A.y -= ny * push; A.z -= nz * push;
+        B.x += nx * push; B.y += ny * push; B.z += nz * push;
+      }
+    }
+  }
+  // Neck life decay: the guaranteed tether dissolves naturally
+  // once the pair separates beyond 0.9 world units.
+  var nb0 = blobs[0], nb1 = blobs[1];
+  var sep = Math.hypot(nb1.y - nb0.y, nb1.x - nb0.x, nb1.z - nb0.z);
+  WaxSim.neckLife = Math.max(0, 1 - (sep - 0.55) * 1.4);
+};
+
+/* Uniform payload for the shader. */
+WaxSim.packUniforms = function () {
+  var arr = new Float32Array(CONFIG.BLOB_COUNT * 4);
+  for (var i = 0; i < CONFIG.BLOB_COUNT; i++) {
+    var b = WaxSim.blobs[i];
+    arr[i*4+0] = b.x;
+    arr[i*4+1] = b.y;
+    arr[i*4+2] = b.z;
+    arr[i*4+3] = b.r;
+  }
+  var poolRise = 0.03 * Math.sin(WaxSim.poolPhase) +
+                0.015 * Math.sin(WaxSim.poolPhase * 2.3);
+  var n0 = WaxSim.blobs[0], n1 = WaxSim.blobs[1];
+  var neckStrength = WaxSim.neckLife;
+  return {
+    blobs: arr,
+    poolRise: poolRise,
+    neckA: [n0.x, n0.y, n0.z, neckStrength],
+    neckB: [n1.x, n1.y, n1.z, neckStrength],
+  };
+};
+
+/* ============================================================
+   Render loop + replay clock.
+   Canonical timeline: 60 fps frames; each frame advances the
+   fixed-timestep sim by exactly 2 substeps (120Hz). Rendering
+   therefore depends ONLY on frameCount, never wall-clock ->
+   seek/reset are perfectly deterministic.
+   ============================================================ */
+Engine.advanceOneFrame = function () {
+  var sub = Math.round(CONFIG.SIM_RATE / CONFIG.FRAME_RATE);
+  for (var i = 0; i < sub; i++) {
+    WaxSim.step(CONFIG.DT);
+  }
+  Engine.frameCount++;
+  Engine.simTime = Engine.frameCount / CONFIG.FRAME_RATE;
+};
+
+Engine.draw = function () {
+  var gl = GLHolder.gl;
+  if (!gl) return;
+  var dims = GLHolder.resize();
+  gl.viewport(0, 0, dims.w, dims.h);
+  Engine.fitCamera(dims.aspect);
+  var pack = WaxSim.packUniforms();
+  gl.useProgram(Engine.prog);
+  gl.uniform2f(Engine.uni.uRes, dims.w, dims.h);
+  gl.uniform1f(Engine.uni.uTime, Engine.simTime);
+  gl.uniform1f(Engine.uni.uHeat, CONFIG.HEAT);
+  gl.uniform3fv(Engine.uni.uCamPos, Engine.camPos);
+  gl.uniformMatrix3fv(Engine.uni.uCamMat, false, Engine.camMat);
+  gl.uniform1f(Engine.uni.uTanHalfFov, Engine.tanHalfFov);
+  gl.uniform4fv(Engine.uni.uBlobs, pack.blobs);
+  gl.uniform1f(Engine.uni.uPoolRise, pack.poolRise);
+  gl.uniform4fv(Engine.uni.uNeckA, pack.neckA);
+  gl.uniform4fv(Engine.uni.uNeckB, pack.neckB);
+  gl.clearColor(0.055, 0.042, 0.034, 1.0);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+};
+
+Engine.tick = function () {
+  if (Engine.destroyed) return;
+  if (Engine.playing) {
+    Engine.advanceOneFrame();
+  }
+  Engine.draw();
+  Engine.rafId = window.requestAnimationFrame(Engine.tick);
+};
+
+/* ============================================================
+   Public contract: window.lavaLamp
+   ============================================================ */
+var PUBLIC_API = {
+  manifest: {
+    name: "lava-lamp",
+    version: "1.0.0",
+    palettes: [{ name: "Ember", index: 0 }],
+    controls: [],
+    stateKeys: ["heat", "paletteIndex"],
+  },
+
+  getState: function () {
+    return { heat: CONFIG.HEAT, paletteIndex: CONFIG.PALETTE_INDEX };
+  },
+
+  reset: function (seed) {
+    var s = (typeof seed === "number") ? (seed | 0) : 42;
+    WaxSim.init(s);
+    Engine.frameCount = 0;
+    Engine.simTime = 0;
+    Engine.playing = true;
+    Engine.draw();  // immediate first frame, already warm and in motion
+    return PUBLIC_API.getState();
+  },
+
+  destroy: function () {
+    if (Engine.destroyed) return;
+    Engine.destroyed = true;
+    Engine.playing = false;
+    window.cancelAnimationFrame(Engine.rafId);
+    window.removeEventListener("resize", Engine._onResize, false);
+    var gl = GLHolder.gl;
+    if (gl) {
+      if (Engine.prog) gl.deleteProgram(Engine.prog);
+      if (GLHolder.quadBuf) gl.deleteBuffer(GLHolder.quadBuf);
+      var loseExt = gl.getExtension("WEBGL_lose_context");
+      if (loseExt) loseExt.loseContext();
+    }
+    GLHolder.gl = null;
+    GLHolder.canvas = null;
+    Engine.prog = null;
+  },
+
+  benchmark: {
+    play: function () { Engine.playing = true; },
+    pause: function () { Engine.playing = false; },
+    step: function (n) {
+      var k = (typeof n === "number" && n > 0) ? Math.floor(n) : 1;
+      for (var i = 0; i < k; i++) Engine.advanceOneFrame();
+      Engine.draw();
+    },
+    seek: function (frame) {
+      var f = (typeof frame === "number") ? Math.max(0, Math.floor(frame)) : 0;
+      // Rebuild deterministically from the current seed.
+      WaxSim.init(WaxSim.seed);
+      Engine.frameCount = 0;
+      for (var i = 0; i < f; i++) Engine.advanceOneFrame();
+      Engine.draw();
+    },
+    getFrame: function () { return Engine.frameCount; },
+  },
+};
+
+/* ============================================================
+   Boot
+   ============================================================ */
+(function boot() {
+  var canvas = document.getElementById("lamp-stage");
+  if (!GLHolder.acquire(canvas)) {
+    return; // no WebGL: fail quietly, no overlays allowed
+  }
+  try {
+    Engine.compileShaders();
+  } catch (e) {
+    return;
+  }
+  Engine._onResize = function () { Engine.draw(); };
+  window.addEventListener("resize", Engine._onResize, false);
+  window.lavaLamp = PUBLIC_API;
+  PUBLIC_API.reset(42);
+  Engine.rafId = window.requestAnimationFrame(Engine.tick);
+})();
+
+</script>
+</body>
+</html>
