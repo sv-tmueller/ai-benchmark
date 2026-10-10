@@ -170,9 +170,138 @@ function cityHit(p, r){
   return 0;
 }
 /* ===== SECTION: STADIUM ===== */
+const STADIUM = { x:-1520, z:0, radius:220 };
+function buildStadium(){
+  const grp = new THREE.Group();
+  // Bowl: torus ring wall
+  const wall = new THREE.Mesh(
+    new THREE.CylinderGeometry(STADIUM.radius, STADIUM.radius+30, 46, 48, 1, true),
+    new THREE.MeshStandardMaterial({ color:0xd8dde8, roughness:0.6, side:THREE.DoubleSide }));
+  wall.position.y = 23;
+  // Field
+  const field = new THREE.Mesh(new THREE.CircleGeometry(STADIUM.radius-38, 48),
+    new THREE.MeshStandardMaterial({ color:0x2e7d3a, roughness:0.95 }));
+  field.rotation.x = -Math.PI/2; field.position.y = 1.2;
+  // Set-down zone outline
+  const ring = new THREE.Mesh(new THREE.RingGeometry(STADIUM.radius-70, STADIUM.radius-56, 48),
+    new THREE.MeshBasicMaterial({ color:0x00ff88, transparent:true, opacity:0.85, side:THREE.DoubleSide }));
+  ring.rotation.x = -Math.PI/2; ring.position.y = 1.4;
+  grp.add(wall, field, ring);
+  grp.position.set(STADIUM.x, 0, STADIUM.z);
+  scene.add(grp);
+  return grp;
+}
+const inZone = (p)=> Math.hypot(p.x-STADIUM.x, p.z-STADIUM.z) < STADIUM.radius-56;
+
 /* ===== SECTION: HERO ===== */
+// Superhero flyer: capsule torso + swept-back arms; oriented along travel.
+const heroGrp = new THREE.Group();
+function buildHero(){
+  const suit = new THREE.MeshStandardMaterial({ color:0x14335c, roughness:0.5, metalness:0.3 });
+  const trim = new THREE.MeshStandardMaterial({ color:0xd63a2f, roughness:0.5 });
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(1.5, 3.2, 6, 12), suit);
+  body.rotation.x = Math.PI/2;                    // lie along -Z (forward)
+  const armL = new THREE.Mesh(new THREE.CapsuleGeometry(0.55, 4.4, 4, 8), suit);
+  armL.rotation.x = Math.PI/2 - 0.5; armL.position.set(-1.7, 0.4, 1.6);
+  const armR = armL.clone(); armR.position.x = 1.7;
+  const belt = new THREE.Mesh(new THREE.TorusGeometry(1.52, 0.22, 8, 20), trim);
+  belt.rotation.x = Math.PI/2; belt.position.z = 0.4;
+  const glow = new THREE.PointLight(0x66aaff, 1.4, 60);
+  glow.position.set(0, 2, 0);
+  heroGrp.add(body, armL, armR, belt, glow);
+  scene.add(heroGrp);
+}
+function initHeroState(){
+  G.pos = v3(0, 380, 2600);          // south of downtown, facing north (-Z)
+  G.vel = v3(0, 0, -CFG.thrustCruise);
+  G.quat = new THREE.Quaternion();
+  G.yaw = 0; G.pitch = 0; G.speedTier = 1; G.hp = 100;
+  heroGrp.position.copy(G.pos);
+}
 /* ===== SECTION: AIRLINER ===== */
+// Flight 227: capsule fuselage + wings + tail, engine fire sprite, nav lights.
+const alGrp = new THREE.Group();
+function buildAirliner(){
+  const white = new THREE.MeshStandardMaterial({ color:0xeef1f6, roughness:0.4, metalness:0.35 });
+  const dark = new THREE.MeshStandardMaterial({ color:0x22282f, roughness:0.6 });
+  const fuse = new THREE.Mesh(new THREE.CapsuleGeometry(CFG.fuseR, CFG.airlinerLen-2*CFG.fuseR, 6, 14), white);
+  fuse.rotation.x = Math.PI/2;                     // axis along Z, nose at -Z
+  const wing = new THREE.Mesh(new THREE.BoxGeometry(CFG.airlinerSpan, 1.6, 9), white);
+  wing.position.z = 4; wing.rotation.z = 0.06;
+  const tail = new THREE.Mesh(new THREE.BoxGeometry(22, 1.4, 6), white);
+  tail.position.set(0, 1, CFG.airlinerLen/2 - 4);
+  const fin = new THREE.Mesh(new THREE.BoxGeometry(1.6, 16, 12), dark);
+  fin.position.set(0, 8, CFG.airlinerLen/2 - 3);
+  const engL = new THREE.Mesh(new THREE.CylinderGeometry(2.6, 2.6, 7, 10), dark);
+  engL.rotation.x = Math.PI/2; engL.position.set(-19, -2, 3);
+  const engR = engL.clone(); engR.position.x = 19;
+  // Burning engine: additive cone flicker handled in tick
+  const fireMat = new THREE.MeshBasicMaterial({ color:0xff7722, transparent:true, opacity:0.9 });
+  const fire = new THREE.Mesh(new THREE.ConeGeometry(3.2, 12, 8), fireMat);
+  fire.rotation.x = -Math.PI/2; fire.position.set(-19, -2, 10);
+  const navL = new THREE.Mesh(new THREE.SphereGeometry(0.8), new THREE.MeshBasicMaterial({color:0xff3333}));
+  navL.position.set(-CFG.airlinerSpan/2, 0, 4);
+  const navR = navL.clone(); navR.material = new THREE.MeshBasicMaterial({color:0x33ff44});
+  navR.position.x = CFG.airlinerSpan/2;
+  alGrp.add(fuse, wing, tail, fin, engL, engR, fire, navL, navR);
+  scene.add(alGrp);
+  alGrp.userData.fire = fire;
+}
+function spawnAirliner(){
+  // East of the city, heading west toward downtown, engines out, sinking.
+  G.al = {
+    pos: v3(CFG.spawnDist, CFG.spawnAlt, 0),
+    vel: v3(-140, -CFG.sinkStart/60, 0),   // ~140 kt westward, gentle initial sink
+    headingWest: true, alive: true, held:false,
+    stress: 0, bank: 0, sinkPhase: 0,
+    touchedDown: false, tdVy: 0,
+  };
+  alGrp.visible = true;
+  alGrp.position.copy(G.al.pos);
+  alGrp.rotation.set(0, 0, 0);
+}
+// Nose world-position (grab point): forward is -Z in local space
+function alNosePos(out){
+  out.copy(G.al.pos);
+  const q = alGrp.quaternion;
+  out.add(v3(0,0,-(CFG.airlinerLen/2)).applyQuaternion(q));
+  return out;
+}
 /* ===== SECTION: INPUT ===== */
+const KEYS = {};
+let mouseDX = 0, mouseDY = 0;           // consumed by sim each frame
+let sensitivity = 0.0022;
+addEventListener('keydown', (e)=>{
+  KEYS[e.code] = true;
+  if (['KeyW','KeyS','Space'].includes(e.code)) e.preventDefault();
+  if (e.code === 'KeyE') tryGrabOrRelease();
+  if (e.code === 'KeyR') restart();
+});
+addEventListener('keyup', (e)=>{ KEYS[e.code] = false; });
+addEventListener('mousemove', (e)=>{
+  if (document.pointerLockElement === canvas ||
+      !document.pointerLockElement){           // accept raw even unlocked (test-friendly)
+    mouseDX += e.movementX ?? 0;
+    mouseDY += e.movementY ?? 0;
+  }
+});
+canvas.addEventListener('mousedown', ()=>{
+  if (!G.ended && G.phase !== 'TITLE') canvas.requestPointerLock?.();
+});
+
+function pollControls(dt){
+  // Aim: mouse steers a virtual stick (yaw/pitch accumulate, spring to level slightly)
+  G.yaw   -= mouseDX * sensitivity;
+  G.pitch -= mouseDY * sensitivity;
+  G.pitch = clamp(G.pitch, -1.25, 1.25);
+  mouseDX = 0; mouseDY = 0;
+  // Throttle tiers: Shift+W = boost, W = cruise, neither = idle glide
+  const w = !!KEYS.KeyW, shift = !!(KEYS.ShiftLeft||KEYS.ShiftRight);
+  G.boosting = w && shift;
+  G.speedTier = w ? (shift ? 2 : 1) : 0;
+  G.braking = !!KEYS.KeyS && !G.grabbed;
+  G.liftIn = !!KEYS.Space;
+}
 /* ===== SECTION: FLIGHT MODEL ===== */
 /* ===== SECTION: MISSION FSM ===== */
 /* ===== SECTION: FAIL STATES ===== */
