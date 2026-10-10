@@ -425,7 +425,12 @@ function stepHolding(dt){
   const a = G.al;
   // Released: plane settles ballistically, hero no longer flies it
   if (a.freeFall){
-    a.vel.y = Math.max(a.vel.y - 6*dt, -CFG.landPerfect*0.8);   // flare-limited sink
+    // Flare dynamics: base damping, escalating into ground effect so a
+    // patient low release lands softly but a hurried high drop still cracks
+    // the hull (grading thresholds are all reachable).
+    const eff = Math.max(0, 1 - (a.pos.y - CFG.fuseR - 2) / 40);
+    const cap = -(CFG.landPerfect*0.8 + (CFG.landHard*1.2 - CFG.landPerfect*0.8) * (1 - eff));
+    a.vel.y = Math.max(a.vel.y - 6*dt, cap);
     a.vel.x *= (1 - 0.4*dt); a.vel.z *= (1 - 0.4*dt);
     a.pos.addScaledVector(a.vel, dt);
     alGrp.position.copy(a.pos);
@@ -454,14 +459,16 @@ function stepHolding(dt){
   alGrp.position.copy(a.pos);
   alGrp.rotation.set(clamp(-a.vel.y*0.004,-0.3,0.3),
     Math.atan2(-a.vel.x, -a.vel.z), 0);
+  // Held plane touching ground = crash (same rule as the released branch)
+  if (a.pos.y < CFG.fuseR + 2){ failGame('hard-crash'); return; }
   // Wing clips a tower?
   const th = cityHit(a.pos, CFG.fuseR+20);
   if (th > 0 && a.pos.y < th + 10){
     a.stress += 40; G.shake = 6;
     a.pos.y = th + 26; a.vel.y = Math.max(a.vel.y, 4);
   }
-  // Hull-zero from overstress
-  if (a.stress >= CFG.stressBuckleAt && a.stress >= 99.9) {/* reserved */}
+  // Hull destroyed by cumulative overstress
+  if (a.stress >= CFG.stressBuckleAt && a.stress >= 99.9){ failGame('hull-zero'); return; }
 }
 
 function gradeTouchdown(vy){
