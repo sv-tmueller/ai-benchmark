@@ -1,0 +1,127 @@
+id          = "servicenow-loaner-request"
+title       = "Six Equipment Loan Desk stories with Gherkin acceptance criteria"
+category    = "servicenow"
+difficulty  = "medium"
+temperature = 0.2
+max_tokens  = 16384
+save_as     = "md"
+file_prefix = "servicenow-loaner-stories"
+
+[system]
+text = '''
+You are a senior ServiceNow consultant and backlog owner. You write user
+stories and acceptance criteria that an implementation team can build from
+without asking clarifying questions. You use precise ServiceNow terminology
+(custom table, business rule, client script, scheduled script execution,
+email notification, ACL, form and list layout) and you never invent features
+that do not exist in the platform.
+'''
+
+[user]
+text = '''
+CONTEXT
+An internal IT department runs an equipment loan desk (laptops, projectors,
+test gear borrowed by employees for short periods). The desk must be stood up
+on a clean ServiceNow instance as a custom Global-scope application built with
+the ServiceNow SDK in configuration mode. Six individually scoped stories
+cover the full stack: schema, server-side governance, form usability,
+nightly automation with notification, security, and the form/list layout that
+makes the automated overdue flag visible to coordinators.
+
+YOUR TASK
+Produce exactly 6 user stories — no fewer, no filler stories. Distribute them
+as follows:
+
+  Story 1 — LOAN DESK SCHEMA: "Loan Request table (schema foundation)"
+  Story 2 — SERVER GOVERNANCE: "Approval gatekeeper business rule"
+  Story 3 — FORM USABILITY: "Form usability client scripts"
+  Story 4 — NIGHTLY AUTOMATION: "Overdue loan sweep (scheduled job + notification)"
+  Story 5 — SECURITY MODEL: "Roles and ACLs for the loan desk"
+  Story 6 — PRESENTATION LAYER: "Adjust Loan Request form to display overdue tracking"
+
+DOMAIN CONTRACT (all six stories build on this shared model; reference it,
+do not contradict it)
+Custom table u_loan_request (extends task, Global scope, label "Loan
+Request"):
+  - u_requester   reference to sys_user, mandatory
+  - u_asset_tag   string (40), mandatory, display column
+  - u_loan_status choice: requested / approved / rejected / returned,
+                  default requested
+  - u_due_date    date
+  - u_overdue     boolean, default false — set exclusively by the nightly
+                  sweep (Story 4), displayed by the form (Story 6)
+  - u_notes       multiline text (4000)
+Auto-numbering: prefix LN, starting LN0001001, seven digits.
+
+STORY FORMAT (apply identically to all 6 stories)
+For each story provide, in this order:
+
+  1. Title              — "<Story N>: ..." heading
+  2. User statement     — "As a <persona>, I want <capability>,
+                          because <benefit>."
+                          Personas must vary sensibly (lab coordinator,
+                          lab supervisor, requester, security administrator).
+  3. Technical approach — a compact spec naming the exact ServiceNow
+                          artefacts the story delivers (table + columns /
+                          business rule timing and conditions / client script
+                          types and triggering events / scheduled script +
+                          notification / roles + ACL operations / form
+                          sections + list columns).
+  4. Acceptance Criteria— Gherkin, per the rules below.
+
+PER-STORY MINIMUMS
+  Story 1: table exists in Global scope with the stated columns, defaults,
+           mandatory flags, and LN auto-numbering.
+  Story 2: requested -> returned is aborted server-side regardless of entry
+           point (REST, UI, import); approving without a due date is aborted;
+           the legal path due date -> approve -> return succeeds.
+  Story 3: notes hidden until a requester is chosen; warning raised when
+           status flips to returned while due date is empty; no warnings on
+           legitimate edits.
+  Story 4: sweep sets u_overdue=true on approved loans past due; re-runs are
+           idempotent (already-flagged loans untouched); returned and
+           not-yet-due loans untouched; the requester receives the "Loan
+           Overdue Alert" email naming asset tag and due date.
+  Story 5: lab_borrower may create but neither delete nor approve;
+           lab_supervisor may delete and approve; roleless users may not
+           read.
+  Story 6: three titled form sections (identification, scheduling, remarks)
+           with the state trio (loan status, due date, overdue) reading
+           together in the scheduling section; list shows number, requester,
+           asset tag, loan status, due date, overdue.
+
+GHERKIN RULES (correct spelling throughout: Gherkin)
+- One Feature block per story, titled after the story.
+- Three to five scenarios per story; every scenario is independently
+  executable and asserts OBSERVABLE state (field values, HTTP/API outcomes,
+  visible form elements, delivered mail) — never implementation internals
+  like script fragments.
+- Assert modeled fields (booleans, dates, references), never sentinel
+  strings hidden inside free-text fields.
+- Steps must be concrete: name actual fields, statuses, and actors from the
+  domain contract. No vague steps like "the system processes the request".
+- Use Scenario Outline with an Examples table anywhere repetition begs for
+  it (at least once across the document).
+
+CONSTRAINTS
+- Stay inside latest ServiceNow (Australia release era) capabilities:
+  custom tables, business rules, client scripts, scheduled script
+  executions, email notifications, ACLs, form/list configuration. No
+  IntegrationHub spokes, no paid plugins.
+- Realistic corporate flavour: consistent fake org details (company name,
+  fulfilment groups like "Equipment Pool", believable locations) reused
+  across stories so the set feels coherent.
+- Professional, implementation-ready tone. Tables allowed for column specs.
+
+QUALITY BAR / SELF-CHECK BEFORE ANSWERING
+Verify mentally: (1) exactly 6 stories in the stated order, (2) every story
+has a user statement, technical approach, and Gherkin acceptance criteria,
+(3) the domain contract is respected everywhere (statuses, field names,
+numbering), (4) all Gherkin parses conceptually (Feature/Scenario/Examples
+keywords correct), (5) no contradictions between story text and its
+scenarios.
+
+OUTPUT
+Markdown. Start directly with the Story 1 heading — no preamble, no meta
+commentary about the task.
+'''
