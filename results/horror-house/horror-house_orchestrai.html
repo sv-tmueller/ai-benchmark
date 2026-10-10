@@ -393,6 +393,333 @@ Tex.__more=null;
   });
 })();
 
+// §3 THE HOUSE ==================================================
+// Plan (x∈[-10,10], z∈[-8,8]). North row: STUDY|BEDROOM|KITCHEN
+// Middle band z∈[-4.6,-2.2]: HALLWAY. South row: LIVING|FOYER|DINING
+const WALL_H=3, WORLD={colliders:[],doors:{},bulbs:[],flames:[],
+  items:[],notes:[],rooms:{},ghostSpawns:[]};
+const MAT={};
+function matStd(o){return new THREE.MeshStandardMaterial(Object.assign({roughness:.92,metalness:.04},o));}
+function addSegX(z,segs,t){
+  t=t||.3;
+  segs.forEach(s=>{const w=s[1]-s[0];if(w<=0)return;addWall((s[0]+s[1])/2,z,w,t);});
+}
+function addSegZ(x,segs,t){
+  t=t||.3;
+  segs.forEach(s=>{const d=s[1]-s[0];if(d<=0)return;addWall(x,(s[0]+s[1])/2,t,d);});
+}
+function addWall(x,z,w,d,h,mat,noCollide){
+  const m=new THREE.Mesh(new THREE.BoxGeometry(w,h||WALL_H,d),mat||MAT.wall);
+  m.position.set(x,(h||WALL_H)/2,z);
+  G.scene.add(m);
+  if(!noCollide)WORLD.colliders.push({x,z,w,d,mesh:m});
+  return m;
+}
+
+function initMaterials(){
+  const fw=Tex.floorWood.clone();fw.needsUpdate=true;fw.repeat.set(5,4);
+  MAT.floor=matStd({map:fw});
+  const wp=Tex.wallpaper.clone();wp.needsUpdate=true;wp.repeat.set(2,1);
+  MAT.wall=matStd({map:wp});
+  const pl=Tex.plaster.clone();pl.needsUpdate=true;pl.repeat.set(6,5);
+  MAT.ceil=matStd({map:pl,color:0xbdb4a4});
+  MAT.darkWood=matStd({color:0x2a1d10,roughness:.85});
+  MAT.midWood=matStd({color:0x3d2c17,roughness:.8});
+  MAT.fabric=matStd({color:0x3a3030,roughness:1});
+  MAT.sheet=matStd({color:0x4a4640,roughness:1});
+  MAT.metal=matStd({color:0x6a5a34,roughness:.35,metalness:.85});
+  const dt=Tex.floorWood.clone();dt.needsUpdate=true;dt.repeat.set(1,1);
+  MAT.door=matStd({color:0x5a4020,roughness:.7,map:dt});
+  MAT.brass=matStd({color:0xa8862f,roughness:.3,metalness:.9,
+    emissive:0x402c00,emissiveIntensity:.6});
+}
+
+function buildHouse(){
+  // floor + ceiling
+  const floor=new THREE.Mesh(new THREE.PlaneGeometry(20,16),MAT.floor);
+  floor.rotation.x=-Math.PI/2;G.scene.add(floor);
+  const ceil=new THREE.Mesh(new THREE.PlaneGeometry(20,16),MAT.ceil);
+  ceil.rotation.x=Math.PI/2;ceil.position.y=WALL_H;G.scene.add(ceil);
+
+  // perimeter (thick .3, flush inside)
+  addWall(0,-7.85,20.6,.3);            // north
+  addSegX(7.85,[[-10.3,-1.1],[1.1,10.3]]); // south, front-door gap [-1.1,1.1]
+  addWall(-9.85,0,.3,16.6);            // west
+  addWall(9.85,0,.3,16.6);             // east
+
+  // ===== north-row room dividers (z from -8 to -4.6) =====
+  addSegZ(-3.4,[[-8,-4.6]],.3);        // study | bedroom
+  addSegZ(3.4,[[-8,-4.6]],.3);         // bedroom | kitchen
+
+  // ===== north-row south walls (z=-4.6) with door gaps =====
+  // study south wall x∈[-10,-3.4]: door gap [-7.2,-6.0]
+  addSegX(-4.6,[[-10,-7.2],[-6.0,-3.4]]);
+  // bedroom south wall x∈[-3.4,3.4]: door gap [-.6,.6]
+  addSegX(-4.6,[[-3.4,-.6],[.6,3.4]]);
+  // kitchen south wall x∈[3.4,10]: door gap [6.0,7.2]
+  addSegX(-4.6,[[3.4,6.0],[7.2,10]]);
+
+  // ===== hallway inner walls (z=-2.2), archway gaps =====
+  // arch gaps wider (1.6): study arch [-7.6,-6.0], bedroom arch [-.8,.8],
+  // kitchen arch [6.0,7.6]
+  addSegX(-2.2,[[-10,-7.6],[-6.0,-.8],[.8,6.0],[7.6,10]]);
+
+  // ===== south-row dividers (z from -2.2 to 8), archway gaps =====
+  // living|foyer divider at x=-3.4: arch gap z∈[1.4,2.8]
+  addSegZ(-3.4,[[-2.2,1.4],[2.8,8]]);
+  // foyer|dining divider at x=3.4: arch gap z∈[1.4,2.8]
+  addSegZ(3.4,[[-2.2,1.4],[2.8,8]]);
+
+  // room registry (centers for spawns / labels)
+  WORLD.rooms.study ={x:-6.7,z:-6.3,label:"Study"};
+  WORLD.rooms.bedroom={x:0,z:-6.3,label:"Bedroom"};
+  WORLD.rooms.kitchen={x:6.7,z:-6.3,label:"Kitchen"};
+  WORLD.rooms.hall   ={x:0,z:-3.4,label:"Hallway"};
+  WORLD.rooms.living ={x:-6.7,z:2.9,label:"Living Room"};
+  WORLD.rooms.foyer  ={x:0,z:2.9,label:"Foyer"};
+  WORLD.rooms.dining ={x:6.7,z:2.9,label:"Dining Room"};
+}
+
+// ---- swinging door on hinge -----------------------------------
+function makeDoor(name,x,z,width,axisDir,startClosed){
+  // axisDir: 'x' door leaf swings along x-axis wall (wall runs E-W)
+  const grp=new THREE.Group();
+  const leaf=new THREE.Mesh(new THREE.BoxGeometry(width,WALL_H-.2,.12),MAT.door);
+  leaf.position.set(width/2,(WALL_H-.2)/2,0);
+  grp.add(leaf);
+  // knob
+  const knob=new THREE.Mesh(new THREE.SphereGeometry(.05,8,8),MAT.brass);
+  knob.position.set(width-.15,1.1,.09);grp.add(knob);
+  grp.position.set(x,0,z);
+  G.scene.add(grp);
+  const d={name,group:grp,angle:0,targetAngle:startClosed?0:Math.PI/2.2,
+    open:!startClosed,pivot:x,locked:name==="front",
+    hx:x,hz:z,width,alongX:true};
+  WORLD.doors[name]=d;
+  return d;
+}
+function doorCollider(d){
+  // approximate current leaf footprint as small AABB at leaf midpoint
+  const a=d.angle,mid=a+d.width/2;
+  return {x:d.hx+Math.cos(mid)*d.width/2*d.dirX,
+          z:d.hz+Math.sin(mid)*d.width/2*d.dirZ,
+          w:.5,d:.5};
+}
+
+// ---- furniture primitives -------------------------------------
+function furnBox(x,y,z,w,h,d,mat,ry){
+  const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat||MAT.darkWood);
+  m.position.set(x,y,z);if(ry)m.rotation.y=ry;
+  G.scene.add(m);
+  WORLD.colliders.push({x,z,w:Math.abs(w*Math.cos(ry||0))+Math.abs(d*Math.sin(ry||0)),
+                        d:Math.abs(d*Math.cos(ry||0))+Math.abs(w*Math.sin(ry||0)),mesh:m,furn:true});
+  return m;
+}
+function addPortrait(x,y,z,ry){
+  const tex=Tex.makePortrait();
+  const fr=new THREE.Mesh(new THREE.BoxGeometry(.9,1.15,.06),MAT.darkWood);
+  const pic=new THREE.Mesh(new THREE.PlaneGeometry(.78,1.0),
+    new THREE.MeshBasicMaterial({map:tex}));
+  pic.position.z=.035;fr.add(pic);
+  fr.position.set(x,y,z);fr.rotation.y=ry;
+  G.scene.add(fr);
+}
+function addCandle(x,y,z){
+  const stem=new THREE.Mesh(new THREE.CylinderGeometry(.02,.025,.16,6),MAT.midWood);
+  stem.position.set(x,y+.08,z);G.scene.add(stem);
+  const flameMat=new THREE.SpriteMaterial({color:0xffc060,transparent:true,
+    opacity:.95,blending:THREE.AdditiveBlending});
+  const flame=new THREE.Sprite(flameMat);
+  flame.scale.set(.09,.16,1);flame.position.set(x,y+.2,z);
+  G.scene.add(flame);
+  const pt=new THREE.PointLight(0xff9a3c,.9,4.5,2);
+  pt.position.set(x,y+.28,z);G.scene.add(pt);
+  WORLD.flames.push({sprite:flame,light:pt,seed:Math.random()*10});
+  return flame;
+}
+
+// ---- populate rooms -------------------------------------------
+function furnishHouse(){
+  // STUDY (-6.7,-6.3): desk, bookshelf, chair, portrait
+  furnBox(-8.6,.38,-7.2,1.6,.76,.8,MAT.midWood);            // desk
+  furnBox(-9.4,1.1,-6.6,.35,2.2,1.4,MAT.darkWood);         // bookshelf
+  furnBox(-6.2,.45,-7.0,.5,.9,.5,MAT.fabric);              // chair
+  addPortrait(-5.0,1.7,-7.68,0);
+  addCandle(-8.2,.76,-7.2);
+  // books on shelf
+  for(let i=0;i<10;i++){
+    const bh=rand(.22,.3),bw=rand(.05,.08);
+    const bm=new THREE.Mesh(new THREE.BoxGeometry(bw,bh,.22),
+      matStd({color:new THREE.Color().setHSL(rand(.02,.1),.4,rand(.12,.3)),roughness:.9}));
+    bm.position.set(-9.15+ (i%5)*.12, 2.35-(bh/2)+(i<5?.0:-.35), -6.15);
+    G.scene.add(bm);
+  }
+
+  // BEDROOM (0,-6.3): bed, wardrobe, rocking chair, portrait
+  furnBox(0,.28,-7.1,1.8,.55,1.1,MAT.midWood);             // bed frame
+  furnBox(0,.62,-7.35,1.7,.18,.75,MAT.sheet);              // mattress
+  furnBox(-2.9,1.0,-7.3,.7,2.0,.6,MAT.darkWood);           // wardrobe
+  furnBox(1.9,.5,-7.2,.55,1.0,.55,MAT.fabric,.4);          // rocking chair
+  addPortrait(2.8,1.7,-7.68,0);
+  addCandle(-2.9,2.05,-7.3);
+
+  // KITCHEN (6.7,-6.3): counters, table, chairs, hanging pot
+  furnBox(9.2,.45,-7.3,1.4,.9,.8,MAT.midWood);             // counter
+  furnBox(6.6,.42,-6.9,1.5,.84,.9,MAT.midWood);            // table
+  furnBox(5.6,.45,-6.9,.45,.9,.45,MAT.darkWood);           // chair
+  furnBox(7.6,.45,-6.9,.45,.9,.45,MAT.darkWood);           // chair
+  furnBox(8.9,1.5,-7.3,.9,.4,.6,MAT.metal);                // cabinets
+  addCandle(6.6,.84,-6.9);
+
+  // HALLWAY (0,-3.4): side table, portraits, rug hint (skip rug)
+  furnBox(-9.3,.4,-3.4,.5,.8,.9,MAT.midWood);              // hall table
+  addPortrait(-9.68,1.7,-3.4,Math.PI/2);
+  addPortrait(9.68,1.7,-3.4,-Math.PI/2);
+  addCandle(-9.3,.8,-3.4);
+
+  // LIVING (-6.7,2.9): sofa, coffee table, fireplace, portrait
+  furnBox(-6.7,.35,6.9,2.4,.7,.9,MAT.fabric);              // sofa
+  furnBox(-6.7,.25,5.6,1.3,.5,.7,MAT.midWood);             // coffee table
+  furnBox(-9.5,.9,2.9,.6,1.8,1.6,MAT.darkWood);           // cabinet
+  addPortrait(-4.0,1.7,7.68,Math.PI);
+  addCandle(-6.7,.5,5.6);
+
+  // FOYER (0,2.9): round table w/ note + candle, coat rack
+  furnBox(0,.42,3.9,1.0,.84,1.0,MAT.midWood);              // table (note here)
+  furnBox(-2.6,.8,7.2,.3,1.6,.3,MAT.darkWood);             // coat rack
+  addCandle(0,.84,3.9);
+  addPortrait(-3.25,1.7,4.5,Math.PI/2);
+
+  // DINING (6.7,2.9): long table + 4 chairs, china cabinet
+  furnBox(6.7,.4,4.6,2.6,.8,1.1,MAT.midWood);              // table
+  [[5.6,4.0],[7.8,4.0],[5.6,5.2],[7.8,5.2]].forEach(p=>
+    furnBox(p[0],.45,p[1],.45,.9,.45,MAT.darkWood));
+  furnBox(9.5,1.0,4.6,.6,2.0,1.4,MAT.darkWood);           // cabinet
+  addCandle(6.7,.8,4.6);
+  addPortrait(3.25,1.7,4.5,-Math.PI/2);
+
+  // cobwebs in corners (planes with alpha texture)
+  const cwMat=new THREE.MeshBasicMaterial({map:Tex.cobweb,transparent:true,
+    depthWrite:false,side:THREE.DoubleSide});
+  [[-9.8,-7.8,0],[9.8,-7.8,Math.PI/2],[-9.8,7.8,Math.PI],[9.8,7.8,-Math.PI/2]]
+  .forEach(c=>{
+    const cw=new THREE.Mesh(new THREE.PlaneGeometry(1.6,1.6),cwMat);
+    cw.position.set(c[0],WALL_H-.8,c[1]);cw.rotation.y=c[2];
+    G.scene.add(cw);
+  });
+}
+
+// ---- doors, windows, ambience ----------------------------------
+function addDoorsWindowsLights(){
+  // doors: study (-7.2..-6.0 @ z=-4.6), bedroom (-.6..6 @ z=-4.6),
+  // front (−1.1..1.1 @ z=7.85). Hinge at negative-x end of each gap.
+  makeDoor("study",-7.2,-4.6,1.2,null,true);
+  makeDoor("bedroom",-.6,-4.6,1.2,null,true);
+  makeDoor("front",-1.1,7.85,2.2,null,true);
+
+  // windows: cold blue point lights just inside glass positions
+  const winPts=[
+    [-6.7,-7.7],[0,-7.7],[6.7,-7.7],   // north wall (kitchen/bedroom/study ext.)
+    [-9.7,2.9],[9.7,2.9],              // west/east living+dining
+    [-6.7,7.7],                         // living south
+  ];
+  winPts.forEach(p=>{
+    const wl=new THREE.PointLight(0x30405c,.5,7,2);
+    wl.position.set(p[0]*.98,2.1,p[1]*.98);
+    G.scene.add(wl);
+    // faint window plane (slightly emissive dark blue)
+    const wm=new THREE.Mesh(new THREE.PlaneGeometry(1.1,1.4),
+      new THREE.MeshBasicMaterial({color:0x1a2334}));
+    wm.position.set(p[0]<-9?p[0]+.16:(p[0]>9?p[0]-.16:p[0]),2.1,
+                    Math.abs(p[1])>7?(p[1]>0?p[1]-.16:p[1]+.16):p[1]);
+    if(p[0]<-9)wm.rotation.y=Math.PI/2;
+    if(p[0]>9)wm.rotation.y=-Math.PI/2;
+    if(p[1]>7)wm.rotation.y=Math.PI;
+    G.scene.add(wm);
+  });
+
+  // flickering warm bulbs: foyer + hallway
+  [["foyer",0,2.4,2.2],["hall",0,2.4,-3.4]].forEach(b=>{
+    const bl=new THREE.PointLight(0xd8a24a,1.0,6,2);
+    bl.position.set(b[1],b[2],b[3]);
+    G.scene.add(bl);
+    WORLD.bulbs.push({light:bl,base:1.0,seed:Math.random()*10,name:b[0]});
+    // bulb housing
+    const hm=new THREE.Mesh(new THREE.CylinderGeometry(.03,.05,.12,6),
+      matStd({color:0x1a1a1a,emissive:0xc89440,emissiveIntensity:.8}));
+    hm.position.copy(bl.position);hm.position.y+=.08;
+    G.scene.add(hm);
+  });
+
+  // dust motes: Points cloud drifting in beam area
+  const dg=new THREE.BufferGeometry();
+  const dn=380,dpos=new Float32Array(dn*3);
+  for(let i=0;i<dn;i++){
+    dpos[i*3]=rand(-10,10);dpos[i*3+1]=rand(.2,2.8);dpos[i*3+2]=rand(-8,8);
+  }
+  dg.setAttribute("position",new THREE.BufferAttribute(dpos,3));
+  const dm=new THREE.PointsMaterial({color:0xcbb98a,size:.02,transparent:true,
+    opacity:.5,depthWrite:false,blending:THREE.AdditiveBlending});
+  WORLD.dust=new THREE.Points(dg,dm);
+  G.scene.add(WORLD.dust);
+}
+
+// ---- items (keys, batteries, notes) ----------------------------
+function spawnItems(){
+  // clear old
+  WORLD.items.forEach(it=>G.scene.remove(it.mesh));
+  WORLD.notes.forEach(n=>n.taken=true);
+  WORLD.items=[];WORLD.notes=[];
+
+  // KEY SPOTS: 3 candidate zones each for kitchen/study/bedroom
+  const keyZones={
+    kitchen:[[9.0,-6.4],[6.6,-6.4],[8.0,-7.4]],
+    study:[[-8.6,-7.0],[-9.0,-6.2],[-6.2,-7.2]],
+    bedroom:[[-2.6,-7.2],[1.9,-6.9],[-2.9,-6.6]]
+  };
+  const keyGeo=new THREE.TorusGeometry(.055,.02,8,14);
+  ["kitchen","study","bedroom"].forEach(room=>{
+    const spot=keyZones[room][Math.floor(Math.random()*3)];
+    const mesh=new THREE.Mesh(keyGeo,MAT.brass);
+    // float at grab height above the chosen surface
+    mesh.position.set(spot[0],.95,spot[1]);
+    mesh.rotation.x=Math.PI/2;
+    mesh.userData={kind:"key",room};
+    const halo=new THREE.PointLight(0xe8c96a,.7,2.5,2);
+    mesh.add(halo);
+    G.scene.add(mesh);
+    WORLD.items.push({mesh,kind:"key",taken:false,pos:spot});
+  });
+
+  // BATTERIES: fixed spots (living, dining, hallway, kitchen)
+  [[-6.7,5.6,.55],[6.7,4.6,.85],[-9.3,-3.4,.85],[9.2,-7.3,.95]].forEach((p,i)=>{
+    const bat=new THREE.Mesh(new THREE.CylinderGeometry(.035,.035,.12,10),
+      matStd({color:0x2a4a2a,roughness:.5,metalness:.6,
+        emissive:0x0a2a0a,emissiveIntensity:.4}));
+    bat.position.set(p[0],p[2],p[1]);
+    bat.userData={kind:"battery"};
+    G.scene.add(bat);
+    WORLD.items.push({mesh:bat,kind:"battery",taken:false,pos:[p[0],p[1]]});
+  });
+
+  // NOTES: foyer table (objective), study desk (burn lore)
+  const mkNote=(x,y,z,title,body,id)=>{
+    const nm=new THREE.Mesh(new THREE.PlaneGeometry(.3,.22),
+      matStd({color:0xcabb90,emissive:0x2a2416,emissiveIntensity:.5}));
+    nm.rotation.x=-Math.PI/2;nm.rotation.z=rand(-.4,.4);
+    nm.position.set(x,y,z);
+    nm.userData={kind:"note"};
+    G.scene.add(nm);
+    WORLD.notes.push({mesh:nm,title,body,id,taken:false});
+  };
+  mkNote(0,.85,3.9,"Scratched note",
+    "It locks us in until the keys are found. THREE brass keys — the cook kept one in the kitchen, the master in his study, and the wife upstairs bedroom.<br><br>Get them all. Open the front door. RUN.",
+    "foyerNote");
+  mkNote(-8.6,.79,-7.2,"Journal fragment",
+    "It hates the light. Catch it in the torch beam and HOLD — the thing burns like paper. But it always comes back. Always.<br><br>Batteries everywhere. Hoard them.",
+    "studyNote");
+}
+
 </script>
 </body>
 </html>
