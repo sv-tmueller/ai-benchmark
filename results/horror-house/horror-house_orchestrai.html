@@ -1003,6 +1003,376 @@ function closeNote(){
   el("noteModal").classList.add("hidden");
 }
 
+// §5 AUDIO ENGINE (all synthesized) =============================
+const Audio={ready:false,ctx:null,master:null,busFx:null,
+  heartGain:null,chaseGain:null,proxGain:null,
+  _heartTimer:0,_rainNodes:null,_droneNodes:null};
+
+Audio.init=function(){
+  if(this.ready)return;
+  try{
+    const AC=window.AudioContext||window.webkitAudioContext;
+    this.ctx=new AC();
+  }catch(e){return;} // no audio support — game stays playable
+  const c=this.ctx;
+  this.master=c.createGain();this.master.gain.value=.9;
+  this.master.connect(c.destination);
+  // gentle master compressor to tame stingers
+  const comp=c.createDynamicsCompressor();
+  comp.threshold.value=-18;comp.ratio.value=6;
+  comp.connect(this.master);
+  this.busFx=comp;
+
+  // --- low drone: two detuned saws through lowpass ---
+  const dr=c.createGain();dr.gain.value=.055;dr.connect(comp);
+  [55,55.7].forEach(f=>{
+    const o=c.createOscillator();o.type="sawtooth";o.frequency.value=f;
+    const lp=c.createBiquadFilter();lp.type="lowpass";lp.frequency.value=110;
+    o.connect(lp);lp.connect(dr);o.start();
+  });
+  // sub sine swell
+  const sub=c.createOscillator();sub.type="sine";sub.frequency.value=27.5;
+  const subG=c.createGain();subG.gain.value=.05;
+  sub.connect(subG);subG.connect(dr);sub.start();
+
+  // --- rain bed: filtered white noise loop ---
+  const nb=c.createBuffer(1,c.sampleRate*2,c.sampleRate);
+  const nd=nb.getChannelData(0);
+  for(let i=0;i<nd.length;i++)nd[i]=Math.random()*2-1;
+  const ns=c.createBufferSource();ns.buffer=nb;ns.loop=true;
+  const nf=c.createBiquadFilter();nf.type="bandpass";
+  nf.frequency.value=2600;nf.Q.value=.6;
+  const ng=c.createGain();ng.gain.value=.028;
+  ns.connect(nf);nf.connect(ng);ng.connect(comp);ns.start();
+  this._rainGain=ng;
+
+  // --- wind whistle (slow LFO on a resonant bp) ---
+  const wo=c.createOscillator();wo.type="triangle";wo.frequency.value=300;
+  const wf=c.createBiquadFilter();wf.type="bandpass";
+  wf.frequency.value=420;wf.Q.value=22;
+  const wg=c.createGain();wg.gain.value=.012;
+  const lfo=c.createOscillator();lfo.frequency.value=.07;
+  const lg=c.createGain();lg.gain.value=180;
+  lfo.connect(lg);lg.connect(wf.frequency);lfo.start();
+  wo.connect(wf);wf.connect(wg);wg.connect(comp);wo.start();
+
+  // --- heartbeat bus ---
+  this.heartGain=c.createGain();this.heartGain.gain.value=0;
+  this.heartGain.connect(comp);
+
+  // --- proximity breath bus (ghost closeness) ---
+  this.proxGain=c.createGain();this.proxGain.gain.value=0;
+  this.proxGain.connect(comp);
+
+  // --- chase music bus (pounding pulse) ---
+  this.chaseGain=c.createGain();this.chaseGain.gain.value=0;
+  this.chaseGain.connect(comp);
+
+  this.ready=true;
+};
+
+// resume on gesture (autoplay policy)
+Audio.resume=function(){if(this.ctx&&this.ctx.state==="suspended")this.ctx.resume();};
+
+// --- one-shot helpers -------------------------------------------
+Audio.noiseBuf=function(sec){
+  const c=this.ctx,b=c.createBuffer(1,c.sampleRate*sec,c.sampleRate);
+  const d=b.getChannelData(0);
+  for(let i=0;i<d.length;i++)d[i]=Math.random()*2-1;
+  return b;
+};
+Audio.blip=function({freq=440,type="sine",dur=.2,gain=.2,attack=.01,
+  freqEnd=null,pan=0,dest=null}={}){
+  if(!this.ready)return;
+  const c=this.ctx,t=c.currentTime;
+  const o=c.createOscillator();o.type=type;o.frequency.setValueAtTime(freq,t);
+  if(freqEnd!=null)o.frequency.exponentialRampToValueAtTime(
+    Math.max(1,freqEnd),t+dur);
+  const g=c.createGain();
+  g.gain.setValueAtTime(0,t);
+  g.gain.linearRampToValueAtTime(gain,t+attack);
+  g.gain.exponentialRampToValueAtTime(.0001,t+dur);
+  const pn=c.createStereoPanner();pn.pan.value=pan;
+  o.connect(g);g.connect(pn);pn.connect(dest||this.busFx);
+  o.start(t);o.stop(t+dur+.05);
+};
+Audio.noiseShot=function({dur=.3,gain=.3,type="lowpass",freq=800,q=1,
+  sweepTo=null,pan=0}={}){
+  if(!this.ready)return;
+  const c=this.ctx,t=c.currentTime;
+  const s=c.createBufferSource();s.buffer=this.noiseBuf(dur+.1);
+  const f=c.createBiquadFilter();f.type=type;f.frequency.setValueAtTime(freq,t);
+  f.Q.value=q;
+  if(sweepTo)f.frequency.exponentialRampToValueAtTime(sweepTo,t+dur);
+  const g=c.createGain();
+  g.gain.setValueAtTime(gain,t);
+  g.gain.exponentialRampToValueAtTime(.0001,t+dur);
+  const pn=c.createStereoPanner();pn.pan.value=pan;
+  s.connect(f);f.connect(g);g.connect(pn);pn.connect(this.busFx);
+  s.start(t);s.stop(t+dur+.1);
+};
+
+// named cues ------------------------------------------------------
+Audio.thunder=function(intensity){
+  intensity=intensity||1;
+  this.noiseShot({dur:2.2+intensity,gain:.5*intensity,type:"lowpass",
+    freq:400,sweepTo:60});
+  this.blip({freq:60,type:"sine",dur:1.8,gain:.3*intensity,freqEnd:28});
+};
+Audio.stinger=function(){ // loud violin-ish shock chord
+  if(!this.ready)return;
+  [660,672,1310].forEach((f,i)=>
+    this.blip({freq:f,type:"sawtooth",dur:.9,gain:.16/(i+1),
+      freqEnd:f*1.06,attack:.005}));
+  this.noiseShot({dur:.5,gain:.35,type:"highpass",freq:2000});
+};
+Audio.scream=function(){ // entity shriek
+  if(!this.ready)return;
+  this.blip({freq:880,type:"sawtooth",dur:1.4,gain:.3,freqEnd:2900,attack:.02});
+  this.blip({freq:1245,type:"square",dur:1.2,gain:.12,freqEnd:3100});
+  this.noiseShot({dur:1.0,gain:.3,type:"bandpass",freq:1800,q:3});
+};
+Audio.whisper=function(pan){
+  pan=pan!==undefined?pan:rand(-1,1);
+  this.noiseShot({dur:1.6,gain:.10,type:"bandpass",freq:5200,q:8,pan});
+  this.blip({freq:rand(280,340),type:"sine",dur:.5,gain:.045,
+    freqEnd:rand(200,260),pan});
+};
+Audio.knock=function(pan,count){
+  count=count||3;
+  pan=pan!==undefined?pan:rand(-1,1);
+  for(let i=0;i<count;i++)
+    setTimeout(()=>this.noiseShot({dur:.12,gain:.4,type:"lowpass",
+      freq:180,pan}),i*rand(300,430));
+};
+Audio.slam=function(){
+  this.noiseShot({dur:.35,gain:.7,type:"lowpass",freq:220});
+  this.blip({freq:90,type:"sine",dur:.3,gain:.4,freqEnd:35});
+};
+Audio.creak=function(){
+  this.blip({freq:rand(160,240),type:"sawtooth",dur:.7,gain:.05,
+    freqEnd:rand(90,140),attack:.15});
+};
+Audio.rattle=function(){ // locked door
+  for(let i=0;i<3;i++)setTimeout(()=>this.noiseShot({dur:.08,gain:.25,
+    type:"bandpass",freq:2400,q:6}),i*90);
+};
+Audio.unlock=function(){
+  this.noiseShot({dur:.15,gain:.3,type:"bandpass",freq:1500,q:4});
+  setTimeout(()=>this.noiseShot({dur:.2,gain:.35,type:"lowpass",freq:300}),180);
+};
+Audio.pickup=function(){
+  this.blip({freq:1320,type:"triangle",dur:.3,gain:.15,freqEnd:1760});
+};
+Audio.click=function(){this.noiseShot({dur:.05,gain:.15,freq:3000});};
+Audio.growl=function(){
+  this.blip({freq:70,type:"sawtooth",dur:1.6,gain:.22,freqEnd:44,attack:.2});
+  this.noiseShot({dur:1.4,gain:.15,type:"lowpass",freq:300});
+};
+Audio.banish=function(){
+  this.scream();
+  this.noiseShot({dur:1.2,gain:.3,type:"highpass",freq:900,sweepTo:6000});
+};
+Audio.death=function(){
+  this.scream();
+  this.stinger();
+  this.blip({freq:55,type:"sine",dur:2.5,gain:.3,freqEnd:25});
+};
+Audio.win=function(){
+  [523,659,784,1046].forEach((f,i)=>setTimeout(()=>
+    this.blip({freq:f,type:"triangle",dur:.8,gain:.14}),i*160));
+};
+
+// continuous controllers ------------------------------------------
+Audio.setHeart=function(v){ // 0..1 intensity
+  if(!this.ready)return;
+  this.heartGain.gain.setTargetAtTime(v*.5,this.ctx.currentTime,.4);
+};
+Audio.setProximity=function(v){
+  if(!this.ready)return;
+  this.proxGain.gain.setTargetAtTime(v*.35,this.ctx.currentTime,.3);
+};
+Audio.setChase=function(on){
+  if(!this.ready)return;
+  this.chaseGain.gain.setTargetAtTime(on?.5:0,this.ctx.currentTime,.6);
+};
+Audio.tickHeartbeat=function(rate){ // called from loop; rate Hz
+  if(!this.ready)return;
+  this._heartTimer-=1/60;
+  if(this._heartTimer<=0){
+    this._heartTimer=rate>0?1/Math.max(rate,.2):999;
+    if(rate>0){
+      this.blip({freq:58,type:"sine",dur:.14,gain:.9,freqEnd:40,
+        dest:this.heartGain});
+      setTimeout(()=>this.blip({freq:52,type:"sine",dur:.12,gain:.6,
+        freqEnd:38,dest:this.heartGain}),150);
+    }
+  }
+};
+
+// §7 SCARE DIRECTOR ==============================================
+const Scares={
+  fired:{},ambientT:8,lightningT:rand(6,14),
+  entered:{},
+};
+Scares.fireOnce=function(id,fn){
+  if(this.fired[id])return;
+  this.fired[id]=true;
+  fn();
+};
+Scares.roomOf=function(x,z){
+  if(z<-4.6){
+    if(x<-3.4)return "study";
+    if(x>3.4)return "kitchen";
+    return "bedroom";
+  }
+  if(z<-2.2)return "hall";
+  if(x<-3.4)return "living";
+  if(x>3.4)return "dining";
+  return "foyer";
+};
+Scares.update=function(dt){
+  const room=this.roomOf(P.pos.x,P.pos.z);
+  if(room&&!this.entered[room]){
+    this.entered[room]=true;
+    this.zoneTrigger(room);
+  }
+  this.ambientT-=dt;
+  if(this.ambientT<=0){
+    this.ambientT=rand(9,20);
+    const roll=Math.random();
+    if(roll<.3)Audio.whisper();
+    else if(roll<.55)Audio.knock();
+    else if(roll<.75)Audio.creak();
+    else if(roll<.9)Audio.thunder(.4);
+    else Audio.whisper(rand(-1,1));
+  }
+  this.lightningT-=dt;
+  if(this.lightningT<=0){
+    this.lightningT=rand(10,26);
+    this.lightningStrike();
+  }
+};
+Scares.zoneTrigger=function(room){
+  switch(room){
+    case "living":
+      this.fireOnce("s1_livingThump",()=>{
+        setTimeout(()=>{Audio.knock(-.6,2);Audio.whisper(-.7);},400);
+        subtitle("Something shifted in the dark...");
+      });
+      break;
+    case "hall":
+      this.fireOnce("s2_hallFlicker",()=>{
+        HUD.flickerBulbs(2.2);
+        setTimeout(()=>{Audio.slam();P.shake=Math.max(P.shake,.8);},900);
+        subtitle("A door slammed somewhere behind you.");
+      });
+      break;
+    case "kitchen":
+      this.fireOnce("s3_kitchenBang",()=>{
+        setTimeout(()=>{
+          Audio.slam();Audio.stinger();
+          P.shake=Math.max(P.shake,1);
+          HUD.flashRed(.35);
+        },500);
+        subtitle("The cabinet burst open on its own.");
+      });
+      break;
+    case "bedroom":
+      this.fireOnce("s5_bedroomSlam",()=>{
+        setTimeout(()=>{
+          Audio.slam();P.shake=Math.max(P.shake,.9);
+          HUD.flashRed(.25);
+          const bd=WORLD.doors.bedroom;
+          if(bd){bd.open=false;bd.targetAngle=0;}
+        },700);
+        subtitle("The bedroom door slammed shut behind you.");
+      });
+      break;
+  }
+};
+Scares.onKeyTaken=function(){
+  if(P.lastKeyRoom==="study"){
+    this.fireOnce("s4_studyApparition",()=>{
+      setTimeout(()=>{
+        Ghost.apparitionAt(-6.6,-4.0,1.2);
+        Audio.stinger();HUD.flashWhite(.18);
+      },600);
+    });
+  }
+  if(G.keysFound===2){
+    this.fireOnce("s6_stalkBegin",()=>{
+      Audio.growl();
+      subtitle("A low growl rolls through the walls. It knows you're here.");
+      Ghost.beginStalking();
+    });
+  }
+  if(G.keysFound===3){
+    this.fireOnce("s7_chase",()=>{
+      subtitle("BLACKOUT. RUN FOR THE DOOR.");
+      HUD.blackoutBeat(()=>{
+        Audio.scream();
+        Ghost.beginChase();
+        HUD.flashRed(.5);
+        Audio.setChase(true);
+      });
+    });
+  }
+};
+Scares.lightningStrike=function(){
+  const strikeInt=rand(.5,1);
+  HUD.flashWhite(.12*strikeInt);
+  const wins=[];
+  G.scene.traverse(o=>{
+    if(o.isPointLight&&o.distance===7&&o.intensity<=1)wins.push(o);
+  });
+  wins.forEach(w=>{w.intensity=3.2*strikeInt;});
+  setTimeout(()=>wins.forEach(w=>{w.intensity=.5;}),110);
+  setTimeout(()=>{Audio.thunder(strikeInt);},rand(400,1800));
+};
+
+// §8 HUD ==========================================================
+const HUD={subT:0,flickerT:0};
+HUD.updateKeys=function(){
+  el("keysHud").textContent="KEYS\u00a0\u00a0"+G.keysFound+" / 3";
+  el("objective").textContent=G.keysFound>=3
+    ?"Unlock the front door. Escape."
+    :"Find 3 brass keys hidden in the house.";
+};
+HUD.updateBattery=function(){
+  const f=el("batteryFill");
+  f.style.width=(P.battery*100).toFixed(0)+"%";
+  f.classList.toggle("low",P.battery<.2);
+};
+HUD.flashRed=function(a){
+  el("redVeil").style.opacity=a;
+  setTimeout(()=>{el("redVeil").style.opacity=0;},450);
+};
+HUD.flashWhite=function(a){
+  const fw=el("flashWhite");
+  fw.style.transition="none";fw.style.opacity=a;
+  requestAnimationFrame(()=>{
+    fw.style.transition="opacity .35s";fw.style.opacity=0;
+  });
+};
+HUD.flickerBulbs=function(sec){this.flickerT=sec;};
+HUD.blackoutBeat=function(cb){
+  WORLD.bulbs.forEach(b=>{b.base=0;b.light.intensity=0;});
+  P.blackout=1.6;
+  Audio.blip({freq:40,type:"sine",dur:1.4,gain:.4,freqEnd:22});
+  setTimeout(()=>{
+    cb&&cb();
+    setTimeout(()=>{
+      WORLD.bulbs.forEach(b=>{b.base=.55;});
+      P.blackout=0;
+    },2200);
+  },1600);
+};
+function subtitle(txt){
+  el("subtitle").textContent=txt;
+  HUD.subT=4;
+}
+
 </script>
 </body>
 </html>
