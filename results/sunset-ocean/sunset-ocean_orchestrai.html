@@ -346,11 +346,13 @@ void main () {
     disp.y += amp * SA;
 
     // --- analytic partial derivatives (normal & Jacobian) --------------
-    ddx.x += -QA * dir.x * dir.x * SA;
-    ddx.z += -QA * dir.x * dir.y * SA;
+    // Horizontal terms carry the chain-rule k from d/dx cos(k·D·x − ωt):
+    // d(QA·Dᵤ·cos f)/dx = −QA·Dᵤ·k·Dₓ·sin f
+    ddx.x += -QA * dir.x * dir.x * k * SA;
+    ddx.z += -QA * dir.x * dir.y * k * SA;
     ddx.y +=  amp * dir.x * k * CA;
-    ddz.x += -QA * dir.y * dir.x * SA;
-    ddz.z += -QA * dir.y * dir.y * SA;
+    ddz.x += -QA * dir.y * dir.x * k * SA;
+    ddz.z += -QA * dir.y * dir.y * k * SA;
     ddz.y +=  amp * dir.y * k * CA;
 
     // Crest-compression indicator feeding foam mask
