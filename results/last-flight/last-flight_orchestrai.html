@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Last Flight — Orchestrai</title>
+<style>
+  html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#0b1020;font-family:'Segoe UI',system-ui,sans-serif;color:#fff}
+  #hud{position:fixed;top:12px;left:14px;z-index:10;text-shadow:0 1px 3px #000;pointer-events:none;line-height:1.5}
+  #hudR{position:fixed;top:12px;right:14px;z-index:10;text-align:right;text-shadow:0 1px 3px #000;pointer-events:none;line-height:1.5}
+  #centerMsg{position:fixed;top:34%;width:100%;text-align:center;font-size:28px;font-weight:700;
+    text-shadow:0 2px 8px #000;pointer-events:none;z-index:11;letter-spacing:.04em}
+  #overlay{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    z-index:20;background:radial-gradient(circle,#12203fdd,#05070fee)}
+  #overlay h1{font-size:52px;margin:0 0 8px;letter-spacing:.08em}
+  #overlay p{color:#bcd;font-size:17px;margin:4px 0;max-width:560px;text-align:center}
+  #overlay .big{font-size:44px;font-weight:800;color:#ffd75e;margin-top:18px}
+  kbd{background:#233;border:1px solid #567;border-radius:4px;padding:1px 7px;font-family:monospace}
+  .warn{color:#ff8080}.good{color:#7dff9a}
+</style>
+<script type="importmap">
+{"imports":{
+  "three":"https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"
+}}
+</script>
+</head>
+<body>
+<div id="hud"></div>
+<div id="hudR"></div>
+<div id="centerMsg" style="display:none"></div>
+<div id="overlay"><h1>LAST FLIGHT</h1><p id="ovSub">Flight 227 is falling over the city.</p></div>
+<script type="module">
+// LAST FLIGHT — single-file build. Sections appended below.
+/* ===== SECTION: CONFIG ===== */
+const CFG = {
+  // Hero flight
+  thrustCruise: 42, thrustBoost: 118, accelLerp: 3.2,
+  dragK: 0.0016, dragKClimb: 0.0026, minSpeed: 24, maxSpeed: 260,
+  turnRateBase: 2.1, turnRateFast: 3.4, fovBase: 66, fovBoost: 84,
+  heroRadius: 2.2, ceiling: 900, floorPad: 2.0,
+  // Throttle tiers: idle / cruise(W) / boost(shift+W)
+  tierAccel: [ -8, 46, 130 ],
+  // Airliner
+  spawnDist: 5200, spawnAlt: 720, sinkStart: 850, sinkFinal: 3200,
+  rollRate: 0.85, airlinerLen: 68, airlinerSpan: 78, fuseR: 4.4,
+  grabRange: 13, noseOffsetZ: 36,
+  // Holding physics (merged body)
+  holdGravity: -8, holdLift: 34, holdBrakeDrag: 0.9, holdThrust: 58,
+  stressPerG: 26, stressHeal: 4.5, stressBuckleAt: 100, buckleShake: 9,
+  stallSpeed: 32,
+  // Landing grading (vertical speed at touchdown)
+  landPerfect: 4.0, landHard: 10.0,
+  // City
+  blockSize: 210, gridHalf: 14, towerMin: 40, towerMax: 330, roadGap: 48,
+  // Camera
+  camBack: 16, camUp: 5.4, camLerp: 5.0,
+};
+const SEA_LEVEL = 0;
+
+/* ===== SECTION: CORE STATE ===== */
+const G = {
+  phase: 'TITLE',            // TITLE FLY GRAB HOLD LAND DONE CRASH
+  tPrev: 0, acc: 0, dtFixed: 1/120, elapsed: 0,
+  paused: false, ended: false,
+  // Hero kinematic state
+  pos: null, vel: null, quat: null,          // filled by initHero()
+  yaw: 0, pitch: 0,                          // aim angles (radians)
+  speedTier: 0,                              // 0 idle, 1 cruise, 2 boost
+  boosting: false, hp: 100,
+  // Airliner state
+  al: null,                                  // {group,pos,vel,bank,held,stress,...}
+  grabbed: false, released: false,
+  // Fail/win bookkeeping
+  failReason: '', savedCount: 218,
+  msgTimer: 0,
+};
+function v3(x,y,z){ return new THREE.Vector3(x,y,z); }
+function dist(a,b){ return Math.hypot(a.x-b.x,a.y-b.y,a.z-b.z); }
+function clamp(v,a,b){ return Math.max(a,Math.min(b,v)); }
+function lerp(a,b,t){ return a+(b-a)*t; }
+/* ===== SECTION: RENDERER & SKY ===== */
+import * as THREE from 'three';
+import { Sky } from 'three/addons/objects/Sky.js';
+
+const canvas = document.createElement('canvas');
+canvas.style.cssText = 'position:fixed;inset:0;width:100%;height:100%';
+document.body.prepend(canvas);
+const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0xcfd8ec, 0.00009);
+const camera = new THREE.PerspectiveCamera(CFG.fovBase, innerWidth/innerHeight, 0.5, 24000);
+
+// Golden-hour sun 4 deg elevation
+{
+  const sky = new Sky(); sky.scale.setScalar(45000);
+  const u = sky.material.uniforms;
+  u.turbidity.value = 6; u.rayleigh.value = 2.2; u.mieCoefficient.value = 0.007; u.mieDirectionalG.value = 0.85;
+  const sun = new THREE.Vector3().setFromSphericalCoords(1, Math.PI/2 - 0.07, 2.4); // elev ~4deg
+  u.sunPosition.value.copy(sun);
+  scene.add(sky);
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromScene(sky).texture;
+}
+const SUN_DIR = (()=>{ const s=new THREE.Vector3().setFromSphericalCoords(1, Math.PI/2-0.07, 2.4); return s.normalize(); })();
+const sunLight = new THREE.DirectionalLight(0xffe3b0, 2.6);
+sunLight.position.copy(SUN_DIR.clone().multiplyScalar(4000));
+scene.add(sunLight, new THREE.HemisphereLight(0xbcc7ee, 0x39424f, 0.9));
+
+// Sea/ground plane with cheap shader fresnel
+{
+  const geo = new THREE.PlaneGeometry(40000, 40000);
+  const mat = new THREE.MeshStandardMaterial({ color: 0x27435c, roughness: 0.55, metalness: 0.35 });
+  const ground = new THREE.Mesh(geo, mat);
+  ground.rotation.x = -Math.PI/2; ground.position.y = -0.5;
+  scene.add(ground);
+}
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+/* ===== SECTION: CITY ===== */
+// Procedural city: deterministic PRNG grid of towers, kept for AABB collision.
+const towers = [];   // {x,z,w,d,h}
+function mulberry32(seed){ return ()=>{ seed|=0; seed=(seed+0x6D2B79F5)|0;
+  let t=Math.imul(seed^(seed>>>15),1|seed); t=(t+Math.imul(t^(t>>>7),61|t))^t;
+  return ((t^(t>>>14))>>>0)/4294967296; }; }
+
+function buildCity(){
+  const rnd = mulberry32(227);
+  const palette = [0x5a6578, 0x6b7488, 0x8a93a5, 0x4a5568, 0x767f92]
+    .map(c => new THREE.MeshStandardMaterial({ color:c, roughness:0.72, metalness:0.18 }));
+  const boxGeo = new THREE.BoxGeometry(1,1,1);
+  boxGeo.translate(0, 0.5, 0); // pivot at base
+  const meshes = [];
+  for(let gi=-CFG.gridHalf; gi<=CFG.gridHalf; gi++){
+    for(let gj=-CFG.gridHalf; gj<=CFG.gridHalf; gj++){
+      // carve corridors: keep roads along axes; skip stadium zone (west, near origin offset)
+      const cx = gi*(CFG.blockSize+CFG.roadGap), cz = gj*(CFG.blockSize+CFG.roadGap);
+      if (gi===0 || gj===0) continue;                      // boulevards
+      if (cx > -1900 && cx < -1100 && cz > -350 && cz < 350) continue; // stadium plot
+      const cells = 2 + Math.floor(rnd()*3);
+      for(let c=0;c<cells;c++){
+        const ox = cx + (rnd()-0.5)*(CFG.blockSize-60);
+        const oz = cz + (rnd()-0.5)*(CFG.blockSize-60);
+        const dc = Math.hypot(gi,gj);                       // taller downtown
+        const h = lerp(CFG.towerMax, CFG.towerMin, clamp(dc/(CFG.gridHalf*0.9),0,1))
+                  * (0.55+rnd()*0.6);
+        const w = 26+rnd()*46, d = 26+rnd()*46;
+        const mat = palette[Math.floor(rnd()*palette.length)];
+        const m = new THREE.Mesh(boxGeo, mat);
+        m.scale.set(w,h,d); m.position.set(ox, 0, oz);
+        m.userData.isTower = true;
+        scene.add(m); meshes.push(m);
+        towers.push({ x:ox, z:oz, w:w/2, d:d/2, h:h });
+      }
+    }
+  }
+  return meshes;
+}
+// Sphere-vs-city: returns penetration height if hero point is inside a tower footprint, else 0
+function cityHit(p, r){
+  for(const t of towers){
+    if (p.y - r > t.h) continue;
+    if (Math.abs(p.x - t.x) < t.w + r && Math.abs(p.z - t.z) < t.d + r) return t.h;
+  }
+  return 0;
+}
+/* ===== SECTION: STADIUM ===== */
+const STADIUM = { x:-1520, z:0, radius:220 };
+function buildStadium(){
+  const grp = new THREE.Group();
+  // Bowl: torus ring wall
+  const wall = new THREE.Mesh(
+    new THREE.CylinderGeometry(STADIUM.radius, STADIUM.radius+30, 46, 48, 1, true),
+    new THREE.MeshStandardMaterial({ color:0xd8dde8, roughness:0.6, side:THREE.DoubleSide }));
+  wall.position.y = 23;
+  // Field
+  const field = new THREE.Mesh(new THREE.CircleGeometry(STADIUM.radius-38, 48),
+    new THREE.MeshStandardMaterial({ color:0x2e7d3a, roughness:0.95 }));
+  field.rotation.x = -Math.PI/2; field.position.y = 1.2;
+  // Set-down zone outline
+  const ring = new THREE.Mesh(new THREE.RingGeometry(STADIUM.radius-70, STADIUM.radius-56, 48),
+    new THREE.MeshBasicMaterial({ color:0x00ff88, transparent:true, opacity:0.85, side:THREE.DoubleSide }));
+  ring.rotation.x = -Math.PI/2; ring.position.y = 1.4;
+  grp.add(wall, field, ring);
+  grp.position.set(STADIUM.x, 0, STADIUM.z);
+  scene.add(grp);
+  return grp;
+}
+const inZone = (p)=> Math.hypot(p.x-STADIUM.x, p.z-STADIUM.z) < STADIUM.radius-56;
+
+/* ===== SECTION: HERO ===== */
+// Superhero flyer: capsule torso + swept-back arms; oriented along travel.
+const heroGrp = new THREE.Group();
+function buildHero(){
+  const suit = new THREE.MeshStandardMaterial({ color:0x14335c, roughness:0.5, metalness:0.3 });
+  const trim = new THREE.MeshStandardMaterial({ color:0xd63a2f, roughness:0.5 });
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(1.5, 3.2, 6, 12), suit);
+  body.rotation.x = Math.PI/2;                    // lie along -Z (forward)
+  const armL = new THREE.Mesh(new THREE.CapsuleGeometry(0.55, 4.4, 4, 8), suit);
+  armL.rotation.x = Math.PI/2 - 0.5; armL.position.set(-1.7, 0.4, 1.6);
+  const armR = armL.clone(); armR.position.x = 1.7;
+  const belt = new THREE.Mesh(new THREE.TorusGeometry(1.52, 0.22, 8, 20), trim);
+  belt.rotation.x = Math.PI/2; belt.position.z = 0.4;
+  const glow = new THREE.PointLight(0x66aaff, 1.4, 60);
+  glow.position.set(0, 2, 0);
+  heroGrp.add(body, armL, armR, belt, glow);
+  scene.add(heroGrp);
+}
+function initHeroState(){
+  G.pos = v3(0, 380, 2600);          // south of downtown, facing north (-Z)
+  G.vel = v3(0, 0, -CFG.thrustCruise);
+  G.quat = new THREE.Quaternion();
+  G.yaw = 0; G.pitch = 0; G.speedTier = 1; G.hp = 100;
+  heroGrp.position.copy(G.pos);
+}
+/* ===== SECTION: AIRLINER ===== */
+// Flight 227: capsule fuselage + wings + tail, engine fire sprite, nav lights.
+const alGrp = new THREE.Group();
+function buildAirliner(){
+  const white = new THREE.MeshStandardMaterial({ color:0xeef1f6, roughness:0.4, metalness:0.35 });
+  const dark = new THREE.MeshStandardMaterial({ color:0x22282f, roughness:0.6 });
+  const fuse = new THREE.Mesh(new THREE.CapsuleGeometry(CFG.fuseR, CFG.airlinerLen-2*CFG.fuseR, 6, 14), white);
+  fuse.rotation.x = Math.PI/2;                     // axis along Z, nose at -Z
+  const wing = new THREE.Mesh(new THREE.BoxGeometry(CFG.airlinerSpan, 1.6, 9), white);
+  wing.position.z = 4; wing.rotation.z = 0.06;
+  const tail = new THREE.Mesh(new THREE.BoxGeometry(22, 1.4, 6), white);
+  tail.position.set(0, 1, CFG.airlinerLen/2 - 4);
+  const fin = new THREE.Mesh(new THREE.BoxGeometry(1.6, 16, 12), dark);
+  fin.position.set(0, 8, CFG.airlinerLen/2 - 3);
+  const engL = new THREE.Mesh(new THREE.CylinderGeometry(2.6, 2.6, 7, 10), dark);
+  engL.rotation.x = Math.PI/2; engL.position.set(-19, -2, 3);
+  const engR = engL.clone(); engR.position.x = 19;
+  // Burning engine: additive cone flicker handled in tick
+  const fireMat = new THREE.MeshBasicMaterial({ color:0xff7722, transparent:true, opacity:0.9 });
+  const fire = new THREE.Mesh(new THREE.ConeGeometry(3.2, 12, 8), fireMat);
+  fire.rotation.x = -Math.PI/2; fire.position.set(-19, -2, 10);
+  const navL = new THREE.Mesh(new THREE.SphereGeometry(0.8), new THREE.MeshBasicMaterial({color:0xff3333}));
+  navL.position.set(-CFG.airlinerSpan/2, 0, 4);
+  const navR = navL.clone(); navR.material = new THREE.MeshBasicMaterial({color:0x33ff44});
+  navR.position.x = CFG.airlinerSpan/2;
+  alGrp.add(fuse, wing, tail, fin, engL, engR, fire, navL, navR);
+  scene.add(alGrp);
+  alGrp.userData.fire = fire;
+}
+function spawnAirliner(){
+  // East of the city, heading west toward downtown, engines out, sinking.
+  G.al = {
+    pos: v3(CFG.spawnDist, CFG.spawnAlt, 0),
+    vel: v3(-140, -CFG.sinkStart/60, 0),   // ~140 kt westward, gentle initial sink
+    headingWest: true, alive: true, held:false,
+    stress: 0, bank: 0, sinkPhase: 0,
+    touchedDown: false, tdVy: 0,
+  };
+  alGrp.visible = true;
+  alGrp.position.copy(G.al.pos);
+  alGrp.rotation.set(0, 0, 0);
+}
+// Nose world-position (grab point): forward is -Z in local space
+function alNosePos(out){
+  out.copy(G.al.pos);
+  const q = alGrp.quaternion;
+  out.add(v3(0,0,-(CFG.airlinerLen/2)).applyQuaternion(q));
+  return out;
+}
+/* ===== SECTION: INPUT ===== */
+const KEYS = {};
+let mouseDX = 0, mouseDY = 0;           // consumed by sim each frame
+let sensitivity = 0.0022;
+addEventListener('keydown', (e)=>{
+  KEYS[e.code] = true;
+  if (['KeyW','KeyS','Space'].includes(e.code)) e.preventDefault();
+  if (e.code === 'KeyE') tryGrabOrRelease();
+  if (e.code === 'KeyR') restart();
+});
+addEventListener('keyup', (e)=>{ KEYS[e.code] = false; });
+addEventListener('mousemove', (e)=>{
+  if (document.pointerLockElement === canvas ||
+      !document.pointerLockElement){           // accept raw even unlocked (test-friendly)
+    mouseDX += e.movementX ?? 0;
+    mouseDY += e.movementY ?? 0;
+  }
+});
+canvas.addEventListener('mousedown', ()=>{
+  if (!G.ended && G.phase !== 'TITLE') canvas.requestPointerLock?.();
+});
+
+function pollControls(dt){
+  // Aim: mouse steers a virtual stick (yaw/pitch accumulate, spring to level slightly)
+  const prevYaw = G.yaw;
+  G.yaw   -= mouseDX * sensitivity;
+  G.pitch -= mouseDY * sensitivity;
+  G.pitch = clamp(G.pitch, -1.25, 1.25);
+  G.lastYawDelta = G.yaw - prevYaw;
+  mouseDX = 0; mouseDY = 0;
+  // Throttle tiers: Shift+W = boost, W = cruise, neither = idle glide
+  const w = !!KEYS.KeyW, shift = !!(KEYS.ShiftLeft||KEYS.ShiftRight);
+  G.boosting = w && shift;
+  G.speedTier = w ? (shift ? 2 : 1) : 0;
+  G.braking = !!KEYS.KeyS && !G.grabbed;
+  G.liftIn = !!KEYS.Space;
+}
+/* ===== SECTION: FLIGHT MODEL ===== */
+const _aimDir = new THREE.Vector3(), _tmp = new THREE.Vector3();
+let _bankSm = 0;
+function mouseDXSmoothBank(){
+  // smooth lean proportional to recent yaw input
+  _bankSm = lerp(_bankSm, clamp(-(G.lastYawDelta||0)*30, -0.9, 0.9), 0.12);
+  return _bankSm;
+}
+
+function aimDir(out){
+  // forward = -Z rotated by yaw(Y) then pitch(X)
+  out.set(0,0,-1).applyAxisAngle(new THREE.Vector3(1,0,0), -G.pitch);
+  out.applyAxisAngle(new THREE.Vector3(0,1,0), G.yaw);
+  return out;
+}
+
+function stepFreeFlight(dt){
+  const sp = G.vel.length();
+  const dir = aimDir(_aimDir);
+  // Momentum: rotate velocity toward aim at speed-dependent turn rate
+  const turn = lerp(CFG.turnRateFast, CFG.turnRateBase, clamp(sp/CFG.maxSpeed,0,1));
+  if (sp > 1){
+    const angle = G.vel.angleTo(dir);
+    const maxRot = turn*dt;
+    if (angle > 1e-4){
+      const t = Math.min(1, maxRot/angle);
+      _tmp.copy(G.vel).lerp(dir, t).normalize().multiplyScalar(sp);
+      G.vel.copy(_tmp);
+    }
+  } else { G.vel.copy(dir).multiplyScalar(0.01); }
+  // Thrust tiers + gravity component bleed
+  const accel = CFG.tierAccel[G.speedTier];
+  G.vel.addScaledVector(dir, accel*dt);
+  if (G.braking) G.vel.multiplyScalar(1 - CFG.dragKClimb*dt*14);
+  // Quadratic drag; stronger when climbing
+  const climbing = G.vel.dot(new THREE.Vector3(0,1,0)) > 0;
+  const K = climbing ? CFG.dragKClimb : CFG.dragK;
+  const s2 = G.vel.lengthSq();
+  G.vel.addScaledVector(G.vel.clone().normalize(), -K*s2*dt);
+  // Clamp speeds
+  const spd = G.vel.length();
+  if (spd > CFG.maxSpeed) G.vel.multiplyScalar(CFG.maxSpeed/spd);
+  if (spd < CFG.minSpeed && G.speedTier > 0) G.vel.multiplyScalar(lerp(1, CFG.minSpeed/Math.max(spd,0.01), 0.02));
+  G.pos.addScaledVector(G.vel, dt);
+  // Ceiling & floor
+  if (G.pos.y > CFG.ceiling){ G.pos.y = CFG.ceiling; G.vel.y = Math.min(G.vel.y, 0); }
+  collideHero(dt);
+}
+
+function collideHero(dt){
+  const r = CFG.heroRadius;
+  if (G.pos.y < r + CFG.floorPad){
+    G.pos.y = r + CFG.floorPad;
+    if (G.vel.y < -CFG.landHard) return failGame('hard-crash');
+    G.vel.y = Math.max(G.vel.y, 0) ;
+  }
+  const th = cityHit(G.pos, r);
+  if (th > 0){
+    // Damage on fast impacts; push out above roofs
+    if (G.vel.length() > 150){ G.hp -= 34; G.msgFlash('TOWER HIT!'); }
+    if (G.pos.y < th){ 
+      if (G.vel.length() > 200) return failGame('tower-crash');
+      G.pos.y = th + r + 0.5; G.vel.y = Math.max(G.vel.y, 6);
+      G.vel.multiplyScalar(0.55);
+    }
+  }
+}
+/* ===== SECTION: MISSION FSM ===== */
+const _nose = new THREE.Vector3();
+
+function tryGrabOrRelease(){
+  if (G.ended || G.phase === 'TITLE') return;
+  if (!G.grabbed){
+    alNosePos(_nose);
+    if (dist(G.pos, _nose) < CFG.grabRange){
+      G.grabbed = true; G.phase = 'HOLD';
+      G.msgFlash('GOT THE NOSE — arrest the sink!', 2.5);
+    } else {
+      G.msgFlash('Too far from the nose.', 1.2);
+    }
+  } else if (!G.released){
+    // Release only over the stadium zone
+    if (inZone(G.al.pos)){ releaseOverStadium(); }
+    else G.msgFlash('Not over Metro Stadium — keep guiding!', 1.5);
+  }
+}
+
+function releaseOverStadium(){
+  G.released = true; G.phase = 'LAND';
+  G.al.held = false;
+  G.al.freeFall = true;                 // short drop onto the field
+  G.msgFlash('RELEASED — flare it down...', 2);
+}
+
+function stepAirlinerFree(dt){
+  const a = G.al;
+  if (!a || !a.alive) return;
+  if (a.held) return;                   // handled by holding physics
+  if (a.touchedDown) return;
+  // Ballistic: accelerating sink, slight bank drift
+  a.sinkPhase += dt;
+  const sink = lerp(CFG.sinkStart, CFG.sinkFinal, clamp((a.pos.y-120)/(CFG.spawnAlt-120), 0, 1))/60;
+  a.vel.y = -(sink + a.sinkPhase*a.sinkPhase*0.010);
+  a.bank += CFG.rollRate*dt*0.4;
+  a.pos.addScaledVector(a.vel, dt);
+  alGrp.position.copy(a.pos);
+  alGrp.rotation.set(0.12*Math.sin(a.sinkPhase*0.5),
+    Math.atan2(-a.vel.x, -a.vel.z), clamp(a.bank*0.06,-0.5,0.5));
+  // Impact checks
+  const th = cityHit(a.pos, CFG.fuseR);
+  if (a.pos.y < CFG.fuseR + 2 || th > 0){
+    a.alive = false; a.touchedDown = true;
+    if (!inZone(a.pos)) return failGame('downtown-impact');
+    gradeTouchdown(a.vel.y);
+  }
+}
+
+function stepHolding(dt){
+  // Merged body: hero grips the nose; WASD/mouse steers the pair.
+  const a = G.al;
+  // Released: plane settles ballistically, hero no longer flies it
+  if (a.freeFall){
+    // Flare dynamics: base damping, escalating into ground effect so a
+    // patient low release lands softly but a hurried high drop still cracks
+    // the hull (grading thresholds are all reachable).
+    const eff = Math.max(0, 1 - (a.pos.y - CFG.fuseR - 2) / 40);
+    const cap = -(CFG.landPerfect*0.8 + (CFG.landHard*1.2 - CFG.landPerfect*0.8) * (1 - eff));
+    a.vel.y = Math.max(a.vel.y - 6*dt, cap);
+    a.vel.x *= (1 - 0.4*dt); a.vel.z *= (1 - 0.4*dt);
+    a.pos.addScaledVector(a.vel, dt);
+    alGrp.position.copy(a.pos);
+    if (a.pos.y < CFG.fuseR + 2){ a.touchedDown = true; gradeTouchdown(a.vel.y); }
+    return;
+  }
+  const dir = aimDir(_aimDir);
+  const mass = 2.6;                               // heavy!
+  a.vel.addScaledVector(dir, CFG.holdThrust*dt/mass);
+  a.vel.y += CFG.holdGravity*dt;
+  if (G.liftIn) a.vel.y += CFG.holdLift*dt;       // Space hauls up
+  if (G.braking)  a.vel.multiplyScalar(1 - CFG.holdBrakeDrag*dt);
+  // Stress from aggressive maneuvering
+  const gs = a.vel.length()/50;
+  const stressRate = Math.max(0,(gs-1.4))*CFG.stressPerG + Math.abs(dir.y)*8*dt*10;
+  a.stress = clamp(a.stress + stressRate*dt - CFG.stressHeal*dt, 0, CFG.stressBuckleAt+1);
+  if (a.stress >= CFG.stressBuckleAt){
+    G.shake = CFG.buckleShake;
+    a.stress *= 0.55;                            // buckle bleeds stress
+    G.msgFlash('AIRFRAME BUCKLES — ease off!', 1.5);
+  }
+  a.pos.addScaledVector(a.vel, dt);
+  // Hero rides ahead of the nose
+  G.pos.copy(a.pos).addScaledVector(dir, -(CFG.airlinerLen/2 + CFG.grabRange*0.7));
+  G.vel.copy(a.vel);
+  alGrp.position.copy(a.pos);
+  alGrp.rotation.set(clamp(-a.vel.y*0.004,-0.3,0.3),
+    Math.atan2(-a.vel.x, -a.vel.z), 0);
+  // Held plane touching ground = crash (same rule as the released branch)
+  if (a.pos.y < CFG.fuseR + 2){ failGame('hard-crash'); return; }
+  // Wing clips a tower?
+  const th = cityHit(a.pos, CFG.fuseR+20);
+  if (th > 0 && a.pos.y < th + 10){
+    a.stress += 40; G.shake = 6;
+    a.pos.y = th + 26; a.vel.y = Math.max(a.vel.y, 4);
+  }
+  // Hull destroyed by cumulative overstress
+  if (a.stress >= CFG.stressBuckleAt && a.stress >= 99.9){ failGame('hull-zero'); return; }
+}
+
+function gradeTouchdown(vy){
+  G.al.touchedDown = true;
+  const av = Math.abs(vy);
+  if (av < CFG.landPerfect) winGame('perfect');
+  else if (av < CFG.landHard) winGame('saved');
+  else failGame('hard-crash');
+}
+/* ===== SECTION: FAIL STATES ===== */
+G.msgFlash = (txt, dur=1.5)=>{
+  const el = document.getElementById('centerMsg');
+  el.textContent = txt; el.style.display = 'block';
+  clearTimeout(G._mt); G._mt = setTimeout(()=>{ el.style.display='none'; }, dur*1000);
+};
+
+const FAIL_TEXT = {
+  'downtown-impact': 'FLIGHT 227 SLAMMED INTO DOWNTOWN',
+  'hard-crash': 'TOUCHDOWN TOO HARD — THE HULL BROKE APART',
+  'tower-crash': 'YOU BLACKED OUT AGAINST A HIGH-RISE',
+  'hull-zero': 'THE AIRFRAME CAME APART IN YOUR HANDS',
+};
+
+function failGame(reason){
+  if (G.ended) return;
+  G.ended = true; G.failReason = reason;
+  showOverlay(false, FAIL_TEXT[reason] || 'MISSION FAILED', '#ff8080');
+  G.phase = 'CRASH';
+}
+function winGame(kind){
+  if (G.ended) return;
+  G.ended = true; G.phase = 'DONE';
+  const tag = kind==='perfect' ? 'PERFECT LANDING — ' : '';
+  showOverlay(true, `${tag}${G.savedCount} SAVED`, '#ffd75e');
+}
+function showOverlay(win, big, color){
+  const ov = document.getElementById('overlay');
+  ov.querySelector('.big')?.remove();
+  ov.style.display = 'flex';
+  const h = document.createElement('div');
+  h.className = 'big'; h.style.color = color; h.textContent = big;
+  ov.appendChild(h);
+  const p = document.getElementById('ovSub');
+  p.innerHTML = win
+    ? 'Flight 227 is down safe on the Metro Stadium field.<br>Press <kbd>R</kbd> to fly it again'
+    : `${FAIL_TEXT[G.failReason] || ''}<br>Press <kbd>R</kbd> to retry`;
+  // hide the duplicate subtitle text on fail (already shown big)
+  if (!win) p.innerHTML = `Press <kbd>R</kbd> to retry`;
+}
+
+function restart(){
+  // Full state reset without reload (works from file:// with cached modules)
+  Object.assign(G, {
+    phase:'FLY', acc:0, elapsed:0, paused:false, ended:false,
+    grabbed:false, released:false, failReason:'', shake:0,
+  });
+  initHeroState();
+  spawnAirliner();
+  alGrp.visible = true;
+  document.getElementById('overlay').style.display = 'none';
+  G.msgFlash('INTERCEPT FLIGHT 227 — PRESS E AT HER NOSE', 3);
+}
+/* ===== SECTION: HUD ===== */
+const hudEl = document.getElementById('hud');
+const hudREl = document.getElementById('hudR');
+
+function fmt(n){ return String(Math.round(n)).padStart(3,' '); }
+
+function updateHUD(){
+  const sp = G.vel.length(), alt = G.pos.y;
+  let objTxt = '', warnTxt = '';
+  if (!G.ended && G.phase !== 'TITLE'){
+    if (!G.grabbed){
+      const d = dist(G.pos, G.al.pos);
+      objTxt = `OBJECTIVE: reach Flight 227's nose (${fmt(d)} m) — press E close`;
+      const secs = estimateImpactSecs();
+      warnTxt = secs != null ? `IMPACT IN ${secs}s` : '';
+    } else if (!G.released){
+      const dz = Math.hypot(G.al.pos.x-STADIUM.x, G.al.pos.z-STADIUM.z);
+      objTxt = `GUIDE WEST to METRO STADIUM (${fmt(dz)} m) — E over the green ring`;
+      warnTxt = `STRESS ${Math.round(G.al.stress)}%`;
+    }
+  }
+  hudEl.innerHTML =
+    `<span>${objTxt}</span>`;
+  hudREl.innerHTML =
+    `SPD ${fmt(sp*3.6>>0)} km/h<br>ALT ${fmt(alt)} m<br>` +
+    `THR ${['IDLE','CRUISE','BOOST'][G.speedTier]}${G.braking?' · BRAKE':''}` +
+    (G.grabbed&&!G.released?`<br><span class="${G.al.stress>70?'warn':'good'}">${warnTxt}</span>`
+     : warnTxt?`<br><span class="warn">${warnTxt}</span>`:'');
+}
+
+function estimateImpactSecs(){
+  const a = G.al;
+  if (!a || a.touchedDown || a.held) return null;
+  const vy = Math.min(a.vel.y, -1);
+  return Math.max(0, Math.ceil((a.pos.y - CFG.fuseR) / -vy));
+}
+/* ===== SECTION: DEBUG HOOKS ===== */
+window.__LF__ = {
+  state: ()=> ({
+    phase: G.phase, ended: G.ended, grabbed: G.grabbed, released: G.released,
+    hero:{ x:G.pos.x, y:G.pos.y, z:G.pos.z, speed:G.vel.length(), tier:G.speedTier },
+    airliner: G.al && { x:G.al.pos.x, y:G.al.pos.y, z:G.al.pos.z,
+                        vy:G.al.vel.y, stress:G.al.stress, alive:!!G.al.alive },
+    failReason: G.failReason,
+  }),
+  // Teleport hero right beside the airliner nose (assisted interception)
+  scenarioTeleport(){
+    alNosePos(_nose);
+    G.pos.copy(_nose).add(v3(0, 3, CFG.grabRange*0.8));
+    G.vel.set(0, 0, -60);
+    G.yaw = Math.PI; G.pitch = 0;         // face west
+    heroGrp.position.copy(G.pos);
+    return this.state();
+  },
+  grabPlane(){
+    if (!G.grabbed){ tryGrabOrRelease(); }
+    return this.state();
+  },
+  // Assisted: hold lift, tow to stadium, gentle release+touchdown
+  async forceLand(){
+    this.scenarioTeleport();
+    this.grabPlane();
+    if (!G.grabbed) throw new Error('grab failed');
+    await this._assistHold();
+    // Deterministically fast-forward the post-release settle
+    for (let i=0; i<4000 && !G.ended; i++) stepHolding(1/30);
+    return this.state();
+  },
+  _assistHold: ()=>{
+    // Scripted takeover: normal sim paused, we drive stepHolding manually.
+    const a = G.al;
+    const target = v3(STADIUM.x, 34, STADIUM.z);
+    G.paused = true;
+    return new Promise(res=>{
+      const iv = setInterval(()=>{
+        if (G.ended) { clearInterval(iv); G.paused=false; res(); return; }
+        const to = _tmp.copy(target).sub(a.pos);
+        if (to.length() < 30){
+          clearInterval(iv);
+          a.vel.set(0, -3.2, 0);          // gentle descent
+          releaseOverStadium();
+          G.paused = false;               // resume RAF: freeFall branch lands it
+          res();
+        } else {
+          to.normalize();
+          a.vel.lerp(to.multiplyScalar(70), 0.25);
+          a.vel.y = Math.max(a.vel.y, -4);
+          G.yaw = Math.atan2(-a.vel.x, -a.vel.z);
+          G.pitch = clamp(-a.vel.y/120, -0.4, 0.4);
+          stepHolding(1/30);
+        }
+      }, 33);
+    });
+  },
+  forceCrash(reason='hard-crash'){ failGame(reason); return this.state(); },
+  // Raw stepping for deterministic tests
+  stepAirlinerFree: (dt)=>stepAirlinerFree(dt),
+  stepHolding: (dt)=>stepHolding(dt),
+  keys: KEYS,
+};
+/* ===== SECTION: MAIN LOOP ===== */
+// Title screen: click or key starts the mission
+{
+  const ov = document.getElementById('overlay');
+  document.getElementById('ovSub').innerHTML =
+    `Flight 227 lost both engines and is sinking over downtown.<br>` +
+    `Fly up, catch her nose, and lay her down at Metro Stadium.<br><br>` +
+    `<kbd>MOUSE</kbd> aim &nbsp; <kbd>W</kbd> cruise &nbsp; <kbd>SHIFT+W</kbd> boost &nbsp; ` +
+    `<kbd>S</kbd> airbrake &nbsp; <kbd>E</kbd> grab / release &nbsp; <kbd>SPACE</kbd> haul up<br><br>` +
+    `<span style="color:#ffd75e">CLICK ANYWHERE TO TAKE OFF</span>`;
+  const begin = ()=>{
+    if (G.phase === 'TITLE') restart();
+    ov.removeEventListener('mousedown', begin);
+    removeEventListener('keydown', begin);
+  };
+  ov.addEventListener('mousedown', begin);
+  addEventListener('keydown', begin);
+}
+
+// Build world once
+buildCity();
+buildStadium();
+buildHero();
+buildAirliner();
+spawnAirliner();
+initHeroState();
+alGrp.visible = false;              // revealed on mission start (restart)
+
+function simulate(dt){
+  pollControls(dt);
+  if (G.phase === 'TITLE') return;
+  if (G.ended) return;
+  if (G.grabbed){
+    if (!G.released) stepHolding(dt);
+    else if (!G.al.touchedDown) stepHolding(dt);   // freefall drop after release
+  } else {
+    stepFreeFlight(dt);
+    stepAirlinerFree(dt);
+  }
+  // Hero HP gate
+  if (G.hp <= 0 && !G.ended) failGame('hull-zero');
+}
+
+function syncVisuals(dt){
+  heroGrp.position.copy(G.pos);
+  const dir = aimDir(_aimDir);
+  const m = new THREE.Matrix4().lookAt(new THREE.Vector3(0,0,0), dir, new THREE.Vector3(0,1,0));
+  heroGrp.quaternion.setFromRotationMatrix(m);
+  // Bank subtly with yaw rate for feel
+  heroGrp.rotateZ(mouseDXSmoothBank());
+  // Fire flicker
+  const fire = alGrp.userData.fire;
+  if (fire){
+    fire.visible = G.al && G.al.alive && !G.al.touchedDown;
+    fire.scale.setScalar(0.8 + Math.random()*0.5);
+  }
+  // Chase camera
+  const back = _tmp.copy(dir).multiplyScalar(-CFG.camBack);
+  const want = G.pos.clone().add(back).add(v3(0, CFG.camUp, 0));
+  camera.position.lerp(want, clamp(CFG.camLerp*dt,0,1));
+  if (G.shake > 0){
+    camera.position.x += (Math.random()-0.5)*G.shake;
+    camera.position.y += (Math.random()-0.5)*G.shake;
+    G.shake = Math.max(0, G.shake - dt*12);
+  }
+  camera.lookAt(G.pos.x + dir.x*40, G.pos.y + dir.y*40, G.pos.z + dir.z*40);
+  const fovWant = G.boosting ? CFG.fovBoost : CFG.fovBase;
+  camera.fov = lerp(camera.fov, fovWant, clamp(dt*3,0,1));
+  camera.updateProjectionMatrix();
+}
+
+function frame(t){
+  requestAnimationFrame(frame);
+  const tMs = t/1000;
+  let dt = Math.min(0.05, tMs - (G.tPrev || tMs));
+  G.tPrev = tMs;
+  if (G.paused) { syncVisuals(dt); renderer.render(scene, camera); return; }
+  G.acc += dt;
+  while (G.acc >= G.dtFixed){ simulate(G.dtFixed); G.acc -= G.dtFixed; }
+  syncVisuals(dt);
+  if (G.phase !== 'TITLE') updateHUD();
+  renderer.render(scene, camera);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
