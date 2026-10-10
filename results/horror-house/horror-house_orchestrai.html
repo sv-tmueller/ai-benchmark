@@ -720,6 +720,289 @@ function spawnItems(){
     "studyNote");
 }
 
+// §4 PLAYER =====================================================
+const P={
+  pos:new THREE.Vector3(0,0,6.4),   // start in foyer facing north
+  yaw:Math.PI, pitch:0,
+  vel:new THREE.Vector3(),
+  radius:.32, eyeH:1.62, bobPhase:0, bobAmt:0,
+  speedWalk:2.6, speedRun:4.4,
+  keys:{},
+  battery:1.0, batteryDrain:.0075, torchOn:true,
+  torch:null, torchTarget:new THREE.Quaternion(), torchCur:new THREE.Quaternion(),
+  interactRaycaster:new THREE.Raycaster(),
+  hoverTarget:null, hoverKind:null,
+  shake:0,
+};
+
+function initRendererWorld(){
+  G.renderer=new THREE.WebGLRenderer({antialias:true,
+    powerPreference:"high-performance"});
+  G.renderer.setSize(innerWidth,innerHeight);
+  G.renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+  G.renderer.shadowMap.enabled=true;
+  G.renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+  G.renderer.outputColorSpace=THREE.SRGBColorSpace;
+  G.renderer.toneMapping=THREE.ACESFilmicToneMapping;
+  G.renderer.toneMappingExposure=1.05;
+  G.renderer.domElement.className="game";
+  el("app").appendChild(G.renderer.domElement);
+
+  G.scene=new THREE.Scene();
+  G.scene.background=new THREE.Color(0x010101);
+  G.scene.fog=new THREE.FogExp2(0x010101,.11);
+
+  G.camera=new THREE.PerspectiveCamera(72,innerWidth/innerHeight,.05,60);
+
+  // near-black ambient — world seen via flashlight
+  G.scene.add(new THREE.AmbientLight(0x11100e,.55));
+
+  // flashlight: sole shadow caster, bound to camera w/ lag
+  const tl=new THREE.SpotLight(0xfff2d0,26,22,.42,.45,1.6);
+  tl.castShadow=true;
+  tl.shadow.mapSize.set(1024,1024);
+  tl.shadow.bias=-.002;
+  tl.shadow.camera.near=.2;tl.shadow.camera.far=22;
+  G.scene.add(tl);G.scene.add(tl.target);
+  P.torch=tl;
+
+  initMaterials();
+  buildHouse();
+  furnishHouse();
+  addDoorsWindowsLights();
+  spawnItems();
+  markAllStaticShadows();
+}
+
+function markAllStaticShadows(){
+  G.scene.traverse(o=>{
+    if(o.isMesh){o.castShadow=true;o.receiveShadow=true;}
+  });
+  // sprites/points don't cast
+  G.scene.traverse(o=>{if(o.isSprite)o.castShadow=false;});
+}
+
+// ---- input ------------------------------------------------------
+function initInput(){
+  addEventListener("keydown",e=>{
+    P.keys[e.code]=true;
+    if(e.code==="KeyF"){toggleTorch();}
+    if(e.code==="KeyE"){handleInteract();}
+    if(e.code==="KeyG"){requestLook(true);}
+  });
+  addEventListener("keyup",e=>{P.keys[e.code]=false;});
+
+  // pointer lock with graceful fallback
+  const cv=G.renderer.domElement;
+  document.body.addEventListener("click",()=>{
+    if(G.state===GS.TITLE){startGame();return;}
+    if(G.state===GS.CAUGHT||G.state===GS.ESCAPED){resetToTitle();return;}
+    if(G.state===GS.PLAYING&&!G.pointerLocked)requestLook();
+  });
+  document.addEventListener("pointerlockchange",()=>{
+    G.pointerLocked=document.pointerLockElement===cv;
+    el("lockBanner").classList.toggle("hidden",G.pointerLocked||
+      G.state!==GS.PLAYING);
+  });
+  document.addEventListener("mousemove",e=>{
+    if(!G.pointerLocked)return;
+    P.yaw-=e.movementX*.0022;
+    P.pitch=clamp(P.pitch-e.movementY*.0022,-1.35,1.35);
+  });
+  addEventListener("resize",()=>{
+    G.camera.aspect=innerWidth/innerHeight;
+    G.camera.updateProjectionMatrix();
+    G.renderer.setSize(innerWidth,innerHeight);
+  });
+}
+
+function requestLook(force){
+  if(G.state!==GS.PLAYING&&!force)return;
+  const cv=G.renderer.domElement;
+  try{
+    if(cv.requestPointerLock){
+      const r=cv.requestPointerLock();
+      // some engines return a promise that rejects headless
+      if(r&&r.catch)r.catch(()=>{/* non-fatal */});
+    }
+  }catch(err){/* headless throws WrongDocumentError — non-fatal */}
+  if(!G.pointerLocked){
+    el("lockBanner").textContent="mouse-look unavailable · arrow/Q/E keys turn, G retries";
+    el("lockBanner").classList.remove("hidden");
+    setTimeout(()=>{if(!G.pointerLocked)el("lockBanner").
+      classList.add("hidden");},2600);
+  }
+}
+
+function toggleTorch(){
+  if(G.state!==GS.PLAYING)return;
+  P.torchOn=!P.torchOn;
+  if(Audio.ready)Audio.click();
+}
+
+// ---- movement + collision ---------------------------------------
+function collideMove(dt){
+  // desired velocity from keys
+  const f=(P.keys.KeyW?1:0)-(P.keys.KeyS?1:0);
+  const s=(P.keys.KeyD?1:0)-(P.keys.KeyA?1:0);
+  // keyboard-fallback turning
+  const turn=(P.keys.ArrowLeft?1:0)-(P.keys.ArrowRight?1:0);
+  if(turn)P.yaw+=turn*2.2*dt;
+  const pit=(P.keys.ArrowUp?1:0)-(P.keys.ArrowDown?1:0);
+  if(pit)P.pitch=clamp(P.pitch+pit*1.4*dt,-1.35,1.35);
+
+  const run=P.keys.ShiftLeft||P.keys.ShiftRight;
+  const spd=run?P.speedRun:P.speedWalk;
+  let dx=0,dz=0;
+  if(f||s){
+    const sin=Math.sin(P.yaw),cos=Math.cos(P.yaw);
+    // forward vector (yaw 0 = looking -z)
+    dx=(-sin*f+cos*s);
+    dz=(-cos*f+sin*s);
+    const len=Math.hypot(dx,dz)||1;
+    dx/=len;dz/=len;
+  }
+  const nx=P.pos.x+dx*spd*dt;
+  const nz=P.pos.z+dz*spd*dt;
+  // circle-vs-AABB, axis separated
+  P.pos.x=resolveAxis(nx,P.pos.z,P.radius,true);
+  P.pos.z=resolveAxis(P.pos.x,nz,P.radius,false);
+
+  // head bob
+  const moving=(f||s)?1:0;
+  P.bobAmt+=(moving-P.bobAmt)*Math.min(1,dt*8);
+  P.bobPhase+=dt*(run?11:7.4)*moving;
+  const bobY=Math.sin(P.bobPhase)*.032*P.bobAmt;
+  const bobX=Math.cos(P.bobPhase*.5)*.02*P.bobAmt;
+
+  // camera pose (+shake)
+  const shx=P.shake?(Math.random()-.5)*P.shake*.12:0;
+  const shy=P.shake?(Math.random()-.5)*P.shake*.12:0;
+  G.camera.position.set(P.pos.x+bobX+shx,P.eyeH+bobY+shy,P.pos.z);
+  G.camera.rotation.order="YXZ";
+  G.camera.rotation.set(P.pitch,P.yaw,0);
+  P.shake=Math.max(0,P.shake-dt*2.2);
+}
+
+function resolveAxis(px,pz,r,isX){
+  // blocking AABBs: walls + furniture + closed doors (approximated as
+  // a small AABB covering the doorway gap while shut)
+  const blocks=WORLD.colliders.slice();
+  for(const k in WORLD.doors){
+    const d=WORLD.doors[k];
+    if(d.open)continue;
+    blocks.push(d.alongX
+      ?{x:d.hx+d.width/2,z:d.hz,w:d.width,d:.3}
+      :{x:d.hx,z:d.hz+d.width/2,w:.3,d:d.width});
+  }
+  for(const b of blocks){
+    const bxMin=b.x-b.w/2,bxMax=b.x+b.w/2;
+    const bzMin=b.z-b.d/2,bzMax=b.z+b.d/2;
+    const cx=clamp(px,bxMin,bxMax),cz=clamp(pz,bzMin,bzMax);
+    if((px-cx)**2+(pz-cz)**2<r*r){
+      if(isX)px=px<b.x?bxMin-r:bxMax+r;
+      else   pz=pz<b.z?bzMin-r:bzMax+r;
+    }
+  }
+  return isX?px:pz;
+}
+
+// ---- interaction -------------------------------------------------
+function updateHover(){
+  P.interactRaycaster.setFromCamera({x:0,y:0},G.camera);
+  P.interactRaycaster.far=2.6;
+  const meshes=[];
+  WORLD.items.forEach(it=>{if(!it.taken)meshes.push(it.mesh);});
+  WORLD.notes.forEach(n=>{if(!n.taken)meshes.push(n.mesh);});
+  for(const k in WORLD.doors){
+    const dd=WORLD.doors[k];
+    dd.group.children[0].userData.door=k;
+    meshes.push(dd.group.children[0]);
+  }
+  const hits=P.interactRaycaster.intersectObjects(meshes,false);
+  P.hoverTarget=null;P.hoverKind=null;
+  if(hits.length){
+    const ud=hits[0].object.userData;
+    if(ud.kind==="key"){P.hoverKind="key";}
+    else if(ud.kind==="battery"){P.hoverKind="battery";}
+    else if(ud.kind==="note"){P.hoverKind="note";P.noteHit=hits[0].object;}
+    else if(ud.door){P.hoverKind="door";P.doorHit=ud.door;}
+    if(P.hoverKind)P.hoverTarget=hits[0].object;
+  }
+  const hintEl=el("interactHint");
+  if(P.hoverKind==="key")hintEl.textContent="[E] take brass key";
+  else if(P.hoverKind==="battery")hintEl.textContent="[E] take battery";
+  else if(P.hoverKind==="note")hintEl.textContent="[E] read note";
+  else if(P.hoverKind==="door"){
+    const d=WORLD.doors[P.doorHit];
+    hintEl.textContent=d.locked
+      ?(G.keysFound>=3?"[E] unlock the front door":"locked — "+G.keysFound+"/3 keys")
+      :(d.open?"[E] close door":"[E] open door");
+  }
+  else hintEl.textContent="";
+}
+
+function handleInteract(){
+  if(G.state===GS.NOTE){closeNote();return;}
+  if(G.state!==GS.PLAYING||!P.hoverKind)return;
+  if(P.hoverKind==="key"){
+    const it=WORLD.items.find(i=>i.mesh===P.hoverTarget);
+    if(it&&!it.taken){
+      it.taken=true;G.scene.remove(it.mesh);
+      G.keysFound++;
+      HUD.updateKeys();
+      Audio.pickup();
+      subtitle("A brass key. "+(3-G.keysFound)+" remain.");
+      Scares.onKeyTaken();
+    }
+  }else if(P.hoverKind==="battery"){
+    const it=WORLD.items.find(i=>i.mesh===P.hoverTarget);
+    if(it&&!it.taken){
+      it.taken=true;G.scene.remove(it.mesh);
+      P.battery=clamp(P.battery+.55,0,1);
+      HUD.updateBattery();
+      Audio.pickup();
+      subtitle("Spare battery. Torch restored.");
+    }
+  }else if(P.hoverKind==="note"){
+    const n=WORLD.notes.find(nn=>nn.mesh===P.noteHit);
+    if(n)openNote(n);
+  }else if(P.hoverKind==="door"){
+    const d=WORLD.doors[P.doorHit];
+    if(d.name==="front"){
+      if(G.keysFound>=3){
+        d.locked=false;d.open=true;d.targetAngle=Math.PI/2.2;
+        Audio.unlock();Audio.creak();
+        subtitle("The lock turns. GO!");
+        winGame();
+      }else{
+        Audio.rattle();
+        subtitle("Deadbolt holds firm. "+G.keysFound+" of 3 keys.");
+      }
+    }else{
+      d.open=!d.open;
+      d.targetAngle=d.open?Math.PI/2.2:0;
+      Audio.creak();
+    }
+  }
+}
+
+function openNote(n){
+  G.prevState=G.state;
+  G.state=GS.NOTE;
+  el("noteTitle").textContent=n.title;
+  el("noteBody").innerHTML=n.body;
+  el("noteModal").style.display="flex";
+  el("noteModal").classList.remove("hidden");
+  el("noteModal").addEventListener("click",closeNote,{once:true});
+}
+function closeNote(){
+  if(G.state!==GS.NOTE)return;
+  G.state=GS.PLAYING;
+  el("noteModal").style.display="none";
+  el("noteModal").classList.add("hidden");
+}
+
 </script>
 </body>
 </html>
