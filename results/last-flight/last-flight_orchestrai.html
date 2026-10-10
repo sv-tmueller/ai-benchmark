@@ -130,7 +130,8 @@ function mulberry32(seed){ return ()=>{ seed|=0; seed=(seed+0x6D2B79F5)|0;
 
 function buildCity(){
   const rnd = mulberry32(227);
-  const palette = [0x5a6578, 0x6b7488, 0x8a93a5, 0x4a5568, 0x767f92];
+  const palette = [0x5a6578, 0x6b7488, 0x8a93a5, 0x4a5568, 0x767f92]
+    .map(c => new THREE.MeshStandardMaterial({ color:c, roughness:0.72, metalness:0.18 }));
   const boxGeo = new THREE.BoxGeometry(1,1,1);
   boxGeo.translate(0, 0.5, 0); // pivot at base
   const meshes = [];
@@ -148,9 +149,7 @@ function buildCity(){
         const h = lerp(CFG.towerMax, CFG.towerMin, clamp(dc/(CFG.gridHalf*0.9),0,1))
                   * (0.55+rnd()*0.6);
         const w = 26+rnd()*46, d = 26+rnd()*46;
-        const mat = new THREE.MeshStandardMaterial({
-          color: palette[Math.floor(rnd()*palette.length)],
-          roughness: 0.72, metalness: 0.18 });
+        const mat = palette[Math.floor(rnd()*palette.length)];
         const m = new THREE.Mesh(boxGeo, mat);
         m.scale.set(w,h,d); m.position.set(ox, 0, oz);
         m.userData.isTower = true;
@@ -291,9 +290,11 @@ canvas.addEventListener('mousedown', ()=>{
 
 function pollControls(dt){
   // Aim: mouse steers a virtual stick (yaw/pitch accumulate, spring to level slightly)
+  const prevYaw = G.yaw;
   G.yaw   -= mouseDX * sensitivity;
   G.pitch -= mouseDY * sensitivity;
   G.pitch = clamp(G.pitch, -1.25, 1.25);
+  G.lastYawDelta = G.yaw - prevYaw;
   mouseDX = 0; mouseDY = 0;
   // Throttle tiers: Shift+W = boost, W = cruise, neither = idle glide
   const w = !!KEYS.KeyW, shift = !!(KEYS.ShiftLeft||KEYS.ShiftRight);
@@ -304,6 +305,12 @@ function pollControls(dt){
 }
 /* ===== SECTION: FLIGHT MODEL ===== */
 const _aimDir = new THREE.Vector3(), _tmp = new THREE.Vector3();
+let _bankSm = 0;
+function mouseDXSmoothBank(){
+  // smooth lean proportional to recent yaw input
+  _bankSm = lerp(_bankSm, clamp(-(G.lastYawDelta||0)*30, -0.9, 0.9), 0.12);
+  return _bankSm;
+}
 
 function aimDir(out){
   // forward = -Z rotated by yaw(Y) then pitch(X)
@@ -334,7 +341,7 @@ function stepFreeFlight(dt){
   const climbing = G.vel.dot(new THREE.Vector3(0,1,0)) > 0;
   const K = climbing ? CFG.dragKClimb : CFG.dragK;
   const s2 = G.vel.lengthSq();
-  G.vel.addScaledVector(G.vel.clone().normalize(), -K*s2*dt*60*dt*60);
+  G.vel.addScaledVector(G.vel.clone().normalize(), -K*s2*dt);
   // Clamp speeds
   const spd = G.vel.length();
   if (spd > CFG.maxSpeed) G.vel.multiplyScalar(CFG.maxSpeed/spd);
@@ -354,10 +361,8 @@ function collideHero(dt){
   }
   const th = cityHit(G.pos, r);
   if (th > 0){
-    // Push out horizontally to nearest face, damage on fast impacts
+    // Damage on fast impacts; push out above roofs
     if (G.vel.length() > 150){ G.hp -= 34; G.msgFlash('TOWER HIT!'); }
-    const dx = G.pos.x - (cityNearestX ?? G.pos.x);
-    // simple push straight up if below roof, else bounce back
     if (G.pos.y < th){ 
       if (G.vel.length() > 200) return failGame('tower-crash');
       G.pos.y = th + r + 0.5; G.vel.y = Math.max(G.vel.y, 6);
@@ -365,7 +370,6 @@ function collideHero(dt){
     }
   }
 }
-var cityNearestX = 0;
 /* ===== SECTION: MISSION FSM ===== */
 const _nose = new THREE.Vector3();
 
@@ -405,7 +409,8 @@ function stepAirlinerFree(dt){
   a.bank += CFG.rollRate*dt*0.4;
   a.pos.addScaledVector(a.vel, dt);
   alGrp.position.copy(a.pos);
-  alGrp.rotation.set(0.12*Math.sin(a.sinkPhase*0.5), Math.PI, clamp(a.bank*0.06,-0.5,0.5));
+  alGrp.rotation.set(0.12*Math.sin(a.sinkPhase*0.5),
+    Math.atan2(-a.vel.x, -a.vel.z), clamp(a.bank*0.06,-0.5,0.5));
   // Impact checks
   const th = cityHit(a.pos, CFG.fuseR);
   if (a.pos.y < CFG.fuseR + 2 || th > 0){
@@ -418,6 +423,15 @@ function stepAirlinerFree(dt){
 function stepHolding(dt){
   // Merged body: hero grips the nose; WASD/mouse steers the pair.
   const a = G.al;
+  // Released: plane settles ballistically, hero no longer flies it
+  if (a.freeFall){
+    a.vel.y = Math.max(a.vel.y - 6*dt, -CFG.landPerfect*0.8);   // flare-limited sink
+    a.vel.x *= (1 - 0.4*dt); a.vel.z *= (1 - 0.4*dt);
+    a.pos.addScaledVector(a.vel, dt);
+    alGrp.position.copy(a.pos);
+    if (a.pos.y < CFG.fuseR + 2){ a.touchedDown = true; gradeTouchdown(a.vel.y); }
+    return;
+  }
   const dir = aimDir(_aimDir);
   const mass = 2.6;                               // heavy!
   a.vel.addScaledVector(dir, CFG.holdThrust*dt/mass);
@@ -438,19 +452,13 @@ function stepHolding(dt){
   G.pos.copy(a.pos).addScaledVector(dir, -(CFG.airlinerLen/2 + CFG.grabRange*0.7));
   G.vel.copy(a.vel);
   alGrp.position.copy(a.pos);
-  alGrp.rotation.set(clamp(-a.vel.y*0.004,-0.3,0.3)+Math.PI, Math.atan2(-a.vel.x,-a.vel.z)+Math.PI, 0);
+  alGrp.rotation.set(clamp(-a.vel.y*0.004,-0.3,0.3),
+    Math.atan2(-a.vel.x, -a.vel.z), 0);
   // Wing clips a tower?
   const th = cityHit(a.pos, CFG.fuseR+20);
   if (th > 0 && a.pos.y < th + 10){
     a.stress += 40; G.shake = 6;
     a.pos.y = th + 26; a.vel.y = Math.max(a.vel.y, 4);
-  }
-  // Released-drop over stadium
-  if (G.released && a.freeFall){
-    a.vel.y -= 6*dt;                             // continues below
-    if (a.pos.y < CFG.fuseR + 2){
-      a.touchedDown = true; gradeTouchdown(a.vel.y);
-    }
   }
   // Hull-zero from overstress
   if (a.stress >= CFG.stressBuckleAt && a.stress >= 99.9) {/* reserved */}
@@ -512,6 +520,7 @@ function restart(){
   });
   initHeroState();
   spawnAirliner();
+  alGrp.visible = true;
   document.getElementById('overlay').style.display = 'none';
   G.msgFlash('INTERCEPT FLIGHT 227 — PRESS E AT HER NOSE', 3);
 }
@@ -552,7 +561,148 @@ function estimateImpactSecs(){
   return Math.max(0, Math.ceil((a.pos.y - CFG.fuseR) / -vy));
 }
 /* ===== SECTION: DEBUG HOOKS ===== */
+window.__LF__ = {
+  state: ()=> ({
+    phase: G.phase, ended: G.ended, grabbed: G.grabbed, released: G.released,
+    hero:{ x:G.pos.x, y:G.pos.y, z:G.pos.z, speed:G.vel.length(), tier:G.speedTier },
+    airliner: G.al && { x:G.al.pos.x, y:G.al.pos.y, z:G.al.pos.z,
+                        vy:G.al.vel.y, stress:G.al.stress, alive:!!G.al.alive },
+    failReason: G.failReason,
+  }),
+  // Teleport hero right beside the airliner nose (assisted interception)
+  scenarioTeleport(){
+    alNosePos(_nose);
+    G.pos.copy(_nose).add(v3(0, 3, CFG.grabRange*0.8));
+    G.vel.set(0, 0, -60);
+    G.yaw = Math.PI; G.pitch = 0;         // face west
+    heroGrp.position.copy(G.pos);
+    return this.state();
+  },
+  grabPlane(){
+    if (!G.grabbed){ tryGrabOrRelease(); }
+    return this.state();
+  },
+  // Assisted: hold lift, tow to stadium, gentle release+touchdown
+  async forceLand(){
+    this.scenarioTeleport();
+    this.grabPlane();
+    if (!G.grabbed) throw new Error('grab failed');
+    await this._assistHold();
+    return this.state();
+  },
+  _assistHold: ()=>{
+    // Scripted takeover: normal sim paused, we drive stepHolding manually.
+    const a = G.al;
+    const target = v3(STADIUM.x, 90, STADIUM.z);
+    G.paused = true;
+    return new Promise(res=>{
+      const iv = setInterval(()=>{
+        if (G.ended) { clearInterval(iv); G.paused=false; res(); return; }
+        const to = _tmp.copy(target).sub(a.pos);
+        if (to.length() < 30){
+          clearInterval(iv);
+          a.vel.set(0, -3.2, 0);          // gentle descent
+          releaseOverStadium();
+          G.paused = false;               // resume RAF: freeFall branch lands it
+          res();
+        } else {
+          to.normalize();
+          a.vel.lerp(to.multiplyScalar(70), 0.25);
+          a.vel.y = Math.max(a.vel.y, -4);
+          G.yaw = Math.atan2(-a.vel.x, -a.vel.z);
+          G.pitch = clamp(-a.vel.y/120, -0.4, 0.4);
+          stepHolding(1/30);
+        }
+      }, 33);
+    });
+  },
+  forceCrash(reason='hard-crash'){ failGame(reason); return this.state(); },
+  keys: KEYS,
+};
 /* ===== SECTION: MAIN LOOP ===== */
+// Title screen: click or key starts the mission
+{
+  const ov = document.getElementById('overlay');
+  document.getElementById('ovSub').innerHTML =
+    `Flight 227 lost both engines and is sinking over downtown.<br>` +
+    `Fly up, catch her nose, and lay her down at Metro Stadium.<br><br>` +
+    `<kbd>MOUSE</kbd> aim &nbsp; <kbd>W</kbd> cruise &nbsp; <kbd>SHIFT+W</kbd> boost &nbsp; ` +
+    `<kbd>S</kbd> airbrake &nbsp; <kbd>E</kbd> grab / release &nbsp; <kbd>SPACE</kbd> haul up<br><br>` +
+    `<span style="color:#ffd75e">CLICK ANYWHERE TO TAKE OFF</span>`;
+  const begin = ()=>{
+    if (G.phase === 'TITLE') restart();
+    ov.removeEventListener('mousedown', begin);
+    removeEventListener('keydown', begin);
+  };
+  ov.addEventListener('mousedown', begin);
+  addEventListener('keydown', begin);
+}
+
+// Build world once
+buildCity();
+buildStadium();
+buildHero();
+buildAirliner();
+spawnAirliner();
+initHeroState();
+alGrp.visible = false;              // revealed on mission start (restart)
+
+function simulate(dt){
+  pollControls(dt);
+  if (G.phase === 'TITLE') return;
+  if (G.ended) return;
+  if (G.grabbed){
+    if (!G.released) stepHolding(dt);
+    else if (!G.al.touchedDown) stepHolding(dt);   // freefall drop after release
+  } else {
+    stepFreeFlight(dt);
+    stepAirlinerFree(dt);
+  }
+  // Hero HP gate
+  if (G.hp <= 0 && !G.ended) failGame('hull-zero');
+}
+
+function syncVisuals(dt){
+  heroGrp.position.copy(G.pos);
+  const dir = aimDir(_aimDir);
+  const m = new THREE.Matrix4().lookAt(new THREE.Vector3(0,0,0), dir, new THREE.Vector3(0,1,0));
+  heroGrp.quaternion.setFromRotationMatrix(m);
+  // Bank subtly with yaw rate for feel
+  heroGrp.rotateZ(mouseDXSmoothBank());
+  // Fire flicker
+  const fire = alGrp.userData.fire;
+  if (fire){
+    fire.visible = G.al && G.al.alive && !G.al.touchedDown;
+    fire.scale.setScalar(0.8 + Math.random()*0.5);
+  }
+  // Chase camera
+  const back = _tmp.copy(dir).multiplyScalar(-CFG.camBack);
+  const want = G.pos.clone().add(back).add(v3(0, CFG.camUp, 0));
+  camera.position.lerp(want, clamp(CFG.camLerp*dt,0,1));
+  if (G.shake > 0){
+    camera.position.x += (Math.random()-0.5)*G.shake;
+    camera.position.y += (Math.random()-0.5)*G.shake;
+    G.shake = Math.max(0, G.shake - dt*12);
+  }
+  camera.lookAt(G.pos.x + dir.x*40, G.pos.y + dir.y*40, G.pos.z + dir.z*40);
+  const fovWant = G.boosting ? CFG.fovBoost : CFG.fovBase;
+  camera.fov = lerp(camera.fov, fovWant, clamp(dt*3,0,1));
+  camera.updateProjectionMatrix();
+}
+
+function frame(t){
+  requestAnimationFrame(frame);
+  const tMs = t/1000;
+  let dt = Math.min(0.05, tMs - (G.tPrev || tMs));
+  G.tPrev = tMs;
+  if (G.paused) { syncVisuals(dt); renderer.render(scene, camera); return; }
+  G.acc += dt;
+  while (G.acc >= G.dtFixed){ simulate(G.dtFixed); G.acc -= G.dtFixed; }
+  syncVisuals(dt);
+  if (G.phase !== 'TITLE') updateHUD();
+  renderer.render(scene, camera);
+}
+requestAnimationFrame(frame);
 </script>
 </body>
 </html>
