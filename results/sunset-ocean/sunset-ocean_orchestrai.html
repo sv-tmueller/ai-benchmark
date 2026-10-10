@@ -1,0 +1,952 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sunset Ocean</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  /* ---- Page chrome ------------------------------------------------------ */
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    overflow: hidden; background: #10141c;
+  }
+  #app { width: 100vw; height: 100vh; display: block; }
+
+  /* ---- Hidden-by-default debug panel ------------------------------------ */
+  #debug-panel {
+    position: fixed; top: 12px; left: 12px; z-index: 10;
+    font: 11px/1.5 ui-monospace, Menlo, Consolas, monospace;
+    color: #dfe7ef; background: rgba(8, 12, 18, 0.72);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 8px; padding: 10px 14px;
+    backdrop-filter: blur(6px);
+    display: none;              /* hidden by default; press D to toggle */
+    min-width: 230px;
+  }
+  #debug-panel.visible { display: block; }
+  #debug-panel h4 {
+    margin: 0 0 6px 0; font-size: 11px; letter-spacing: 0.08em;
+    text-transform: uppercase; opacity: 0.75;
+  }
+  #debug-panel .row { display: flex; justify-content: space-between; gap: 12px; }
+  #debug-panel .hint { margin-top: 6px; opacity: 0.55; }
+  #debug-panel input[type="range"] { width: 130px; }
+  #fps-counter { font-weight: bold; color: #ffd27a; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/controls/OrbitControls.js": "https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js",
+    "three/addons/postprocessing/EffectComposer.js": "https://unpkg.com/three@0.160.0/examples/jsm/postprocessing/EffectComposer.js",
+    "three/addons/postprocessing/RenderPass.js": "https://unpkg.com/three@0.160.0/examples/jsm/postprocessing/RenderPass.js",
+    "three/addons/postprocessing/UnrealBloomPass.js": "https://unpkg.com/three@0.160.0/examples/jsm/postprocessing/UnrealBloomPass.js",
+    "three/addons/postprocessing/SMAAPass.js": "https://unpkg.com/three@0.160.0/examples/jsm/postprocessing/SMAAPass.js",
+    "three/addons/postprocessing/OutputPass.js": "https://unpkg.com/three@0.160.0/examples/jsm/postprocessing/OutputPass.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="debug-panel">
+  <h4>Debug &mdash; press D to hide</h4>
+  <div class="row"><span>FPS</span><span id="fps-counter">--</span></div>
+  <div class="row"><span>Frame ms</span><span id="frame-ms">--</span></div>
+  <div class="row"><span>Quality</span><span id="quality-label">High</span></div>
+  <div class="row"><span>Wave verts</span><span id="vert-count">--</span></div>
+  <label class="row">Sun elev&nbsp;<input id="sun-slider" type="range" min="-1" max="12" step="0.1" value="3.5"></label>
+  <div class="hint">Drag: orbit &middot; Wheel: dolly &middot; Q: quality</div>
+</div>
+<script type="module">
+/* ========================================================================
+   SUNSET OCEAN — single-file Three.js scene
+   Systems, in order: CONFIG · SKY · WATER GEOMETRY · WATER MATERIAL ·
+   TEXTURES (procedural) · CLOUDS · CAMERA · POST · DEBUG · MAIN LOOP
+   ---------------------------------------------------------------------
+   One source of truth for the sun: CONFIG.sunElevation drives the sky
+   dome, the water specular, the directional light and the cloud rim.
+   ======================================================================== */
+
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+/* ------------------------------------------------------------------------
+   SECTION 1 — CONFIG
+   Central tunables. Quality tier toggles wave count / detail layers /
+   bloom resolution at runtime.
+------------------------------------------------------------------------ */
+const CONFIG = {
+  // Sun: a few degrees above the horizon. Elevation in degrees.
+  sunElevationDeg : 3.5,
+  sunAzimuthDeg   : 0.0,        // looking due west down -Z axis
+  // Camera hover height (metres above mean sea level)
+  camHeight       : 2.6,
+
+  // --- Quality tiers ---------------------------------------------------
+  quality: 'high',
+  tiers: {
+    low : { swellCount: 4, windCount: 4, detailLayers: 1, bloomResDiv: 4 },
+    high: { swellCount: 5, windCount: 8, detailLayers: 2, bloomResDiv: 2 },
+  },
+
+  // --- Water grid --------------------------------------------------------
+  gridSize   : 1024.0,   // world-space extent of the displaced plane
+  gridSegments: 384,     // vertices per side (radial density handled below)
+
+  // --- Renderer ---------------------------------------------------------
+  maxDPR: 2.0,
+};
+
+// Active tier accessor (recomputed when quality changes)
+function TIER () { return CONFIG.tiers[CONFIG.quality]; }
+
+// Elapsed-time clock — absolute seconds, never wrapped/reset.
+const CLOCK = { t: 0 };
+
+/* ------------------------------------------------------------------------
+   SECTION 2 — SKY
+   Analytic Preetham-style atmospheric scattering on an inverted sphere.
+   Fragment shader computes Rayleigh + Mie phase colours from view ray vs
+   sun direction; a soft bright sun disc with Mie halo is drawn in-shader.
+   Uniform `uSunDir` is THE sun vector reused everywhere.
+------------------------------------------------------------------------ */
+const skyVert = /* glsl */`
+varying vec3 vWorldPos;
+void main () {
+  vec4 wp = modelMatrix * vec4(position, 1.0);
+  vWorldPos = wp.xyz;
+  gl_Position = projectionMatrix * viewMatrix * wp;
+}`;
+
+const skyShared = /* glsl */`
+precision highp float;
+
+uniform vec3  uSunDir;      // normalised, points TOWARD the sun
+uniform float uTime;
+uniform float uRayleigh;    // overall scattering strength
+uniform float uTurbidity;   // haze amount (higher = hazier sunset)
+uniform float uMieG;        // mie anisotropy 0..1
+uniform float uSunIntensity;
+uniform float uCloudCoverage;  // 0 = clear, 1 = heavy band
+
+const float PI = 3.141592653589793;
+
+// --- tiny GLSL hash / value noise for procedural clouds -----------------
+float hash21 (vec2 p) {
+  p = fract(p * vec2(234.34, 435.345));
+  p += dot(p, p + 34.23);
+  return fract(p.x * p.y);
+}
+float vnoise (vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  float a = hash21(i),           b = hash21(i + vec2(1.0, 0.0));
+  float c = hash21(i + vec2(0.0, 1.0)), d = hash21(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+float fbm2 (vec2 p) {
+  float v = 0.0, amp = 0.5;
+  for (int i = 0; i < 5; ++i) {
+    v += amp * vnoise(p);
+    p = p * 2.17 + vec2(11.7, 5.3);
+    amp *= 0.52;
+  }
+  return v;
+}
+
+// Lit cloud layer: samples FBM on a plane high above the viewer, projects
+// onto the view ray. Undersides face the low sun -> warm rim lighting.
+// Returns rgb = premultiplied lit colour, a = coverage alpha.
+vec4 cloudLayer (vec3 rd) {
+  if (rd.y < 0.015) return vec4(0.0);
+  // intersect ray with a slab at height ~1800 (cirrus alt.)
+  float h = 1650.0;
+  vec2 cp = rd.xz * (h / rd.y) * 0.00042;   // cloud-plane coords
+  cp += vec2(uTime * 0.0016, uTime * 0.0007);
+
+  float dens = fbm2(cp * 1.6);
+  dens = smoothstep(1.0 - uCloudCoverage, 1.05 - uCloudCoverage * 0.55, dens);
+
+  // band weighting: thick near horizon, thinner overhead
+  float band = exp(-pow(clamp(rd.y, 0.0, 1.0) * 3.2, 2.0));
+  float alpha = dens * band * 0.85;
+
+  // lighting: tops cooler (ambient sky), undersides warm from the sun
+  float mu = clamp(dot(rd, uSunDir), -1.0, 1.0);
+  float sunSide = pow(clamp(mu * 0.5 + 0.5, 0.0, 1.0), 1.6);
+  float horizonGlow = exp(-pow(max(rd.y - 0.02, 0.0) * 9.0, 2.0));
+  vec3 coolTop = vec3(0.42, 0.47, 0.58);
+  vec3 warmUnder = vec3(1.0, 0.52, 0.26);
+  vec3 lit = mix(coolTop, warmUnder, sunSide * (0.35 + 0.65 * horizonGlow));
+  // silhouette darkening where dense
+  lit *= mix(1.0, 0.55, dens * band);
+  return vec4(lit * alpha, alpha);
+}
+
+float sunDiscAmount (vec3 rd, vec3 sd) {
+  float cosGamma = dot(rd, sd);
+  // angular radius of the sun ~0.53deg total -> ~0.0046 rad half-angle
+  const float sunCosRadius = 0.99989;           // cos(0.0047 rad)
+  float edge = smoothstep(sunCosRadius - 0.00006, sunCosRadius + 0.00003, cosGamma);
+  return edge;
+}
+
+// Core analytic sky radiance WITHOUT the sun disc — callable for both the
+// dome and the water's reflection rays. rd must be normalised.
+vec3 skyRadiance (vec3 rd) {
+
+  // --- optical depth proxies along the view ray -----------------------
+  float up = clamp(rd.y, -1.0, 1.0);
+  // zenith angle factors: rays near horizon traverse much more air
+  float zen = sqrt(max(up, 0.0));
+  float rayAirMass = 1.0 / (zen + 0.15 * pow(zen + 0.15, -1.13)); // Kasten proxy
+  float horizonAirMass = min(1.0 / (pow(abs(up), 0.65) + 0.02), 9.0);
+
+  // Rayleigh coefficients: blue scatters far more than red (1/λ⁴ law)
+  vec3 lambda = vec3(0.18, 0.41, 1.0);          // relative scatter strengths
+  vec3 rayleighBeta = lambda * uRayleigh;
+
+  // Sun elevation factor: low sun reddens transmitted light
+  float sunUp = clamp(uSunDir.y, -0.05, 1.0);
+  float slant = 1.0 / (clamp(uSunDir.y * 8.0, 0.04, 1.0) + 0.09);
+  vec3 transmittance = exp(-rayleighBeta * slant * 1.15);
+
+  // --- Rayleigh sky radiance ------------------------------------------
+  float mu = dot(rd, uSunDir);
+  float rayPhase = (3.0 / (16.0 * PI)) * (1.0 + mu * mu);
+  vec3 inscatterR = rayleighBeta * rayPhase * uSunIntensity;
+  // weight by how much atmosphere the VIEW ray crosses; saturate so grazing
+  // rays don't blow out (air mass grows unbounded near the horizon)
+  float viewDepth = mix(horizonAirMass, rayAirMass, clamp(up, 0.0, 1.0));
+  viewDepth = min(viewDepth, 9.0);
+  viewDepth *= smoothstep(-0.06, 0.12, up);      // fade below horizon
+  vec3 skyCol = inscatterR * viewDepth * transmittance;
+
+  // --- Mie (haze) forward peak around the sun ---------------------------
+  float g = uMieG;
+  float miePhase = (1.0 - g*g) / (4.0 * PI * pow(1.0 + g*g - 2.0 * g * mu, 1.5));
+  vec3 mieBeta = vec3(0.0075) * uTurbidity;
+  vec3 mieCol = mieBeta * miePhase * uSunIntensity * transmittance;
+  float mieView = pow(clamp(up * 0.5 + 0.5, 0.0, 1.0), 0.6);
+  skyCol += mieCol * mieView * horizonAirMass * 0.35;
+
+  // Warm boost right around the sun horizon area (sunset glow wedge)
+  float sunProximity = pow(clamp(mu * 0.5 + 0.5, 0.0, 1.0), 3.0);
+  float horizBand = exp(-pow(max(up, 0.0) * 4.5, 2.0));
+  skyCol += vec3(1.0, 0.42, 0.15) * sunProximity * horizBand * 0.06 * uTurbidity;
+
+  // Zenith deep-blue: opposite side of the sun stays cool
+  float awayFromSun = 1.0 - sunProximity;
+  skyCol += vec3(0.06, 0.12, 0.30) * pow(clamp(up, 0.0, 1.0), 1.4) * awayFromSun * 0.85;
+
+  // Desaturate the opposite horizon slightly (mandate #6)
+  float oppSide = clamp(dot(normalize(vec3(rd.x, 0.0, rd.z)),
+                            normalize(vec3(uSunDir.x, 0.0, uSunDir.z))) * -0.5 + 0.5, 0.0, 1.0);
+  float avg = dot(skyCol, vec3(0.333));
+  skyCol = mix(skyCol, vec3(avg), oppSide * horizBand * 0.25);
+
+  // --- clouds: occlude sky, add lit FBM layer ---------------------------
+  vec4 cl = cloudLayer(rd);
+  skyCol = mix(skyCol, cl.rgb, cl.a);   // proper over-composite
+  return skyCol;
+}
+
+// Sun disc + Mie halo contribution, separable so the water reflection can
+// include the glow without double-counting the sharp disc.
+vec3 sunGlow (vec3 rd) {
+  vec3 lambda = vec3(0.66, 0.47, 0.39);
+  vec3 rayleighBeta = lambda * uRayleigh;
+  float slant = 1.0 / (clamp(uSunDir.y * 8.0, 0.04, 1.0) + 0.09);
+  vec3 transmittance = exp(-rayleighBeta * slant * 1.15);
+  float mu = dot(rd, uSunDir);
+
+  float disc = sunDiscAmount(rd, uSunDir);
+  vec3 col = transmittance * vec3(1.0, 0.92, 0.78) * 34.0 * disc;
+  float halo = pow(clamp(mu, 0.0, 1.0), 350.0) * 0.55
+             + pow(clamp(mu, 0.0, 1.0), 40.0) * 0.10;
+  col += transmittance * vec3(1.0, 0.55, 0.25) * halo;
+  return col;
+}
+`;
+
+// Dome fragment shader: evaluate the shared sky model for the view ray.
+const skyFrag = skyShared + /* glsl */`
+varying vec3 vWorldPos;
+
+void main () {
+  vec3 rd = normalize(vWorldPos - cameraPosition);
+  vec3 col = skyRadiance(rd) + sunGlow(rd);
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+/* ------------------------------------------------------------------------
+   SECTION 3 — WATER VERTEX SHADER
+   Sum of Gerstner waves evaluated per-vertex WITH analytic derivatives, so
+   the fragment shader gets exact normals (no finite differences).
+
+   Wave bank: MAX_WAVES slots filled CPU-side each frame according to the
+   quality tier (5 swells + 8 wind waves on High). Phases are seeded with
+   irrational multiples so super-position never visibly repeats.
+
+   Deep-water dispersion: omega = sqrt(g * k)  -> long swells travel
+   faster; wind waves (larger k) oscillate quicker. Absolute time drives
+   everything; no modulo wrap.
+------------------------------------------------------------------------ */
+const waterVert = `
+precision highp float;
+
+#define G_ACC    9.81
+#define MAX_WAVES 16
+
+uniform float uTime;
+uniform vec4  uWaveDirs[MAX_WAVES];    // xy: unit direction
+uniform vec4  uWaveParams[MAX_WAVES]; // x: amplitude  y: wavelength  z: steepness  w: phase-speed mult
+uniform int   uWaveCount;
+uniform vec3  uCamXZ;                  // camera XZ position (grid follows)
+
+varying vec3  vWorldPos;
+varying vec3  vNormal;                 // analytic geometric normal
+varying float vJacob;                  // crest-steepness (foam) factor
+varying float vHeight;                 // wave height above rest (subsurface)
+varying float vDist;                   // view distance (fog / detail fade)
+
+void main () {
+  vec3 pos = position;
+
+  vec3 disp   = vec3(0.0);
+  vec3 ddx    = vec3(0.0);   // d(disp)/dx
+  vec3 ddz    = vec3(0.0);   // d(disp)/dz
+  float jacob = 0.0;
+
+  for (int i = 0; i < MAX_WAVES; ++i) {
+    if (i >= uWaveCount) break;
+    vec2  dir   = uWaveDirs[i].xy;
+    float amp   = uWaveParams[i].x;
+    float wl    = uWaveParams[i].y;
+    float steep = uWaveParams[i].z;
+    float pmul  = uWaveParams[i].w;
+
+    float k  = 6.28318530718 / wl;          // wave number
+    float om = sqrt(G_ACC * k) * pmul;      // deep-water dispersion relation
+    float f  = k * dot(dir, pos.xz) - om * uTime + float(i) * 1.6180339887;
+
+    float CA = cos(f);
+    float SA = sin(f);
+    float QA = steep / max(k, 0.001);       // horizontal sharpening factor
+
+    // Gerstner displacement: sharpens crests, flattens troughs
+    disp.x += QA * dir.x * CA;
+    disp.z += QA * dir.y * CA;
+    disp.y += amp * SA;
+
+    // --- analytic partial derivatives (normal & Jacobian) --------------
+    ddx.x += -QA * dir.x * dir.x * SA;
+    ddx.z += -QA * dir.x * dir.y * SA;
+    ddx.y +=  amp * dir.x * k * CA;
+    ddz.x += -QA * dir.y * dir.x * SA;
+    ddz.z += -QA * dir.y * dir.y * SA;
+    ddz.y +=  amp * dir.y * k * CA;
+
+    // Crest-compression indicator feeding foam mask
+    jacob += steep * CA;
+  }
+
+  vec3 newPos = pos + disp;
+  // Camera-follow grid: translate the sample location with the camera XZ
+  newPos.xz += uCamXZ.xz;
+
+  // Tangent/bitangent from analytic slopes -> exact geometric normal
+  vec3 T = vec3(1.0 + ddx.x, ddx.y, ddx.z);
+  vec3 B = vec3(ddz.x, ddz.y, 1.0 + ddz.z);
+  vNormal = normalize(cross(B, T));
+
+  vJacob   = jacob / float(uWaveCount);
+  vHeight  = disp.y;
+  vWorldPos = newPos;
+
+  vec4 mv = modelViewMatrix * vec4(newPos, 1.0);
+  vDist = length(mv.xyz);
+  gl_Position = projectionMatrix * mv;
+}
+`;
+
+/* ------------------------------------------------------------------------
+   SECTION 4 — WATER FRAGMENT SHADER
+   Physically motivated water BRDF:
+   • Schlick Fresnel (F0 = 0.02)
+   • Reflection of the SAME analytic sky model (skyRadiance()) -> the
+     reflected sky always matches the dome, mandate #4 / T6.
+   • Dual-lobe sun specular: tight GGX core + broad rough lobe = the long
+     broken glitter path toward the viewer (T5).
+   • Height+light-dependent turquoise subsurface tint (T7).
+   • Jacobian-driven crest foam modulated by scrolling noise (T8).
+   • Horizon fog blending into the exact sky colour at the horizon (T3).
+------------------------------------------------------------------------ */
+const waterFrag = skyShared + /* glsl */`
+uniform sampler2D uNormalTexA;   // procedural detail normal layer A
+uniform sampler2D uNormalTexB;   // procedural detail normal layer B
+uniform float uDetailStrength;
+uniform int   uDetailLayers;
+uniform vec2  uFlowA;            // scroll offsets (accumulated CPU-side)
+uniform vec2  uFlowB;
+uniform vec3  uDeepColor;        // base body colour
+uniform vec3  uSubsurfaceColor;  // turquoise transmission tint
+uniform float uFoamThreshold;
+uniform sampler2D uNoiseTex;     // procedural foam breakup noise
+uniform float uFogNear;
+uniform float uFogFar;
+
+varying vec3  vWorldPos;
+varying vec3  vNormal;
+varying float vJacob;
+varying float vHeight;
+varying float vDist;
+
+// GGX / Trowbridge-Reitz normal distribution
+float ggxD (float NdotH, float alpha) {
+  float a2 = alpha * alpha;
+  float d = NdotH * NdotH * (a2 - 1.0) + 1.0;
+  return a2 / (PI * d * d);
+}
+
+void main () {
+  vec3 N = normalize(vNormal);
+  vec3 V = normalize(cameraPosition - vWorldPos);
+  vec3 L = uSunDir;
+  vec3 H = normalize(L + V);
+
+  // --- detail normals: two scrolling layers, faded with distance -------
+  float detailFade = 1.0 - smoothstep(60.0, 420.0, vDist);
+  vec2 uvA = vWorldPos.xz * 0.07 + uFlowA;
+  vec2 uvB = vWorldPos.xz * 0.023 + uFlowB;
+  vec3 dnA = texture2D(uNormalTexA, uvA).xyz * 2.0 - 1.0;
+  vec3 dnB = texture2D(uNormalTexB, uvB).xyz * 2.0 - 1.0;
+  float amt = uDetailStrength * detailFade;
+  if (uDetailLayers > 0) N = normalize(N + vec3(dnA.xy, 0.0) * amt);
+  if (uDetailLayers > 1) N = normalize(N + vec3(dnB.xy, 0.0) * amt * 0.7);
+
+  float NdotV = max(dot(N, V), 0.0);
+
+  // --- Fresnel (Schlick, F0 = 0.02) ------------------------------------
+  float fres = 0.02 + 0.98 * pow(1.0 - NdotV, 5.0);
+
+  // --- sky reflection (same analytic model as the dome) ----------------
+  vec3 reflDir = reflect(-V, N);
+  reflDir.y = abs(reflDir.y) * 0.98 + 0.02;   // keep reflections above horizon
+  vec3 skyRefl = skyRadiance(normalize(reflDir)) + sunGlow(normalize(reflDir)) * 0.6;
+
+  // --- sun specular: tight GGX core + broad rough lobe ------------------
+  float NdotH = max(dot(N, H), 0.0);
+  float LdotH = max(dot(L, H), 0.0);
+  float coreSpec = ggxD(NdotH, 0.06);
+  float broadSpec = ggxD(NdotH, 0.48);
+  // shadow the glitter where the wave faces away from the sun
+  float sunVis = smoothstep(-0.05, 0.15, dot(N, L));
+  vec3 sunColor = vec3(1.0, 0.86, 0.62) * 6.0;
+  vec3 spec = sunColor * (coreSpec * 0.55 + broadSpec * 0.16) * sunVis
+            * fres / max(LdotH, 0.08);
+
+  // --- subsurface scattering tint --------------------------------------
+  // Light passing through thin crest parts: strongest when the fragment is
+  // high (thin upper wave), lit by the sun, and viewed toward the light.
+  float thruLight = pow(max(dot(V, -L), 0.0), 3.0);
+  float lift = smoothstep(-0.2, 0.9, vHeight);
+  float sss = thruLight * lift * sunVis;
+  vec3 body = mix(uDeepColor, uSubsurfaceColor, sss * 0.85);
+  // ambient sky irradiance on the body
+  body *= 0.55 + 0.45 * clamp(N.y, 0.0, 1.0);
+
+  // --- foam: Jacobian crest compression * noise breakup ----------------
+  float crest = smoothstep(uFoamThreshold, uFoamThreshold + 0.22, vJacob);
+  float fn = texture2D(uNoiseTex, vWorldPos.xz * 0.11 + uFlowA * 0.4).r;
+  float fn2 = texture2D(uNoiseTex, vWorldPos.xz * 0.31 - uFlowB * 0.3).r;
+  float foamMask = crest * smoothstep(0.35, 0.8, fn * 0.6 + fn2 * 0.5);
+  foamMask *= 1.0 - smoothstep(220.0, 520.0, vDist);  // distant foam aliases
+  vec3 foamCol = vec3(0.9, 0.93, 0.96) * (0.35 + 0.65 * sunVis);
+
+  // --- composite --------------------------------------------------------
+  vec3 col = mix(body, skyRefl, fres);
+  col += spec;
+  col = mix(col, foamCol, clamp(foamMask, 0.0, 1.0) * 0.85);
+
+  // --- horizon fog: blend into the exact sky colour at eye level --------
+  vec3 horizonDir = normalize(vec3(
+    (vWorldPos - cameraPosition).x, 0.0, (vWorldPos - cameraPosition).z));
+  vec3 fogCol = skyRadiance(normalize(vec3(horizonDir.x, 0.035, horizonDir.z)));
+  float fogAmt = smoothstep(uFogNear, uFogFar, vDist);
+  col = mix(col, fogCol, fogAmt);
+
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+/* ------------------------------------------------------------------------
+   SECTION 5 — PROCEDURAL TEXTURES
+   Zero downloads: detail-normal layers and a foam-breakup noise tile are
+   rasterised onto <canvas> elements at boot and uploaded as DataTextures.
+------------------------------------------------------------------------ */
+
+// Small deterministic value-noise helper (CPU side)
+function makeRNG (seed) {
+  let s = seed >>> 0;
+  return () => {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+}
+
+// Tileable value-noise lattice with bilinear + smoothstep interpolation
+class ValueNoise2D {
+  constructor (size, rng) {
+    this.size = size;
+    this.lattice = new Float32Array(size * size);
+    for (let i = 0; i < size * size; ++i) this.lattice[i] = rng();
+  }
+  atWrap (ix, iy) {
+    const s = this.size;
+    return this.lattice[((iy % s + s) % s) * s + ((ix % s + s) % s)];
+  }
+  sample (x, y) {
+    const xi = Math.floor(x), yi = Math.floor(y);
+    const tx = x - xi, ty = y - yi;
+    const sx = tx * tx * (3 - 2 * tx), sy = ty * ty * (3 - 2 * ty);
+    const a = this.atWrap(xi, yi),     b = this.atWrap(xi + 1, yi);
+    const c = this.atWrap(xi, yi + 1), d = this.atWrap(xi + 1, yi + 1);
+    return (a * (1 - sx) + b * sx) * (1 - sy) + (c * (1 - sx) + d * sx) * sy;
+  }
+  fbm (x, y, octaves) {
+    let v = 0, amp = 0.5, freq = 1;
+    for (let o = 0; o < octaves; ++o) {
+      v += amp * this.sample(x * freq, y * freq);
+      amp *= 0.5; freq *= 2.03;   // non-integer lacunarity reduces tiling artefacts
+    }
+    return v;
+  }
+}
+
+// Build a tileable RGBA normal map (height -> Sobel normals) on a canvas
+function makeDetailNormalTexture (size, cellSize, octaves, seed, strength) {
+  const rng = makeRNG(seed);
+  const noise = new ValueNoise2D(cellSize, rng);
+  const heights = new Float32Array(size * size);
+  for (let y = 0; y < size; ++y) {
+    for (let x = 0; x < size; ++x) {
+      // sample on a torus so edges wrap seamlessly
+      const fx = (x / size) * cellSize, fy = (y / size) * cellSize;
+      heights[y * size + x] =
+        noise.fbm(fx, fy, octaves) +
+        0.5 * noise.fbm(fx * 2.7 + 13.7, fy * 2.7 + 91.3, 3);
+    }
+  }
+  const data = new Uint8Array(size * size * 4);
+  const hAt = (x, y) =>
+    heights[((y % size + size) % size) * size + ((x % size + size) % size)];
+  for (let y = 0; y < size; ++y) {
+    for (let x = 0; x < size; ++x) {
+      // Sobel gradients
+      const gx =
+        (hAt(x + 1, y - 1) + 2 * hAt(x + 1, y) + hAt(x + 1, y + 1)) -
+        (hAt(x - 1, y - 1) + 2 * hAt(x - 1, y) + hAt(x - 1, y + 1));
+      const gy =
+        (hAt(x - 1, y + 1) + 2 * hAt(x, y + 1) + hAt(x + 1, y + 1)) -
+        (hAt(x - 1, y - 1) + 2 * hAt(x, y - 1) + hAt(x + 1, y - 1));
+      let nx = -gx * strength, ny = -gy * strength, nz = 1.0;
+      const len = Math.hypot(nx, ny, nz);
+      nx /= len; ny /= len; nz /= len;
+      const i = (y * size + x) * 4;
+      data[i]     = Math.round((nx * 0.5 + 0.5) * 255);
+      data[i + 1] = Math.round((ny * 0.5 + 0.5) * 255);
+      data[i + 2] = Math.round((nz * 0.5 + 0.5) * 255);
+      data[i + 3] = 255;
+    }
+  }
+  const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.generateMipmaps = true;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+// Greyscale tileable FBM noise for foam breakup
+function makeNoiseTexture (size, cellSize, octaves, seed) {
+  const rng = makeRNG(seed);
+  const noise = new ValueNoise2D(cellSize, rng);
+  const data = new Uint8Array(size * size * 4);
+  for (let y = 0; y < size; ++y) {
+    for (let x = 0; x < size; ++x) {
+      const fx = (x / size) * cellSize, fy = (y / size) * cellSize;
+      const v = Math.max(0, Math.min(1, noise.fbm(fx, fy, octaves) * 1.15));
+      const i = (y * size + x) * 4;
+      const b = Math.round(v * 255);
+      data[i] = data[i + 1] = data[i + 2] = b;
+      data[i + 3] = 255;
+    }
+  }
+  const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.magFilter = tex.minFilter = THREE.LinearFilter;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/* ------------------------------------------------------------------------
+   SECTION 6 — WAVE BANK
+   CPU-side wave descriptors uploaded as uniform arrays. Five large swells
+   rolling roughly toward the viewer (+Z-ish) plus eight shorter wind waves
+   angled a few degrees off the wind. Amplitudes/steepness chosen so total
+   steepness stays < 1 (no self-intersection loops).
+------------------------------------------------------------------------ */
+function buildWaveBank (tier) {
+  const dirs = [];   // Vector4(dirX, dirY, 0, 0)
+  const params = []; // Vector4(amplitude, wavelength, steepness, phaseMul)
+  const push = (angRad, amp, wl, steep, mul) => {
+    dirs.push(new THREE.Vector4(Math.cos(angRad), Math.sin(angRad), 0, 0));
+    params.push(new THREE.Vector4(amp, wl, steep, mul));
+  };
+
+  // --- large swells (travel fastest: dispersion handles speed) ----------
+  const swellAngles = [Math.PI * 0.52, Math.PI * 0.47, Math.PI * 0.56,
+                       Math.PI * 0.43, Math.PI * 0.61];
+  const swellWLs    = [34.0, 51.0, 27.0, 63.0, 42.0];
+  const swellAmps   = [0.42, 0.30, 0.22, 0.16, 0.12];
+  for (let i = 0; i < tier.swellCount; ++i) {
+    push(swellAngles[i], swellAmps[i], swellWLs[i],
+         0.68 + 0.06 * ((i * 37) % 5) / 5, 1.0);
+  }
+
+  // --- shorter, faster wind waves ---------------------------------------
+  const windBase = Math.PI * 0.33;                 // skewed off the swell axis
+  for (let i = 0; i < tier.windCount; ++i) {
+    const ang = windBase + (((i * 71) % 13) - 6) * 0.055;
+    const wl  = 3.1 + ((i * 53) % 17) * 0.42;      // 3.1 .. 9.9 m
+    const amp = 0.030 + 0.028 * ((i * 29) % 7) / 7;
+    push(ang, amp, wl, 0.82, 1.15 + 0.05 * (i % 4));
+  }
+
+  // Pad to MAX_WAVES slots: the shader declares vec4[16] uniform arrays, and
+  // three.js uploads ALL 16 slots — short arrays crash the uploader.
+  while (dirs.length < 16) {
+    dirs.push(new THREE.Vector4(1, 0, 0, 0));
+    params.push(new THREE.Vector4(0, 1, 0, 1));   // zero amplitude = inert
+  }
+
+  return { dirs, params, count: dirs.length };
+}
+
+/* ------------------------------------------------------------------------
+   SECTION 7 — SCENE BOOTSTRAP
+   Renderer (ACES + sRGB), camera, sun vector (ONE source of truth),
+   sky dome, radial-density water grid, materials.
+------------------------------------------------------------------------ */
+const container = document.body;
+
+const renderer = new THREE.WebGLRenderer({ antialias: false });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, CONFIG.maxDPR));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 0.72;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+container.appendChild(renderer.domElement);
+renderer.domElement.id = 'app';
+
+const scene = new THREE.Scene();
+
+const camera = new THREE.PerspectiveCamera(
+  62, window.innerWidth / window.innerHeight, 0.5, 4000);
+camera.position.set(0, CONFIG.camHeight, 26);
+
+// --- sun direction: single source of truth -------------------------------
+const sunState = {
+  elevationDeg: CONFIG.sunElevationDeg,
+  azimuthDeg:   CONFIG.sunAzimuthDeg,
+};
+function computeSunDir () {
+  const el = THREE.MathUtils.degToRad(sunState.elevationDeg);
+  const az = THREE.MathUtils.degToRad(sunState.azimuthDeg);
+  // sun sits toward -Z (viewer looks at it); az rotates around Y
+  return new THREE.Vector3(
+    Math.sin(az) * Math.cos(el),
+    Math.sin(el),
+    -Math.cos(az) * Math.cos(el)).normalize();
+}
+const sunDir = computeSunDir();
+
+// Shared sky uniforms (used by dome AND water reflection)
+const skyUniforms = {
+  uSunDir:       { value: sunDir.clone() },
+  uTime:         { value: 0 },
+  uRayleigh:     { value: 0.115 },
+  uTurbidity:    { value: 3.4 },
+  uMieG:         { value: 0.76 },
+  uSunIntensity: { value: 2.4 },
+  uCloudCoverage:{ value: 0.42 },
+};
+
+// --- sky dome -------------------------------------------------------------
+const skyGeo = new THREE.SphereGeometry(2400, 48, 32);
+const skyMat = new THREE.ShaderMaterial({
+  vertexShader: skyVert,
+  fragmentShader: skyFrag,
+  uniforms: skyUniforms,
+  side: THREE.BackSide,
+  depthWrite: false,
+});
+const skyMesh = new THREE.Mesh(skyGeo, skyMat);
+scene.add(skyMesh);
+
+// --- water ------------------------------------------------------------------
+// Radial-density grid: concentric rings, exponentially spaced, projected
+// to a square footprint. Near-camera vertices are ~0.15 m apart; the outer
+// ring reaches CONFIG.gridSize so the horizon never shows a mesh edge.
+function buildRadialGrid (radius, segments) {
+  const pts = [];
+  const idx = [];
+  const rings = segments;
+  const slices = Math.max(24, segments * 2);
+  pts.push(0, 0, 0);   // centre vertex
+  let prevStart = 0;
+  for (let r = 1; r <= rings; ++r) {
+    // exponential spacing: dense near the centre
+    const rr = radius * Math.pow(r / rings, 2.6);
+    const start = pts.length / 3;
+    for (let s = 0; s < slices; ++s) {
+      const a = (s / slices) * Math.PI * 2;
+      pts.push(Math.cos(a) * rr, 0, Math.sin(a) * rr);
+    }
+    // fan connecting previous ring (or centre) to this ring
+    const innerStart = (r === 1) ? 0 : prevStart;
+    const innerCount = (r === 1) ? 1 : slices;
+    if (r === 1) {
+      for (let s = 0; s < slices; ++s) {
+        const n = (s + 1) % slices;
+        idx.push(innerStart, start + n, start + s);
+      }
+    } else {
+      for (let s = 0; s < slices; ++s) {
+        const n = (s + 1) % slices;
+        // two triangles per quad
+        idx.push(innerStart + s, start + s, innerStart + n);
+        idx.push(innerStart + n, start + s, start + n);
+      }
+    }
+    prevStart = start;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+  geo.setIndex(idx);
+  geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), radius * 1.5);
+  return geo;
+}
+
+const waterGeo = buildRadialGrid(CONFIG.gridSize, CONFIG.gridSegments);
+
+// Procedural textures
+const texNormalA = makeDetailNormalTexture(256, 24, 4, 1337, 2.2);
+const texNormalB = makeDetailNormalTexture(256, 12, 5, 777, 1.4);
+const texNoise   = makeNoiseTexture(128, 16, 4, 4242);
+
+let waveBank = buildWaveBank(TIER());
+
+const waterUniforms = Object.assign({}, skyUniforms, {
+  uWaveDirs:     { value: waveBank.dirs },
+  uWaveParams:   { value: waveBank.params },
+  uWaveCount:    { value: waveBank.count },
+  uCamXZ:        { value: new THREE.Vector3() },
+  uNormalTexA:   { value: texNormalA },
+  uNormalTexB:   { value: texNormalB },
+  uNoiseTex:     { value: texNoise },
+  uDetailStrength:{ value: 0.34 },
+  uDetailLayers: { value: TIER().detailLayers },
+  uFlowA:        { value: new THREE.Vector2() },
+  uFlowB:        { value: new THREE.Vector2() },
+  uDeepColor:    { value: new THREE.Color(0.010, 0.045, 0.075) },
+  uSubsurfaceColor:{ value: new THREE.Color(0.05, 0.34, 0.30) },
+  uFoamThreshold:{ value: 0.315 },
+  uFogNear:      { value: 140.0 },
+  uFogFar:       { value: 950.0 },
+});
+
+const waterMat = new THREE.ShaderMaterial({
+  vertexShader: waterVert,
+  fragmentShader: waterFrag,
+  uniforms: waterUniforms,
+});
+
+const waterMesh = new THREE.Mesh(waterGeo, waterMat);
+waterMesh.frustumCulled = false;
+scene.add(waterMesh);
+
+/* ------------------------------------------------------------------------
+   SECTION 8 — POST PROCESSING
+   RenderPass -> UnrealBloom (high threshold: only sun disc + hottest
+   glitter blooms) -> SMAA -> OutputPass (tone map + sRGB happens here).
+------------------------------------------------------------------------ */
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+
+const bloomPass = new UnrealBloomPass(
+  new THREE.Vector2(window.innerWidth, window.innerHeight),
+  0.55,   // strength: subtle
+  0.55,   // radius
+  0.82    // threshold: high — only the sun/glitter cores
+);
+composer.addPass(bloomPass);
+
+const smaaPass = new SMAAPass(
+  window.innerWidth * renderer.getPixelRatio(),
+  window.innerHeight * renderer.getPixelRatio());
+composer.addPass(smaaPass);
+
+composer.addPass(new OutputPass());
+
+/* ------------------------------------------------------------------------
+   SECTION 9 — CAMERA CONTROLS + DRIFT
+   Clamped OrbitControls: polar angle locked so the camera can never dive
+   below the water nor look straight down; dolly distance bounded.
+   Layered on top: a slow positional sway + sub-degree roll and a bob that
+   samples the Gerstner height under the camera (evaluated CPU-side).
+------------------------------------------------------------------------ */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.2, -30);
+controls.enablePan = false;
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.rotateSpeed = 0.35;
+// Clamps — never below water, never straight down/up
+controls.minDistance = 8;
+controls.maxDistance = 90;
+controls.minPolarAngle = Math.PI * 0.42;   // ~75 deg from up-axis
+controls.maxPolarAngle = Math.PI * 0.58;   // just below horizon-safe tilt
+controls.update();
+
+// CPU-side Gerstner height sample (mirrors the vertex shader maths) so the
+// camera bob matches the visible water beneath it.
+function cpuWaveHeight (x, z, t, bank) {
+  let y = 0;
+  for (let i = 0; i < bank.count; ++i) {
+    const d = bank.dirs[i];
+    const p = bank.params[i];
+    const k = (2 * Math.PI) / p.y;
+    const om = Math.sqrt(9.81 * k) * p.w;
+    const f = k * (d.x * x + d.y * z) - om * t + i * 1.6180339887;
+    y += p.x * Math.sin(f);
+  }
+  return y;
+}
+
+/* ------------------------------------------------------------------------
+   SECTION 10 — RESIZE (DPR aware) + DEBUG PANEL + QUALITY TOGGLE
+------------------------------------------------------------------------ */
+function onResize () {
+  const w = window.innerWidth, h = window.innerHeight;
+  const dpr = Math.min(window.devicePixelRatio || 1, CONFIG.maxDPR);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(dpr);
+  renderer.setSize(w, h);
+  composer.setPixelRatio(dpr);
+  composer.setSize(w, h);
+  smaaPass.setSize(w * dpr, h * dpr);
+}
+window.addEventListener('resize', onResize);
+onResize();
+
+const panel = document.getElementById('debug-panel');
+const fpsEl = document.getElementById('fps-counter');
+const msEl = document.getElementById('frame-ms');
+const qEl = document.getElementById('quality-label');
+const vertEl = document.getElementById('vert-count');
+
+// Toggle visibility with D (hidden by default)
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'd' || e.key === 'D') panel.classList.toggle('visible');
+  if (e.key === 'q' || e.key === 'Q') setQuality(CONFIG.quality === 'high' ? 'low' : 'high');
+});
+
+// Sun elevation slider (proves T9: sky responds to elevation changes)
+document.getElementById('sun-slider').addEventListener('input', (e) => {
+  sunState.elevationDeg = parseFloat(e.target.value);
+  const nd = computeSunDir();
+  skyUniforms.uSunDir.value.copy(nd);
+});
+
+function setQuality (q) {
+  CONFIG.quality = q;
+  const tier = TIER();
+  waveBank = buildWaveBank(tier);
+  waterUniforms.uWaveDirs.value = waveBank.dirs;
+  waterUniforms.uWaveParams.value = waveBank.params;
+  waterUniforms.uWaveCount.value = waveBank.count;
+  waterUniforms.uDetailLayers.value = tier.detailLayers;
+  const div = tier.bloomResDiv;
+  bloomPass.resolution.set(window.innerWidth / div, window.innerHeight / div);
+  qEl.textContent = q.charAt(0).toUpperCase() + q.slice(1);
+}
+vertEl.textContent = String(waterGeo.attributes.position.count);
+
+/* ------------------------------------------------------------------------
+   SECTION 11 — MAIN LOOP
+   Absolute elapsed time (performance.now()/1000). FPS counter updates
+   twice per second. Flow accumulators scroll the detail normals.
+------------------------------------------------------------------------ */
+const flowA = new THREE.Vector2();
+const flowB = new THREE.Vector2();
+
+let frames = 0;
+let fpsWindowStart = performance.now();
+const startTime = performance.now();
+
+function tick () {
+  requestAnimationFrame(tick);
+  const now = performance.now();
+  const t = (now - startTime) / 1000;      // absolute, never wraps
+  CLOCK.t = t;
+
+  // shared time uniform (sky + water + clouds)
+  skyUniforms.uTime.value = t;
+
+  // scroll detail normals at speeds tied to their scale
+  flowA.set(t * 0.021, t * 0.013);
+  flowB.set(t * 0.007, t * -0.005);
+  waterUniforms.uFlowA.value.copy(flowA);
+  waterUniforms.uFlowB.value.copy(flowB);
+
+  // camera drift: a few cm of sway, sub-degree roll, bob on local waves
+  const swayX = Math.sin(t * 0.19) * 0.22 + Math.sin(t * 0.077) * 0.35;
+  const swayZ = Math.cos(t * 0.151) * 0.18;
+  const bob = cpuWaveHeight(
+    camera.position.x + swayX, camera.position.z + swayZ, t, waveBank) * 0.35;
+  camera.position.x += swayX * 0.004;
+  camera.position.z += swayZ * 0.004;
+  camera.position.y = CONFIG.camHeight + bob;
+  camera.rotation.z = Math.sin(t * 0.11) * 0.006;   // < 0.4 deg roll
+
+  // water grid follows camera XZ (horizon never shows an edge)
+  waterUniforms.uCamXZ.value.set(camera.position.x, 0, camera.position.z);
+  skyMesh.position.set(camera.position.x, 0, camera.position.z);
+
+  controls.update();
+  composer.render();
+
+  // FPS accounting
+  ++frames;
+  const win = now - fpsWindowStart;
+  if (win >= 500) {
+    fpsEl.textContent = Math.round(frames * 1000 / win);
+    msEl.textContent = (win / frames).toFixed(1);
+    frames = 0;
+    fpsWindowStart = now;
+  }
+}
+tick();
+</script>
+</body>
+</html>
