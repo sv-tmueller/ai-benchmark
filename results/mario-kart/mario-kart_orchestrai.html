@@ -1,0 +1,1119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mario Kart — Time Trial (_orchestrai)</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    font-family: "Segoe UI", Arial, sans-serif;
+    background: #101820;
+    color: #fff;
+    user-select: none;
+  }
+  #hud,
+  #overlay {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+  /* ===== HUD widgets ===== */
+  .plate {
+    background: rgba(8, 14, 22, 0.72);
+    border-radius: 10px;
+    padding: 8px 14px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+  }
+  #raceInfo {
+    position: absolute;
+    top: 14px;
+    left: 14px;
+    font-size: 15px;
+    line-height: 1.5;
+    white-space: nowrap;
+  }
+  #raceInfo .big {
+    font-size: 22px;
+    font-weight: 700;
+  }
+  #timerPlate {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    text-align: right;
+    font-size: 15px;
+    line-height: 1.5;
+    white-space: nowrap;
+  }
+  #timerPlate .big {
+    font-size: 26px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+  #bestTag {
+    color: #ffd94a;
+  }
+  #speedo {
+    position: absolute;
+    bottom: 16px;
+    right: 16px;
+    text-align: right;
+    font-size: 15px;
+    font-variant-numeric: tabular-nums;
+  }
+  #speedo .big {
+    font-size: 34px;
+    font-weight: 800;
+  }
+  #driftTag {
+    position: absolute;
+    bottom: 16px;
+    left: 16px;
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    opacity: 0;
+    transition: opacity 0.12s linear;
+    color: #7ef;
+    text-shadow: 0 0 8px rgba(80, 220, 255, 0.8);
+  }
+  #centerMsg {
+    position: absolute;
+    top: 34%;
+    left: 0;
+    right: 0;
+    text-align: center;
+    font-size: 46px;
+    font-weight: 800;
+    text-shadow: 0 3px 14px rgba(0, 0, 0, 0.6);
+    opacity: 0;
+    transition: opacity 0.25s ease;
+  }
+  /* ===== Overlay screens (menu / results) ===== */
+  #overlay {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: auto;
+    background: radial-gradient(ellipse at center, rgba(6, 12, 20, 0.82), rgba(2, 5, 9, 0.95));
+  }
+  #overlay.hidden {
+    display: none;
+  }
+  .panel {
+    text-align: center;
+    max-width: 560px;
+    padding: 30px 44px;
+    background: rgba(10, 18, 28, 0.92);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 14px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+  }
+  .panel h1 {
+    margin: 0 0 6px 0;
+    font-size: 40px;
+    letter-spacing: 1px;
+    background: linear-gradient(180deg, #ffe98a, #ff9d3c);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .panel h2 {
+    margin: 0 0 14px 0;
+    font-size: 16px;
+    font-weight: 500;
+    color: #9db4cc;
+  }
+  .panel .stats {
+    font-size: 18px;
+    line-height: 1.9;
+    margin: 14px 0 20px 0;
+    font-variant-numeric: tabular-nums;
+  }
+  .panel .stats .hl {
+    color: #ffd94a;
+    font-weight: 700;
+  }
+  .panel button {
+    font-size: 20px;
+    font-weight: 700;
+    color: #08131f;
+    background: linear-gradient(180deg, #ffd94a, #ff9d3c);
+    border: none;
+    border-radius: 999px;
+    padding: 12px 42px;
+    cursor: pointer;
+    box-shadow: 0 4px 16px rgba(255, 170, 60, 0.45);
+  }
+  .panel button:hover {
+    filter: brightness(1.1);
+  }
+  .panel .controls-note {
+    margin-top: 18px;
+    font-size: 13px;
+    color: #889eb5;
+    line-height: 1.7;
+  }
+  .kbd {
+    display: inline-block;
+    background: #1d2a3a;
+    border: 1px solid #3a5068;
+    border-bottom-width: 3px;
+    border-radius: 5px;
+    padding: 1px 7px;
+    font-size: 12px;
+    font-weight: 700;
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="hud">
+  <div id="raceInfo" class="plate"></div>
+  <div id="timerPlate" class="plate"></div>
+  <div id="speedo" class="plate"><span class="big">0</span><br><span class="unit">km/h</span></div>
+  <div id="driftTag">DRIFT!</div>
+  <div id="centerMsg"></div>
+</div>
+<div id="overlay">
+  <div class="panel" id="menuPanel">
+    <h1>KART&nbsp;RUSH</h1>
+    <h2>Time Trial — 3 laps</h2>
+    <div class="stats">
+      <div>Laps: <span class="hl">3</span> &nbsp;·&nbsp; Circuit: <span class="hl">Sunset Loop</span></div>
+      <div id="storedBestRow" style="display:none">Stored best lap: <span class="hl" id="storedBestVal"></span></div>
+    </div>
+    <button id="startBtn">START RACE</button>
+    <div class="controls-note">
+      <span class="kbd">W</span>/<span class="kbd">&uarr;</span> accelerate &nbsp;
+      <span class="kbd">S</span>/<span class="kbd">&darr;</span> brake/reverse &nbsp;
+      <span class="kbd">A</span>/<span class="kbd">D</span> steer<br>
+      <span class="kbd">Shift</span>/<span class="kbd">Space</span> drift &nbsp;
+      <span class="kbd">R</span> restart &nbsp;·&nbsp; camera follows behind the kart
+    </div>
+  </div>
+  <div class="panel" id="resultPanel" style="display:none">
+    <h1>RACE COMPLETE</h1>
+    <h2>Final standings</h2>
+    <div class="stats" id="resultStats"></div>
+    <button id="againBtn">RACE AGAIN</button>
+  </div>
+</div>
+
+<script type="module">
+/* ============================================================
+   KART RUSH — a compact Mario-Kart-style time-trial racer.
+   Single self-contained file. Three.js r160 via CDN import map.
+   Sections: CONFIG, TRACK, WORLD BUILD, KART, PHYSICS, LAP LOGIC,
+             HUD, INPUT, LOOP, DEBUG HOOK (__KART__), BOOT.
+   ============================================================ */
+import * as THREE from 'three';
+
+/* ---------- CONFIG ---------- */
+const CFG = Object.freeze({
+  ROAD_W: 11,              // half-width of drivable road (units)
+  SAMPLES: 420,            // centerline samples along the spline
+  TOTAL_LAPS: 3,
+  MAX_SPEED: 52,           // units/sec on-road top speed
+  BOOST_MAX: 66,           // boosted top speed (mini-turbo / boost pad)
+  ACCEL: 34,
+  BRAKE: 58,
+  DRAG: 0.86,              // per-second multiplicative-ish handled in physics
+  OFFROAD_FACTOR: 0.42,    // top-speed multiplier on grass
+  OFFROAD_GRIP: 0.5,
+  STEER_BASE: 2.1,         // rad/sec at moderate speed
+  DRIFT_STEER_MULT: 1.65,
+  DRIFT_MIN_TIME: 0.85,    // sec of drifting before mini-turbo charges
+  MINI_TURBO_TIME: 1.35,   // sec of boost after releasing charged drift
+  FOV_BASE: 74,
+  FOV_BOOST: 84,
+});
+
+/* ---------- STATE ---------- */
+const S = {
+  mode: 'menu',            // 'menu' | 'race' | 'finished'
+  tPrev: 0,
+  frameCount: 0,
+};
+
+/* ============================================================
+   TRACK — closed Catmull-Rom circuit.
+   Control points draw a stadium-ish loop with an S-curve and hairpin.
+   We pre-sample SAMPLES points; for each we store position, tangent,
+   and a flat "side" vector (perpendicular on the XZ plane) so the road
+   ribbon, kerbs, progress projection, and off-road test all agree.
+   ============================================================ */
+const CTRL_PTS = [
+  [-70, 0, 0], [-62, 0, 34], [-34, 0, 48], [0, 0, 52],
+  [34, 0, 46], [56, 0, 30], [64, 0, 4], [56, 0, -24],
+  [30, 0, -40], [2, 0, -34], [-22, 0, -46], [-46, 0, -40],
+];
+const curve = new THREE.CatmullRomCurve3(
+  CTRL_PTS.map(p => new THREE.Vector3(p[0], p[1], p[2])),
+  true,                       // closed
+  'catmullrom',
+  0.5                         // tension
+);
+
+/** Precomputed samples: pos[], tan[], side[], cumulative dist[], total len */
+const TRK = (() => {
+  const N = CFG.SAMPLES;
+  const pos = [], tan = [], side = [];
+  const cum = new Float64Array(N + 1);
+  for (let i = 0; i <= N; i++) {
+    const t = i / N;
+    const p = curve.getPointAt(t);
+    const tg = curve.getTangentAt(t);
+    pos.push(p.clone());
+    tan.push(tg.clone());
+    // Flat side vector: rotate tangent 90° on XZ (track lies in y≈0 plane).
+    const s = new THREE.Vector3(-tg.z, 0, tg.x).normalize();
+    side.push(s);
+    if (i > 0) cum[i] = cum[i - 1] + p.distanceTo(pos[i - 1]);
+  }
+  const total = cum[N];
+  return { N, pos, tan, side, cum, total };
+})();
+
+/**
+ * Nearest-sample projection of a world position onto the centerline.
+ * Brute-force scan is fine at 420 samples (only called few×/sec per kart),
+ * but we cache the last index per caller for O(window) hot-path lookups.
+ */
+function projectOntoTrack(x, z, lastIndex) {
+  let bestD2 = Infinity, bestI = 0;
+  if (lastIndex !== undefined && lastIndex >= 0) {
+    // local search window around cached index (fast path)
+    const W = 24;
+    for (let k = -W; k <= W; k++) {
+      const i = ((lastIndex + k) % TRK.N + TRK.N) % TRK.N;
+      const dx = TRK.pos[i].x - x, dz = TRK.pos[i].z - z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 < bestD2) { bestD2 = d2; bestI = i; }
+    }
+    if (bestD2 < (CFG.ROAD_W * 1.5) ** 2) {
+      return { idx: bestI, prog: bestI / TRK.N, lat: Math.sqrt(bestD2) };
+    }
+  }
+  // global scan fallback
+  bestD2 = Infinity;
+  for (let i = 0; i < TRK.N; i++) {
+    const dx = TRK.pos[i].x - x, dz = TRK.pos[i].z - z;
+    const d2 = dx * dx + dz * dz;
+    if (d2 < bestD2) { bestD2 = d2; bestI = i; }
+  }
+  return { idx: bestI, prog: bestI / TRK.N, lat: Math.sqrt(bestD2) };
+}
+
+/* Signed lateral offset from centerline (positive = left of travel dir). */
+function lateralOffset(idx, x, z) {
+  const p = TRK.pos[idx];
+  return (x - p.x) * TRK.side[idx].x + (z - p.z) * TRK.side[idx].z;
+}
+
+/* Position + heading on the centerline for progress fraction q∈[0,1). */
+function trackPose(q) {
+  const i = Math.min(TRK.N - 1, Math.max(0, Math.floor(q * TRK.N)));
+  return { pos: TRK.pos[i], tan: TRK.tan[i] };
+}
+
+/* Heading angle (yaw) of track direction at sample i. */
+function trackYaw(i) {
+  return Math.atan2(TRK.tan[((i % TRK.N) + TRK.N) % TRK.N].x, TRK.tan[((i % TRK.N) + TRK.N) % TRK.N].z);
+}
+
+/* ============================================================
+   WORLD BUILD — renderer, scene, lights, road ribbon, kerbs,
+   start line, decorations. Track lies at y=0; kart floats slightly.
+   ============================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xffb37a);        // warm sunset haze
+scene.fog = new THREE.Fog(0xffb37a, 130, 520);
+
+const camera = new THREE.PerspectiveCamera(CFG.FOV_BASE, innerWidth / innerHeight, 0.1, 1200);
+camera.position.set(0, 40, 90);
+
+scene.add(new THREE.HemisphereLight(0xfff2dd, 0x59452e, 0.95));
+const sun = new THREE.DirectionalLight(0xffd9a0, 1.35);
+sun.position.set(-120, 90, -60);
+scene.add(sun);
+
+/* --- Grass ground --- */
+{
+  const g = new THREE.Mesh(
+    new THREE.CircleGeometry(600, 48),
+    new THREE.MeshStandardMaterial({ color: 0x4f8a3d, roughness: 1 })
+  );
+  g.rotation.x = -Math.PI / 2;
+  g.position.y = -0.05;
+  scene.add(g);
+}
+
+/* --- Road ribbon: triangle strip between left/right edge samples --- */
+function buildRoad() {
+  const N = TRK.N;
+  const verts = [], norms = [], uvs = [], idxs = [];
+  const colAsphalt = [], colKerbL = [], colKerkRPlaceholder = [];
+  for (let i = 0; i <= N; i++) {
+    const j = i % N;                 // wrap for seamless closure
+    const p = TRK.pos[j], s = TRK.side[j];
+    const lx = p.x - s.x * CFG.ROAD_W, lz = p.z - s.z * CFG.ROAD_W;
+    const rx = p.x + s.x * CFG.ROAD_W, rz = p.z + s.z * CFG.ROAD_W;
+    verts.push(lx, 0.02, lz, rx, 0.02, rz);
+    norms.push(0, 1, 0, 0, 1, 0);
+    const v = i / N;
+    uvs.push(v * 60, 0, v * 60, 1);  // dashed texture illusion via vertex colors
+  }
+  for (let i = 0; i < N; i++) {
+    const a = i * 2, b = i * 2 + 1, c = i * 2 + 2, d = i * 2 + 3;
+    idxs.push(a, b, c, b, d, c);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(norms, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(idxs);
+  const mat = new THREE.MeshStandardMaterial({ color: 0x3c3f46, roughness: 0.92 });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.receiveShadow = true;
+  return mesh;
+}
+scene.add(buildRoad());
+
+/* --- Kerbs (rumble strips) on both edges: thin striped ribbons --- */
+function buildKerb(sideSign, colorA, colorB) {
+  const N = TRK.N;
+  const KW = 1.4, KY = 0.06;
+  const verts = [], cols = [], idxs = [];
+  for (let i = 0; i <= N; i++) {
+    const j = i % N;
+    const p = TRK.pos[j], s = TRK.side[j];
+    const ox = p.x + s.x * sideSign * CFG.ROAD_W;
+    const oz = p.z + s.z * sideSign * CFG.ROAD_W;
+    const tx = s.x * sideSign * KW, tz = s.z * sideSign * KW;
+    verts.push(ox, KY, oz, ox + tx, KY, oz + tz);
+    const stripe = (j % 8) < 4 ? colorA : colorB;
+    cols.push(stripe.r, stripe.g, stripe.b, stripe.r, stripe.g, stripe.b);
+  }
+  for (let i = 0; i < N; i++) {
+    const a = i * 2, b = i * 2 + 1, c = i * 2 + 2, d = i * 2 + 3;
+    idxs.push(a, b, c, b, d, c);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
+  geo.setIndex(idxs);
+  const mat = new THREE.MeshBasicMaterial({ vertexColors: true });
+  const mesh = new THREE.Mesh(geo, mat);
+  return mesh;
+}
+scene.add(buildKerb(-1, new THREE.Color(0xd94a3d), new THREE.Color(0xf2f0ea))); // left, red/white
+scene.add(buildKerb(+1, new THREE.Color(0xd94a3d), new THREE.Color(0xf2f0ea)));
+
+/* --- Start/finish line: checkered band across the road at prog=0 --- */
+{
+  const p0 = TRK.pos[0], s0 = TRK.side[0], t0 = TRK.tan[0];
+  const LINE_LEN = 4;
+  const geo = new THREE.PlaneGeometry(CFG.ROAD_W * 2, LINE_LEN, 12, 2);
+  // checkerboard via vertex colors
+  const cols = [];
+  const posAttr = geo.attributes.position;
+  for (let iy = 0; iy <= 2; iy++) {
+    for (let ix = 0; ix <= 12; ix++) {
+      const dark = ((ix >> 1) + (iy >> 1)) % 2 === 0;
+      const c = dark ? 0.13 : 0.95;
+      cols.push(c, c, c);
+    }
+  }
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
+  const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ vertexColors: true }));
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.rotation.z = -trackYaw(0);
+  mesh.position.set(p0.x, 0.04, p0.z);
+  scene.add(mesh);
+  // Start gantry posts (visual landmark)
+  const postMat = new THREE.MeshStandardMaterial({ color: 0x888c96, roughness: 0.6 });
+  for (const sg of [-1, 1]) {
+    const post = new THREE.Mesh(new THREE.BoxGeometry(1, 10, 1), postMat);
+    post.position.set(p0.x + s0.x * sg * (CFG.ROAD_W + 1.5), 5, p0.z + s0.z * sg * (CFG.ROAD_W + 1.5));
+    scene.add(post);
+  }
+  const banner = new THREE.Mesh(
+    new THREE.BoxGeometry(CFG.ROAD_W * 2 + 5, 1.6, 0.6),
+    new THREE.MeshStandardMaterial({ color: 0xe23b2e, roughness: 0.5 })
+  );
+  banner.position.set(p0.x, 9.6, p0.z);
+  banner.rotation.y = trackYaw(0);
+  scene.add(banner);
+}
+
+/* --- Decorations: palm trees ringed around the circuit exterior --- */
+{
+  const trunkGeo = new THREE.CylinderGeometry(0.35, 0.55, 7, 6);
+  const trunkMat = new THREE.MeshStandardMaterial({ color: 0x7a5230, roughness: 1 });
+  const leafGeo = new THREE.ConeGeometry(2.6, 1.4, 7);
+  const leafMat = new THREE.MeshStandardMaterial({ color: 0x2f7d33, roughness: 1 });
+  const rng = mulberry32(20261);
+  for (let i = 0; i < 46; i++) {
+    const q = i / 46;
+    const pose = trackPose(q);
+    const outward = (rng() < 0.5 ? -1 : 1) * (CFG.ROAD_W + 7 + rng() * 26);
+    const px = pose.pos.x + TRK.side[Math.floor(q * TRK.N) % TRK.N].x * outward;
+    const pz = pose.pos.z + TRK.side[Math.floor(q * TRK.N) % TRK.N].z * outward;
+    const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+    trunk.position.set(px, 3.5, pz);
+    trunk.scale.setScalar(0.8 + rng() * 0.5);
+    scene.add(trunk);
+    for (let k = 0; k < 4; k++) {
+      const leaf = new THREE.Mesh(leafGeo, leafMat);
+      const ang = (k / 4) * Math.PI * 2 + rng();
+      leaf.position.set(px + Math.cos(ang) * 1.6, 7.2, pz + Math.sin(ang) * 1.6);
+      leaf.rotation.z = Math.cos(ang) * 0.8;
+      leaf.rotation.x = Math.sin(ang) * 0.8;
+      scene.add(leaf);
+    }
+  }
+}
+
+/* Deterministic RNG for decoration placement (stable across reloads). */
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/* ============================================================
+   KART — mesh construction + per-kart mutable state.
+   Physics model: arcade. State = position (x,z), yaw heading θ,
+   signed forward speed v. Steering rotates heading at a rate that
+   scales with speed; velocity always follows heading (with a small
+   drift slip when drifting). Off-road reduces top speed & grip.
+   ============================================================ */
+function buildKartMesh(bodyColorHex) {
+  const grp = new THREE.Group();
+
+  // Chassis
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(2.1, 0.55, 3.3),
+    new THREE.MeshStandardMaterial({ color: bodyColorHex, roughness: 0.35, metalness: 0.25 })
+  );
+  body.position.y = 0.62;
+  grp.add(body);
+
+  // Nose cone
+  const nose = new THREE.Mesh(
+    new THREE.BoxGeometry(1.2, 0.34, 1.1),
+    new THREE.MeshStandardMaterial({ color: bodyColorHex, roughness: 0.35 })
+  );
+  nose.position.set(0, 0.55, 2.05);
+  grp.add(nose);
+
+  // Cockpit bump
+  const cockpit = new THREE.Mesh(
+    new THREE.BoxGeometry(1.0, 0.4, 1.2),
+    new THREE.MeshStandardMaterial({ color: 0x14181f, roughness: 0.6 })
+  );
+  cockpit.position.set(0, 1.0, -0.2);
+  grp.add(cockpit);
+
+  // Rear spoiler
+  const spoiler = new THREE.Mesh(
+    new THREE.BoxGeometry(2.0, 0.12, 0.55),
+    new THREE.MeshStandardMaterial({ color: 0x22262e, roughness: 0.5 })
+  );
+  spoiler.position.set(0, 1.15, -1.55);
+  grp.add(spoiler);
+
+  // Wheels (kept for spin animation)
+  const wheels = [];
+  const wg = new THREE.CylinderGeometry(0.44, 0.44, 0.4, 12);
+  const wm = new THREE.MeshStandardMaterial({ color: 0x18191c, roughness: 0.9 });
+  const hubM = new THREE.MeshStandardMaterial({ color: 0xbfc5cf, roughness: 0.4 });
+  for (const [wx, wz] of [[-1.08, 1.15], [1.08, 1.15], [-1.08, -1.2], [1.08, -1.2]]) {
+    const wh = new THREE.Group();
+    const tire = new THREE.Mesh(wg, wm);
+    tire.rotation.z = Math.PI / 2;
+    wh.add(tire);
+    const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.42, 8), hubM);
+    hub.rotation.z = Math.PI / 2;
+    wh.add(hub);
+    wh.position.set(wx, 0.44, wz);
+    grp.add(wh);
+    wheels.push(wh);
+  }
+
+  // Exhaust pipes
+  for (const ex of [-0.45, 0.45]) {
+    const pipe = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.13, 0.16, 0.5, 8),
+      new THREE.MeshStandardMaterial({ color: 0x9aa1ab, metalness: 0.7, roughness: 0.35 })
+    );
+    pipe.rotation.x = Math.PI / 2;
+    pipe.position.set(ex, 0.75, -1.85);
+    grp.add(pipe);
+  }
+
+  return { grp, wheels, body };
+}
+
+/** Fresh physical/race state for one kart. */
+function freshKartState(startProg, startLat) {
+  const pose = trackPose(startProg);
+  const i = Math.floor(startProg * TRK.N) % TRK.N;
+  return {
+    x: pose.pos.x + TRK.side[i].x * startLat,
+    z: pose.pos.z + TRK.side[i].z * startLat,
+    yaw: trackYaw(i),
+    speed: 0,
+    steerVis: 0,            // smoothed visual steering for front wheels
+    trkIdx: i,              // cached nearest centerline sample
+    prog: startProg,        // track progress fraction [0,1)
+    prevProg: startProg,
+    latOff: startLat,       // signed lateral offset
+    offroad: false,
+    // Race bookkeeping
+    lap: 0,
+    crossedHalfway: false,   // anti-reverse guard: must pass prog>0.5 before a lap counts
+    lapStartTime: 0,
+    lapTimes: [],
+    // Drift bookkeeping
+    drifting: false,
+    driftDir: 0,
+    driftCharge: 0,
+    boosting: 0,            // seconds of boost remaining
+  };
+}
+
+const PLAYER_COLOR = 0xe23b2e;
+const playerVisual = buildKartMesh(PLAYER_COLOR);
+scene.add(playerVisual.grp);
+
+/* Opponent karts (optional flavor): cruise the racing line at modest speed. */
+const OPPONENTS = [];
+const OPP_COLORS = [0x2e7de2, 0x33c46a, 0xc9a63a];
+for (let k = 0; k < OPP_COLORS.length; k++) {
+  const vis = buildKartMesh(OPP_COLORS[k]);
+  scene.add(vis.grp);
+  OPPONENTS.push({
+    vis,
+    st: freshKartState((0.985 - k * 0.03 + 1) % 1, (k - 1) * 3.2),  // staggered grid slots
+    speedFactor: 0.78 + 0.05 * k,
+  });
+}
+
+/* Player state object (rebuilt on race start). */
+let P = freshKartState(0.995, 0);
+
+/* ============================================================
+   PHYSICS — arcade kart step.
+   ============================================================ */
+const KEYS = {};   // filled by INPUT section below
+addEventListener('keydown', e => { KEYS[e.code] = true; });
+addEventListener('keyup', e => { KEYS[e.code] = false; });
+
+function keyThrottle()   { return !!(KEYS['KeyW'] || KEYS['ArrowUp']); }
+function keyBrake()      { return !!(KEYS['KeyS'] || KEYS['ArrowDown']); }
+function keyLeft()       { return !!(KEYS['KeyA'] || KEYS['ArrowLeft']); }
+function keyRight()      { return !!(KEYS['KeyD'] || KEYS['ArrowRight']); }
+function keyDrift()      { return !!(KEYS['ShiftLeft'] || KEYS['ShiftRight'] || KEYS['Space']); }
+
+/* Advance one kart's physics by dt seconds given abstract controls. */
+function stepPhysics(k, ctl, dt) {
+  // ---- Determine surface ----
+  const proj = projectOntoTrack(k.x, k.z, k.trkIdx);
+  k.trkIdx = proj.idx;
+  k.latOff = lateralOffset(proj.idx, k.x, k.z);
+  const absLat = Math.abs(k.latOff);
+  const onKerbEdge = absLat > CFG.ROAD_W - 0.6;
+  k.offroad = absLat > CFG.ROAD_W;
+
+  // ---- Speed envelope ----
+  let topSpeed = k.offroad ? CFG.MAX_SPEED * CFG.OFFROAD_FACTOR : CFG.MAX_SPEED;
+  if (k.boosting > 0) topSpeed = Math.max(topSpeed, CFG.BOOST_MAX);
+
+  // Throttle / brake
+  if (ctl.throttle) {
+    k.speed += ACCEL_EFF(k, dt);
+  } else if (!ctl.brake) {
+    // coast deceleration
+    k.speed *= Math.pow(0.45, dt);
+    if (Math.abs(k.speed) < 0.3) k.speed = 0;
+  }
+  if (ctl.brake) {
+    if (k.speed > 0.5) k.speed -= CFG.BRAKE * dt;
+    else k.speed -= CFG.ACCEL * 0.55 * dt;   // gentle reverse
+  }
+
+  // Clamp to envelope
+  if (k.speed > topSpeed) k.speed = Math.max(topSpeed, k.speed - 40 * dt);
+  if (k.speed < -12) k.speed = -12;
+
+  // Extra rolling drag when off-road
+  if (k.offroad && !ctl.throttle) k.speed *= Math.pow(0.2, dt);
+
+  // ---- Drift state machine ----
+  if (ctl.drift && Math.abs(k.speed) > 14 && (ctl.left !== ctl.right)) {
+    if (!k.drifting) { k.drifting = true; k.driftDir = ctl.left ? -1 : 1; k.driftCharge = 0; }
+  }
+  if (k.drifting && (!ctl.drift || Math.abs(k.speed) < 10)) {
+    // Release: grant mini-turbo if charged
+    if (k.driftCharge >= CFG.DRIFT_MIN_TIME) k.boosting = CFG.MINI_TURBO_TIME;
+    k.drifting = false;
+    k.driftDir = 0;
+  }
+  if (k.drifting) k.driftCharge += dt;
+  if (k.boosting > 0) k.boosting -= dt;
+
+  // ---- Steering ----
+  let steerIn = (ctl.left ? -1 : 0) + (ctl.right ? 1 : 0);
+  let steerRate = CFG.STEER_BASE;
+  if (k.drifting) steerRate *= CFG.DRIFT_STEER_MULT;
+  if (k.offroad) steerRate *= CFG.OFFROAD_GRIP + 0.5;
+  // steering effectiveness ramps with speed, saturates near top speed
+  const spdFac = Math.min(1, Math.abs(k.speed) / 18);
+  const steerDelta = steerIn * steerRate * spdFac * dt * (k.speed < 0 ? -1 : 1);
+  k.yaw += steerDelta;
+
+  // Visual steering smoothing for wheel tilt
+  k.steerVis += (steerIn - k.steerVis) * Math.min(1, 10 * dt);
+
+  // Slide-out during drift: heading leads motion slightly
+  let moveYaw = k.yaw;
+  if (k.drifting) moveYaw -= k.driftDir * 0.22;
+
+  // ---- Integrate ----
+  k.x += Math.sin(moveYaw) * k.speed * dt;
+  k.z += Math.cos(moveYaw) * k.speed * dt;
+
+  // Boost decay beyond top speed handled by clamp toward topSpeed above.
+}
+
+function ACCEL_EFF(k, dt) {
+  const surfMul = k.offroad ? 0.45 : 1;
+  const boostMul = k.boosting > 0 ? 1.5 : 1;
+  // taper acceleration as approaching top speed
+  const top = k.boosting > 0 ? CFG.BOOST_MAX : (k.offroad ? CFG.MAX_SPEED * CFG.OFFROAD_FACTOR : CFG.MAX_SPEED);
+  const frac = Math.max(0, 1 - Math.max(0, k.speed) / top);
+  return CFG.ACCEL * surfMul * boostMul * (0.25 + 0.75 * frac) * dt;
+}
+
+/* ============================================================
+   LAP LOGIC — progress-fraction wrap detection with anti-reverse
+   guard. A lap counts only if the kart physically progressed through
+   the halfway sector (prog entered (0.4..0.6)) since the last count.
+   ============================================================ */
+function updateProgressAndLaps(k, raceClock) {
+  const proj = projectOntoTrack(k.x, k.z, k.trkIdx);
+  k.trkIdx = proj.idx;
+  const prog = proj.idx / TRK.N;
+  const prev = k.prog;
+  k.prevProg = prev;
+  k.prog = prog;
+
+  // Halfway guard arm/disarm
+  if (prog > 0.4 && prog < 0.65) k.crossedHalfway = true;
+
+  // Forward wrap: jumped from high fraction to low fraction
+  const wrappedForward = prev > 0.75 && prog < 0.25;
+  const wrappedBackward = prev < 0.25 && prog > 0.75;
+
+  if (wrappedForward && k.crossedHalfway) {
+    // Crossing the finish line forward with the guard armed = lap counted
+    k.lap++;
+    k.crossedHalfway = false;
+    if (k === P) onPlayerLapCrossed(raceClock);
+  } else if (wrappedBackward) {
+    // Reversed across the line: disarm the guard so a wiggle over the
+    // line cannot farm laps; kart must re-drive to halfway to re-arm.
+    k.crossedHalfway = false;
+  }
+}
+
+/* ============================================================
+   HUD + RACE MANAGEMENT — timers, best-lap persistence, menus.
+   ============================================================ */
+const el = {
+  hud: document.getElementById('hud'),
+  overlay: document.getElementById('overlay'),
+  menuPanel: document.getElementById('menuPanel'),
+  resultPanel: document.getElementById('resultPanel'),
+  resultStats: document.getElementById('resultStats'),
+  raceInfo: document.getElementById('raceInfo'),
+  timerPlate: document.getElementById('timerPlate'),
+  speedoBig: document.querySelector('#speedo .big'),
+  driftTag: document.getElementById('driftTag'),
+  centerMsg: document.getElementById('centerMsg'),
+  storedBestRow: document.getElementById('storedBestRow'),
+  storedBestVal: document.getElementById('storedBestVal'),
+  startBtn: document.getElementById('startBtn'),
+  againBtn: document.getElementById('againBtn'),
+};
+
+const LS_KEY = 'kart_rush_best_lap_ms';
+function loadBestLapMs() {
+  try {
+    const v = parseInt(localStorage.getItem(LS_KEY), 10);
+    return Number.isFinite(v) && v > 0 ? v : null;
+  } catch { return null; }
+}
+function saveBestLapMs(ms) {
+  try { localStorage.setItem(LS_KEY, String(Math.round(ms))); } catch { /* storage unavailable */ }
+}
+
+function fmtTime(sec) {
+  if (!Number.isFinite(sec)) return '--:--.--';
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  const cs = Math.floor((sec * 100) % 100);
+  return `${m}:${String(s).padStart(2, '0')}.${String(cs).padStart(2, '0')}`;
+}
+
+const RACE = {
+  clock: 0,               // seconds since green light
+  running: false,
+  bestLapMs: loadBestLapMs(),
+  lastLapSec: null,
+};
+
+function refreshMenuBest() {
+  if (RACE.bestLapMs != null) {
+    el.storedBestRow.style.display = '';
+    el.storedBestVal.textContent = fmtTime(RACE.bestLapMs / 1000);
+  } else {
+    el.storedBestRow.style.display = 'none';
+  }
+}
+refreshMenuBest();
+
+function startRace() {
+  P = freshKartState(0.995, 0);
+  for (const opp of OPPONENTS) {
+    opp.st = freshKartState((0.985 - OPPONENTS.indexOf(opp) * 0.03 + 1) % 1, (OPPONENTS.indexOf(opp) - 1) * 3.2);
+  }
+  RACE.clock = 0;
+  RACE.running = true;
+  RACE.lastLapSec = null;
+  S.mode = 'race';
+  el.overlay.classList.add('hidden');
+  el.resultPanel.style.display = 'none';
+  el.menuPanel.style.display = '';
+  showCenterMsg('GO!', 900);
+}
+
+function onPlayerLapCrossed(raceClock) {
+  const lapSec = raceClock - (P.lapTimes.length ? P._lastCrossClock : 0);
+  P._lastCrossClock = raceClock;
+  P.lapTimes.push(lapSec);
+  RACE.lastLapSec = lapSec;
+  const ms = Math.round(lapSec * 1000);
+  if (RACE.bestLapMs == null || ms < RACE.bestLapMs) {
+    RACE.bestLapMs = ms;
+    saveBestLapMs(ms);
+  }
+  if (P.lap >= CFG.TOTAL_LAPS) {
+    finishRace();
+  } else {
+    showCenterMsg(`LAP ${P.lapTimes.length + 1}/${CFG.TOTAL_LAPS}`, 1100);
+  }
+}
+
+function finishRace() {
+  RACE.running = false;
+  S.mode = 'finished';
+  const total = P.lapTimes.reduce((a, b) => a + b, 0);
+  const bestLap = Math.min(...P.lapTimes);
+  el.resultStats.innerHTML =
+    `<div>Total: <span class="hl">${fmtTime(total)}</span></div>` +
+    P.lapTimes.map((t, i) =>
+      `<div>Lap ${i + 1}: ${fmtTime(t)}${Math.abs(t - bestLap) < 1e-9 ? ' <span class="hl">&#9733;</span>' : ''}</div>`
+    ).join('') +
+    `<div style="margin-top:8px">Best lap ever: <span class="hl">${fmtTime(RACE.bestLapMs / 1000)}</span></div>`;
+  el.menuPanel.style.display = 'none';
+  el.resultPanel.style.display = '';
+  el.overlay.classList.remove('hidden');
+  refreshMenuBest();
+}
+
+let _msgTimer = null;
+function showCenterMsg(txt, ms) {
+  el.centerMsg.textContent = txt;
+  el.centerMsg.style.opacity = '1';
+  clearTimeout(_msgTimer);
+  _msgTimer = setTimeout(() => { el.centerMsg.style.opacity = '0'; }, ms);
+}
+
+function updateHUD(dt) {
+  const kmh = Math.round(Math.abs(P.speed) * 2.4);
+  el.speedoBig.textContent = kmh;
+
+  // Live position: rank all karts by (laps completed + track progress)
+  const all = [{ st: P, isPlayer: true }, ...OPPONENTS.map(o => ({ st: o.st, isPlayer: false }))];
+  all.sort((a, b) => (b.st.lap + b.st.prog) - (a.st.lap + a.st.prog));
+  const pos = all.findIndex(e => e.isPlayer) + 1;
+
+  const lapShown = Math.min(CFG.TOTAL_LAPS, P.lapTimes.length + 1);
+  el.raceInfo.innerHTML =
+    `<span class="big">LAP ${lapShown}<span style="opacity:.55">/${CFG.TOTAL_LAPS}</span></span><br>` +
+    `<span style="opacity:.8">Pos: ${pos}/${OPPONENTS.length + 1}${P.offroad ? ' · <span style="color:#ffb35c">OFF-ROAD</span>' : ''}</span>`;
+
+  const cur = RACE.running ? RACE.clock - (P.lapTimes.length ? P._lastCrossClock : 0) : 0;
+  el.timerPlate.innerHTML =
+    `<span class="big">${fmtTime(cur)}</span><br>` +
+    `Last: ${fmtTime(RACE.lastLapSec)}<br>` +
+    `<span id="bestTag">Best: ${fmtTime(RACE.bestLapMs != null ? RACE.bestLapMs / 1000 : NaN)}</span>`;
+
+  // Drift indicator
+  const charging = P.drifting && P.driftCharge >= CFG.DRIFT_MIN_TIME;
+  el.driftTag.style.opacity = charging ? '1' : (P.drifting ? '0.45' : '0');
+  if (charging) el.driftTag.textContent = 'MINI-TURBO READY!';
+  else if (P.drifting) el.driftTag.textContent = 'DRIFT...';
+}
+
+/* ============================================================
+   VISUAL SYNC — copy physics state onto meshes, animate wheels,
+   position chase camera behind the player kart.
+   ============================================================ */
+function syncVisuals(dt) {
+  // Player
+  playerVisual.grp.position.set(P.x, 0, P.z);
+  playerVisual.grp.rotation.y = P.yaw;
+  // Body lean into corners + drift tilt
+  const lean = -P.steerVis * 0.09 - (P.drifting ? P.driftDir * 0.13 : 0);
+  playerVisual.grp.rotation.z = lean;
+  for (let i = 0; i < 4; i++) {
+    const wh = playerVisual.wheels[i];
+    wh.children[0].rotation.x += P.speed * dt / 0.44;
+    wh.children[1].rotation.x = wh.children[0].rotation.x;
+    if (i < 2) wh.rotation.y = P.steerVis * 0.42;   // front wheels steer visually
+  }
+
+  // Opponents
+  for (const opp of OPPONENTS) {
+    opp.vis.grp.position.set(opp.st.x, 0, opp.st.z);
+    opp.vis.grp.rotation.y = opp.st.yaw;
+    for (const wh of opp.vis.wheels) {
+      wh.children[0].rotation.x += opp.st.speed * dt / 0.44;
+      wh.children[1].rotation.x = wh.children[0].rotation.x;
+    }
+  }
+}
+
+/* Chase camera: smoothly follow behind & above the kart. */
+const CAM_STATE = { init: false };
+function updateChaseCam(dt) {
+  const idealDist = 10.5, idealHeight = 4.6;
+  const bx = P.x - Math.sin(P.yaw) * idealDist;
+  const bz = P.z - Math.cos(P.yaw) * idealDist;
+  const lerp = Math.min(1, 5.5 * dt);
+  if (!CAM_STATE.init) {
+    camera.position.set(bx, idealHeight, bz);
+    CAM_STATE.init = true;
+  } else {
+    camera.position.x += (bx - camera.position.x) * lerp;
+    camera.position.z += (bz - camera.position.z) * lerp;
+    camera.position.y += (idealHeight - camera.position.y) * lerp;
+  }
+  // Look ahead of the kart
+  const lax = P.x + Math.sin(P.yaw) * 8;
+  const laz = P.z + Math.cos(P.yaw) * 8;
+  camera.lookAt(lax, 1.2, laz);
+  // FoV kick with speed/boost
+  const spdFrac = Math.min(1, Math.abs(P.speed) / CFG.BOOST_MAX);
+  const fovWant = CFG.FOV_BASE + (P.boosting > 0 ? 10 : 0) + spdFrac * 4;
+  camera.fov += (fovWant - camera.fov) * Math.min(1, 4 * dt);
+  camera.updateProjectionMatrix();
+}
+
+/* Menu attract-mode camera: lazy orbit around the circuit. */
+function updateOrbitCam(nowSec) {
+  const q = (nowSec * 0.012) % 1;
+  const pose = trackPose(q);
+  const i = Math.floor(q * TRK.N) % TRK.N;
+  const ox = pose.pos.x + TRK.side[i].x * 46;
+  const oz = pose.pos.z + TRK.side[i].z * 46;
+  camera.position.set(ox, 26, oz);
+  camera.lookAt(pose.pos.x, 0, pose.pos.z);
+  camera.fov = CFG.FOV_BASE;
+  camera.updateProjectionMatrix();
+}
+
+/* Simple opponent "AI": follow the racing line, steer toward it. */
+function stepOpponents(dt) {
+  for (const opp of OPPONENTS) {
+    const st = opp.st;
+    // Target: a lookahead point on the centerline
+    const la = 14;   // lookahead meters in arc-length terms
+    const tgtIdx = (st.trkIdx + Math.round(la / (TRK.total / TRK.N))) % TRK.N;
+    const tp = TRK.pos[tgtIdx];
+    const desiredYaw = Math.atan2(tp.x - st.x, tp.z - st.z);
+    let dy = desiredYaw - st.yaw;
+    while (dy > Math.PI) dy -= 2 * Math.PI;
+    while (dy < -Math.PI) dy += 2 * Math.PI;
+    const ctl = {
+      throttle: true,
+      brake: false,
+      left: dy < -0.04,
+      right: dy > 0.04,
+      drift: false,
+    };
+    // Slow slightly for sharp upcoming curvature
+    const nxt = TRK.tan[(tgtIdx + 10) % TRK.N];
+    const curDot = TRK.tan[st.trkIdx].dot(nxt);
+    const targetSpeed = CFG.MAX_SPEED * opp.speedFactor * (curDot < 0.985 ? 0.62 : 1);
+    st._targetSpeed = targetSpeed;
+    if (st.speed > targetSpeed) ctl.throttle = false;
+    stepPhysics(st, ctl, dt);
+    updateProgressAndLaps(st, RACE.clock);
+  }
+}
+
+/* ============================================================
+   MAIN LOOP
+   ============================================================ */
+function tick(nowMs) {
+  requestAnimationFrame(tick);
+  const nowSec = nowMs / 1000;
+  let dt = nowSec - S.tPrev;
+  S.tPrev = nowSec;
+  if (!(dt > 0) || dt > 0.25) dt = Math.min(Math.max(dt, 0.0001), 0.05); // clamp hiccups/tab-away
+  S.frameCount++;
+
+  if (S.mode === 'race') {
+    const ctl = {
+      throttle: keyThrottle(),
+      brake: keyBrake(),
+      left: keyLeft(),
+      right: keyRight(),
+      drift: keyDrift(),
+    };
+    RACE.clock += dt;
+    stepPhysics(P, ctl, dt);
+    updateProgressAndLaps(P, RACE.clock);
+    stepOpponents(dt);
+    syncVisuals(dt);
+    updateChaseCam(dt);
+    updateHUD(dt);
+  } else {
+    // Attract mode: idle karts, orbiting showcase camera
+    stepOpponents(dt * 0.5);
+    syncVisuals(dt);
+    updateOrbitCam(nowSec);
+  }
+
+  renderer.render(scene, camera);
+}
+
+/* ============================================================
+   INPUT WIRING + RESIZE + BOOT
+   ============================================================ */
+el.startBtn.addEventListener('click', startRace);
+el.againBtn.addEventListener('click', startRace);
+
+addEventListener('keydown', e => {
+  if (e.code === 'KeyR' && S.mode !== 'menu') startRace();
+  if (e.code === 'Enter' && S.mode === 'menu') startRace();
+});
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+/* Debug/verification hook: lets a headless harness drive the kart
+   synthetically and observe internals without touching real keys. */
+Object.defineProperty(window, '__KART__', {
+  configurable: false,
+  enumerable: true,
+  writable: false,
+  value: {
+    version: 1,
+    startRace,
+    getState: () => ({
+      mode: S.mode,
+      x: P.x, z: P.z, yaw: P.yaw, speed: P.speed,
+      prog: P.prog, lap: P.lap, lapTimes: [...P.lapTimes],
+      offroad: P.offroad, drifting: P.drifting,
+      boosting: P.boosting, raceClock: RACE.clock,
+      bestLapMs: RACE.bestLapMs,
+      trackTotal: TRK.total,
+    }),
+    press(code)   { KEYS[code] = true; },
+    release(code) { KEYS[code] = false; },
+    setKeys(map)  { for (const k in map) KEYS[k] = !!map[k]; },
+    frameCount: () => S.frameCount,
+    cfg: CFG,
+    /* Autopilot advice for headless verification: same lookahead logic
+       the opponent AI uses, evaluated for the player kart. */
+    steerAdvice() {
+      const la = 14;
+      const tgtIdx = (P.trkIdx + Math.round(la / (TRK.total / TRK.N))) % TRK.N;
+      const tp = TRK.pos[tgtIdx];
+      const desiredYaw = Math.atan2(tp.x - P.x, tp.z - P.z);
+      let dy = desiredYaw - P.yaw;
+      while (dy > Math.PI) dy -= 2 * Math.PI;
+      while (dy < -Math.PI) dy += 2 * Math.PI;
+      return { left: dy < -0.04, right: dy > 0.04, dy: +dy.toFixed(3) };
+    },
+    /* Teleport kart to centerline progress q (used by verification only).
+       Does NOT touch P.prog: the next progress update observes the jump,
+       exercising the same wrap-detection path real driving uses. */
+    teleport(q, lat = 0) {
+      const i = Math.max(0, Math.min(TRK.N - 1, Math.floor(((q % 1) + 1) % 1 * TRK.N)));
+      P.x = TRK.pos[i].x + TRK.side[i].x * lat;
+      P.z = TRK.pos[i].z + TRK.side[i].z * lat;
+      P.yaw = trackYaw(i);
+      P.trkIdx = i;
+    },
+    guard: () => P.crossedHalfway,
+    /* Render one frame synchronously and return coarse pixel statistics —
+       headless visual-sanity evidence (nonblack, varied palette). */
+    grabFrameStats() {
+      renderer.render(scene, camera);
+      const gl = renderer.getContext();
+      const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+      const buf = new Uint8Array(w * h * 4);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+      let rs = 0, gs = 0, bs = 0, lit = 0, n = 0;
+      const uniq = new Set();
+      for (let y = 0; y < h; y += 6) {
+        for (let x = 0; x < w; x += 6) {
+          const i = (y * w + x) * 4;
+          const r = buf[i], g = buf[i + 1], b = buf[i + 2];
+          rs += r; gs += g; bs += b; n++;
+          if (r + g + b > 30) lit++;
+          uniq.add((r >> 4) + ',' + (g >> 4) + ',' + (b >> 4));
+        }
+      }
+      return {
+        avgRGB: [Math.round(rs / n), Math.round(gs / n), Math.round(bs / n)],
+        litFrac: +(lit / n).toFixed(3),
+        coarseColors: uniq.size,
+      };
+    },
+  },
+});
+
+/* Place kart visuals at their initial states before first frame. */
+syncVisuals(0.016);
+updateOrbitCam(0);
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>
