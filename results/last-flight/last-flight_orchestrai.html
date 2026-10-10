@@ -588,12 +588,14 @@ window.__LF__ = {
     this.grabPlane();
     if (!G.grabbed) throw new Error('grab failed');
     await this._assistHold();
+    // Deterministically fast-forward the post-release settle
+    for (let i=0; i<4000 && !G.ended; i++) stepHolding(1/30);
     return this.state();
   },
   _assistHold: ()=>{
     // Scripted takeover: normal sim paused, we drive stepHolding manually.
     const a = G.al;
-    const target = v3(STADIUM.x, 90, STADIUM.z);
+    const target = v3(STADIUM.x, 34, STADIUM.z);
     G.paused = true;
     return new Promise(res=>{
       const iv = setInterval(()=>{
@@ -617,6 +619,9 @@ window.__LF__ = {
     });
   },
   forceCrash(reason='hard-crash'){ failGame(reason); return this.state(); },
+  // Raw stepping for deterministic tests
+  stepAirlinerFree: (dt)=>stepAirlinerFree(dt),
+  stepHolding: (dt)=>stepHolding(dt),
   keys: KEYS,
 };
 /* ===== SECTION: MAIN LOOP ===== */
