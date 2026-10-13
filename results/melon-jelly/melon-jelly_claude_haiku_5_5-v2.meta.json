@@ -25,13 +25,26 @@
     "review_html": null
   },
   "playability_verification": {
-    "playability_verdict": "PENDING",
-    "browser_verified": null,
-    "page_errors": null,
-    "console_errors": null,
-    "sustained_animation": null,
-    "click_through": null,
-    "click_result": null
+    "playability_verdict": "BOOTS_ONLY",
+    "browser_verified": true,
+    "verifier": "saved full harness (melon212-full.js), playwright 1.58.2, chromium 145.0.7632.6, run at commit 85d9a84",
+    "page_errors": [],
+    "console_errors": [],
+    "external_requests": 0,
+    "boot_paint_ms": 262,
+    "drop_settle_s": 2.33,
+    "cut_gap": "63/82 rows show a gap (bar 80%); median 68 px, min 35, max 114",
+    "cut_face_pink": "script 0.8558 (bar 0.80), green 0; visual PASS (pink flesh with seeds)",
+    "independence": "dragging the right piece moves the left (left-region mean 4.931, bar 0.5); dragging the left piece leaves the right still (0.0002)",
+    "post_cut_creep": "pieces keep creeping with no input after the cut (left-region mean 7.49, then 5.90, 1.5 s apart); judgement, not isolated",
+    "reset_no_reload": true,
+    "reset_max_channel_diff": 0,
+    "fast_drag": "PASS",
+    "failed_checks": [
+      "cut-gap",
+      "independence"
+    ],
+    "note": "Accepted as BOOTS_ONLY by the owner after the single repair round was used (#211, batch #210). Settle meets the 3.5 s gate but misses the 1-2 s target. Post-cut pieces look wedge-shaped with peaked tops while the pre-cut melon is a clean half disc (visual, not measured). Not tested: colour picker and swatches, pinch and two-finger touch, squash, tuning sliders, NaN recovery, bounce height and sag, knife-trail visibility."
   },
   "generation_attempts": [
     {
