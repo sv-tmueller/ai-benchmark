@@ -1,0 +1,1094 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Melon Jelly</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #efe6d6; color: #2b2118; font: 14px/1.3 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  #stage { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  .bar { position: fixed; background: rgba(255, 255, 255, 0.92); border-radius: 12px; box-shadow: 0 2px 12px rgba(0, 0, 0, 0.15); box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  #toolbar { top: 12px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; padding: 6px 10px; flex-wrap: wrap; justify-content: center; max-width: calc(100vw - 24px); }
+  #toolbar button { font: inherit; padding: 6px 12px; border: 1px solid #d6c9b2; border-radius: 8px; background: #fff; color: inherit; cursor: pointer; }
+  #toolbar button[aria-pressed="true"] { background: #2b2118; border-color: #2b2118; color: #fff; }
+  .swatch { width: 22px; height: 22px; padding: 0 !important; border-radius: 50% !important; border: 2px solid #fff !important; box-shadow: 0 0 0 1px #b9ab92; }
+  #swatches { display: inline-flex; gap: 6px; }
+  #picker { width: 34px; height: 28px; padding: 0; border: none; background: none; cursor: pointer; }
+  .sep { width: 1px; height: 22px; background: #d6c9b2; }
+  .fps-toggle { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+  button:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px solid #3f8f3a; outline-offset: 2px; }
+  #panel { top: 12px; left: 12px; width: 230px; padding: 8px 12px; }
+  #panel summary { cursor: pointer; font-weight: 600; }
+  #panel label { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; margin-top: 8px; }
+  #panel input[type="range"] { grid-column: 1 / -1; width: 100%; margin: 0; }
+  #panel output { font-variant-numeric: tabular-nums; }
+  #fps { left: 12px; bottom: 12px; padding: 4px 10px; font-variant-numeric: tabular-nums; }
+  #hint { right: 12px; bottom: 12px; padding: 6px 10px; font-size: 12px; color: #5a4a36; }
+  @media (max-width: 640px) { #hint { display: none; } }
+</style>
+</head>
+<body>
+<canvas id="stage" aria-label="Melon Jelly simulation"></canvas>
+
+<nav id="toolbar" class="bar" aria-label="Tools">
+  <button type="button" data-tool="grab" aria-pressed="true">Grab</button>
+  <button type="button" data-tool="knife" aria-pressed="false">Knife</button>
+  <span class="sep" aria-hidden="true"></span>
+  <span id="swatches" role="group" aria-label="Flesh color presets"></span>
+  <input id="picker" type="color" value="#ff4d6d" aria-label="Custom flesh color">
+  <span class="sep" aria-hidden="true"></span>
+  <button type="button" id="reset">Reset</button>
+  <label class="fps-toggle"><input type="checkbox" id="fps-toggle"> FPS</label>
+</nav>
+
+<details id="panel" class="bar">
+  <summary>Tuning</summary>
+  <label>Stiffness <output data-for="stiffness"></output>
+    <input type="range" data-param="stiffness" min="0" max="1" step="0.01"></label>
+  <label>Damping <output data-for="damping"></output>
+    <input type="range" data-param="damping" min="0" max="6" step="0.05"></label>
+  <label>Gravity <output data-for="gravity"></output>
+    <input type="range" data-param="gravity" min="0" max="2400" step="10"></label>
+  <label>Wobble <output data-for="wobble"></output>
+    <input type="range" data-param="wobble" min="0" max="1" step="0.01"></label>
+</details>
+
+<div id="fps" class="bar" hidden>-- FPS</div>
+<div id="hint" class="bar">Drag: grab | Shift or right-drag: pinch | Knife: drag across to cut</div>
+
+<script>
+/**
+ * Melon Jelly: a 2D side-view XPBD soft body shaped as a watermelon slice.
+ * Sections: constants, state, physics, input, cutting, rendering, ui.
+ * Units are CSS pixels and seconds; particle mass is 1.
+ */
+(() => {
+  'use strict';
+
+  /* ---------------- constants ---------------- */
+
+  /** Substeps per fixed 60 Hz frame. */
+  const SUBSTEPS = 8;
+  const FIXED_DT = 1 / 60;
+  const H_SUB = FIXED_DT / SUBSTEPS;
+  /** Converts a compliance alpha into XPBD alpha-tilde = alpha / h^2. */
+  const INV_H2 = 1 / (H_SUB * H_SUB);
+  /** Radial rings from the centre (ring 0) to the outer rind (ring RINGS). */
+  const RINGS = 14;
+  /** Angular segments across the half disc. */
+  const ANGLES = 36;
+  /** Rings at or beyond this index form the stiffer rind band. */
+  const RIND_BAND = RINGS - 1;
+  const GRAB_RADIUS = 70;
+  const PICK_RADIUS = 90;
+  /** Soft spring compliance of the grab, in px per unit force. */
+  const GRAB_COMPLIANCE = 1e-5;
+  /** Largest grab correction per substep, so the pull never teleports. */
+  const GRAB_MAX_STEP = 30;
+  const KNIFE_RADIUS = 4;
+  const RESTITUTION = 0.22;
+  const FRICTION = 0.6;
+  /** Floor impacts slower than this (px/s) do not bounce. */
+  const BOUNCE_MIN = 25;
+  /** A floor-resting body faster than this (px/s) gets extra damping. */
+  const REST_SPEED = 40;
+  /** Extra damping rate (1/s) applied to a floor-resting body. */
+  const REST_DAMP = 15;
+  /** A floor-resting body slower than this (px/s) has its velocities zeroed. */
+  const REST_STOP = 1;
+  const MAX_SPEED = 2500;
+  const FLOOR_FRAC = 0.86;
+  const TRAIL_LIFE_MS = 500;
+  const DEFAULTS = Object.freeze({ stiffness: 0.4, damping: 2.5, gravity: 1200, wobble: 0.6 });
+  const SWATCHES = ['#ff4d6d', '#ff8fab', '#ffb703', '#8ecae6', '#b8f2e6', '#cdb4db', '#ffd166', '#06d6a0'];
+  const RIND_COLOR = '#3f8f3a';
+  const PITH_COLOR = '#f4f7e8';
+  const SEED_COLOR = '#2a0a12';
+
+  /* ---------------- state ---------------- */
+
+  const canvas = /** @type {HTMLCanvasElement} */ (document.getElementById('stage'));
+  const ctx = /** @type {CanvasRenderingContext2D} */ (canvas.getContext('2d'));
+  const fpsEl = /** @type {HTMLElement} */ (document.getElementById('fps'));
+  const fpsToggle = /** @type {HTMLInputElement} */ (document.getElementById('fps-toggle'));
+  const picker = /** @type {HTMLInputElement} */ (document.getElementById('picker'));
+  const toolButtons = /** @type {NodeListOf<HTMLButtonElement>} */ (document.querySelectorAll('[data-tool]'));
+  const sliders = /** @type {NodeListOf<HTMLInputElement>} */ (document.querySelectorAll('input[data-param]'));
+
+  let W = 0;
+  let H = 0;
+  let DPR = 1;
+  let floorY = 0;
+  let melonR = 0;
+  /** @type {{stiffness:number,damping:number,gravity:number,wobble:number}} */
+  let params = { ...DEFAULTS };
+  let color = SWATCHES[0];
+  /** @type {Body[]} */
+  let bodies = [];
+  /** @type {Map<number, Interaction>} */
+  const interactions = new Map();
+  let tool = 'grab';
+  /** @type {{x:number,y:number,t:number}[]} */
+  let trail = [];
+  /** @type {{ax:number,ay:number,bx:number,by:number} | null} */
+  let knifeSeg = null;
+
+  /**
+   * @typedef {Object} Body
+   * @property {number} n particle count
+   * @property {Float64Array} x
+   * @property {Float64Array} y
+   * @property {Float64Array} vx
+   * @property {Float64Array} vy
+   * @property {Float64Array} px previous substep positions
+   * @property {Float64Array} py
+   * @property {Float64Array} rx rest shape x (equals the state at cut time for pieces)
+   * @property {Float64Array} ry
+   * @property {Uint8Array} ring
+   * @property {Uint8Array} seed
+   * @property {Uint8Array} contact
+   * @property {Float64Array} impact
+   * @property {Int32Array} tris three local indices per triangle
+   * @property {number} triCount
+   * @property {Float64Array} tA0 rest signed area per triangle
+   * @property {Float64Array} tLam
+   * @property {number} eCount
+   * @property {Int32Array} eA
+   * @property {Int32Array} eB
+   * @property {Float64Array} eL0 rest length per edge
+   * @property {Float64Array} eLam
+   * @property {Uint8Array} eRind
+   * @property {Uint8Array} eArc outer rind edge (drawn green)
+   * @property {Uint8Array} ePith inner pith edge (drawn white)
+   * @property {boolean} asleep at rest on the floor; skipped by the solver until woken by input
+   */
+
+  /**
+   * @typedef {Object} Group
+   * @property {Body} body
+   * @property {boolean} mirror pinch group: target is the centroid mirror of the pointer
+   * @property {number} cx centroid x (mirror groups only)
+   * @property {number} cy centroid y (mirror groups only)
+   * @property {Int32Array} idx
+   * @property {Float64Array} off offset of each particle from its reference point
+   * @property {Float64Array} w soft-radius weight
+   */
+
+  /**
+   * @typedef {{type:'grab', px:number, py:number, groups:Group[]} | {type:'knife', x:number, y:number}} Interaction
+   */
+
+  /* ---------------- helpers ---------------- */
+
+  const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
+
+  /** @returns {number} distance compliance; a softer jelly uses a larger value. */
+  function distCompliance() {
+    return Math.pow(10, -4 - 1.5 * params.stiffness);
+  }
+
+  /** @returns {number} area compliance; larger values let the body bulge and wobble more. */
+  function areaCompliance() {
+    return Math.pow(10, -5 + 2 * params.wobble);
+  }
+
+  /**
+   * Signed area of triangle (a, b, c) using the given coordinate arrays.
+   * @param {Float64Array} xs
+   * @param {Float64Array} ys
+   */
+  function signedArea(xs, ys, a, b, c) {
+    return 0.5 * ((xs[b] - xs[a]) * (ys[c] - ys[a]) - (xs[c] - xs[a]) * (ys[b] - ys[a]));
+  }
+
+  /* ---------------- construction ---------------- */
+
+  /**
+   * Builds a body from particle state, a triangle list and a rest shape.
+   * Rest lengths and areas come from the rest shape, so pieces made by a cut keep their shape.
+   * @param {{x:Float64Array,y:Float64Array,vx:Float64Array,vy:Float64Array,rx:Float64Array,ry:Float64Array,ring:Uint8Array,seed:Uint8Array}} s
+   * @param {Int32Array} tris
+   * @returns {Body}
+   */
+  function buildBody(s, tris) {
+    const n = s.x.length;
+    const m = tris.length / 3;
+    const tA0 = new Float64Array(m);
+    for (let t = 0; t < m; t++) {
+      tA0[t] = signedArea(s.rx, s.ry, tris[3 * t], tris[3 * t + 1], tris[3 * t + 2]);
+    }
+    // Unique edges across all triangles.
+    const seen = new Set();
+    const eAList = [];
+    const eBList = [];
+    for (let t = 0; t < m; t++) {
+      for (let k = 0; k < 3; k++) {
+        const i = tris[3 * t + k];
+        const j = tris[3 * t + ((k + 1) % 3)];
+        const key = i < j ? i * n + j : j * n + i;
+        if (!seen.has(key)) {
+          seen.add(key);
+          eAList.push(i);
+          eBList.push(j);
+        }
+      }
+    }
+    const eCount = eAList.length;
+    const eA = Int32Array.from(eAList);
+    const eB = Int32Array.from(eBList);
+    const eL0 = new Float64Array(eCount);
+    const eRind = new Uint8Array(eCount);
+    const eArc = new Uint8Array(eCount);
+    const ePith = new Uint8Array(eCount);
+    for (let e = 0; e < eCount; e++) {
+      const i = eA[e];
+      const j = eB[e];
+      eL0[e] = Math.hypot(s.rx[i] - s.rx[j], s.ry[i] - s.ry[j]);
+      const ri = s.ring[i];
+      const rj = s.ring[j];
+      eRind[e] = ri >= RIND_BAND && rj >= RIND_BAND ? 1 : 0;
+      eArc[e] = ri === RINGS && rj === RINGS ? 1 : 0;
+      ePith[e] = ri === RIND_BAND && rj === RIND_BAND ? 1 : 0;
+    }
+    return {
+      n,
+      x: s.x,
+      y: s.y,
+      vx: s.vx,
+      vy: s.vy,
+      px: new Float64Array(n),
+      py: new Float64Array(n),
+      rx: s.rx,
+      ry: s.ry,
+      ring: s.ring,
+      seed: s.seed,
+      contact: new Uint8Array(n),
+      impact: new Float64Array(n),
+      tris,
+      triCount: m,
+      tA0,
+      tLam: new Float64Array(m),
+      eCount,
+      eA,
+      eB,
+      eL0,
+      eLam: new Float64Array(eCount),
+      eRind,
+      eArc,
+      ePith,
+      asleep: false,
+    };
+  }
+
+  /**
+   * Builds the initial half-disc melon: flat cut face on top, rind arc below,
+   * held a drop height above the floor.
+   * @returns {Body}
+   */
+  function buildMelon() {
+    const cx = W / 2;
+    const R = melonR;
+    const dropHeight = Math.max(140, H * 0.2);
+    const cy = floorY - R - dropHeight; // arc bottom starts a drop height above the floor
+    const n = 1 + RINGS * (ANGLES + 1);
+    const x = new Float64Array(n);
+    const y = new Float64Array(n);
+    const ring = new Uint8Array(n);
+    const seed = new Uint8Array(n);
+    /** @param {number} k ring index @param {number} j angle index */
+    const idx = (k, j) => (k === 0 ? 0 : 1 + (k - 1) * (ANGLES + 1) + j);
+    x[0] = cx;
+    y[0] = cy;
+    for (let k = 1; k <= RINGS; k++) {
+      for (let j = 0; j <= ANGLES; j++) {
+        const r = (R * k) / RINGS;
+        const th = (Math.PI * j) / ANGLES;
+        const i = idx(k, j);
+        x[i] = cx + r * Math.cos(th);
+        y[i] = cy + r * Math.sin(th);
+        ring[i] = k;
+        // Seeds sit on interior rings and travel with the particle they are drawn on.
+        if (k >= 3 && k <= RINGS - 3 && (k * 7 + j * 5) % 9 === 0) seed[i] = 1;
+      }
+    }
+    const list = [];
+    for (let j = 0; j < ANGLES; j++) list.push(0, idx(1, j), idx(1, j + 1));
+    for (let k = 1; k < RINGS; k++) {
+      for (let j = 0; j < ANGLES; j++) {
+        const a = idx(k, j);
+        const b = idx(k, j + 1);
+        const c = idx(k + 1, j);
+        const d = idx(k + 1, j + 1);
+        list.push(a, b, d, a, d, c);
+      }
+    }
+    const s = {
+      x,
+      y,
+      vx: new Float64Array(n),
+      vy: new Float64Array(n),
+      rx: Float64Array.from(x),
+      ry: Float64Array.from(y),
+      ring,
+      seed,
+    };
+    return buildBody(s, Int32Array.from(list));
+  }
+
+  /** Replaces all pieces with a fresh melon. Used by Reset and by NaN recovery. */
+  function rebuildMelon() {
+    interactions.clear();
+    knifeSeg = null;
+    trail = [];
+    bodies = [buildMelon()];
+  }
+
+  /** Wakes every sleeping body so the solver integrates it again after an input change. */
+  function wakeAll() {
+    for (const b of bodies) b.asleep = false;
+  }
+
+  /* ---------------- physics ---------------- */
+
+  /** Advances the world by one fixed frame. */
+  function stepWorld() {
+    for (let s = 0; s < SUBSTEPS; s++) substep(H_SUB);
+    for (const b of bodies) {
+      for (let i = 0; i < b.n; i++) {
+        if (!Number.isFinite(b.x[i]) || !Number.isFinite(b.y[i])) {
+          rebuildMelon(); // recover gracefully from a numeric blow-up
+          return;
+        }
+      }
+    }
+  }
+
+  /**
+   * One XPBD substep: predict, solve constraints, collide, update velocities.
+   * @param {number} h substep length in seconds
+   */
+  function substep(h) {
+    const g = params.gravity;
+    const dc = distCompliance();
+    const rc = dc * 0.1; // rind band is ten times stiffer than the flesh
+    const ac = areaCompliance();
+    const grabAt = GRAB_COMPLIANCE * INV_H2;
+    const damp = 1 / (1 + params.damping * h);
+    // Sleeping bodies are at rest on the floor and are skipped until woken by input.
+    const active = bodies.filter((b) => !b.asleep);
+
+    // Predict positions with gravity and the previous velocity.
+    for (const b of active) {
+      const { n, x, y, vx, vy, px, py } = b;
+      for (let i = 0; i < n; i++) {
+        vy[i] += g * h;
+        px[i] = x[i];
+        py[i] = y[i];
+        x[i] += vx[i] * h;
+        y[i] += vy[i] * h;
+      }
+      b.eLam.fill(0);
+      b.tLam.fill(0);
+    }
+
+    // Soft grab and pinch springs: pull each group toward its moving target.
+    for (const it of interactions.values()) {
+      if (it.type !== 'grab') continue;
+      for (const grp of it.groups) {
+        const tgtX = grp.mirror ? 2 * grp.cx - it.px : it.px;
+        const tgtY = grp.mirror ? 2 * grp.cy - it.py : it.py;
+        const { x, y } = grp.body;
+        for (let k = 0; k < grp.idx.length; k++) {
+          const i = grp.idx[k];
+          const dx = tgtX + grp.off[2 * k] - x[i];
+          const dy = tgtY + grp.off[2 * k + 1] - y[i];
+          const wgt = grp.w[k];
+          const f = wgt / (wgt + grabAt);
+          let mx = dx * f;
+          let my = dy * f;
+          const mag = Math.hypot(mx, my);
+          if (mag > GRAB_MAX_STEP) {
+            const sc = GRAB_MAX_STEP / mag;
+            mx *= sc;
+            my *= sc;
+          }
+          x[i] += mx;
+          y[i] += my;
+        }
+      }
+    }
+
+    /** @type {Set<Body>} bodies a pointer is holding this substep */
+    const held = new Set();
+    for (const it of interactions.values()) {
+      if (it.type === 'grab') for (const grp of it.groups) held.add(grp.body);
+    }
+
+    for (const b of active) {
+      const { x, y, px, py, eA, eB, eL0, eLam, eRind, tris, tA0, tLam } = b;
+
+      // Distance constraints (flesh and rind), XPBD with lambda accumulation.
+      for (let e = 0; e < b.eCount; e++) {
+        const i = eA[e];
+        const j = eB[e];
+        const dx = x[i] - x[j];
+        const dy = y[i] - y[j];
+        const len = Math.sqrt(dx * dx + dy * dy);
+        if (len < 1e-9) continue;
+        const C = len - eL0[e];
+        const at = (eRind[e] ? rc : dc) * INV_H2;
+        const dl = (-C - at * eLam[e]) / (2 + at);
+        eLam[e] += dl;
+        const nx = (dx / len) * dl;
+        const ny = (dy / len) * dl;
+        x[i] += nx;
+        y[i] += ny;
+        x[j] -= nx;
+        y[j] -= ny;
+      }
+
+      // Area constraints per triangle keep volume (area) so squashed jelly bulges sideways.
+      const at = ac * INV_H2;
+      for (let t = 0; t < b.triCount; t++) {
+        const a = tris[3 * t];
+        const p = tris[3 * t + 1];
+        const q = tris[3 * t + 2];
+        const xa = x[a], ya = y[a], xb = x[p], yb = y[p], xc = x[q], yc = y[q];
+        const C = 0.5 * ((xb - xa) * (yc - ya) - (xc - xa) * (yb - ya)) - tA0[t];
+        const gax = 0.5 * (yb - yc), gay = 0.5 * (xc - xb);
+        const gbx = 0.5 * (yc - ya), gby = 0.5 * (xa - xc);
+        const gcx = 0.5 * (ya - yb), gcy = 0.5 * (xb - xa);
+        const W2 = gax * gax + gay * gay + gbx * gbx + gby * gby + gcx * gcx + gcy * gcy;
+        const dl = (-C - at * tLam[t]) / (W2 + at); // at > 0, so the divisor is safe
+        tLam[t] += dl;
+        x[a] += gax * dl; y[a] += gay * dl;
+        x[p] += gbx * dl; y[p] += gby * dl;
+        x[q] += gcx * dl; y[q] += gcy * dl;
+      }
+
+      // Knife collision: particles inside the blade's capsule are pushed out to either side.
+      if (knifeSeg) pushFromKnife(b, knifeSeg);
+
+      // Floor (with Coulomb friction and impact tracking), side walls.
+      for (let i = 0; i < b.n; i++) {
+        // A particle already touching the floor last substep is resting, not landing.
+        const wasTouching = b.contact[i] === 1;
+        b.contact[i] = 0;
+        b.impact[i] = 0;
+        if (y[i] > floorY) {
+          const pen = y[i] - floorY;
+          // Downward speed before projection, counted only on the landing substep so a resting particle never re-bounces.
+          if (!wasTouching) b.impact[i] = (y[i] - py[i]) / h;
+          y[i] = floorY;
+          const dxT = x[i] - px[i];
+          const cut = Math.min(Math.abs(dxT), FRICTION * pen);
+          x[i] -= Math.sign(dxT) * cut;
+          b.contact[i] = 1;
+        }
+        if (x[i] < 0) x[i] = 0;
+        else if (x[i] > W) x[i] = W;
+      }
+
+      // Velocities from the position change, with damping, bounce and speed clamp.
+      const { vx, vy } = b;
+      let peak = 0;
+      let touching = false;
+      for (let i = 0; i < b.n; i++) {
+        let nvx = (x[i] - px[i]) / h;
+        let nvy = (y[i] - py[i]) / h;
+        if (b.contact[i]) {
+          touching = true;
+          if (b.impact[i] > BOUNCE_MIN) {
+            nvy = -RESTITUTION * b.impact[i];
+          } else if (Math.abs(nvx) < 2 && Math.abs(nvy) < 2) {
+            nvx = 0; // at rest on the floor: no micro-jitter
+            nvy = 0;
+          }
+        }
+        nvx *= damp;
+        nvy *= damp;
+        const sp = Math.hypot(nvx, nvy);
+        if (sp > MAX_SPEED) {
+          const sc = MAX_SPEED / sp;
+          nvx *= sc;
+          nvy *= sc;
+        }
+        vx[i] = nvx;
+        vy[i] = nvy;
+        if (sp > peak) peak = sp;
+      }
+
+      // Rest rule: a body resting on the floor, not held or cut, sheds its residual
+      // wobble quickly and goes to sleep (frozen exactly) once nearly still.
+      if (touching && peak < REST_SPEED && !held.has(b) && !knifeSeg) {
+        if (peak < REST_STOP) {
+          b.asleep = true;
+          vx.fill(0);
+          vy.fill(0);
+        } else {
+          const k = 1 / (1 + REST_DAMP * h);
+          for (let i = 0; i < b.n; i++) {
+            vx[i] *= k;
+            vy[i] *= k;
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Pushes particles out of the knife capsule (segment plus KNIFE_RADIUS).
+   * @param {Body} b
+   * @param {{ax:number,ay:number,bx:number,by:number}} seg
+   */
+  function pushFromKnife(b, seg) {
+    const { ax, ay, bx, by } = seg;
+    const sx = bx - ax;
+    const sy = by - ay;
+    const L2 = sx * sx + sy * sy || 1e-9;
+    for (let i = 0; i < b.n; i++) {
+      const t = clamp(((b.x[i] - ax) * sx + (b.y[i] - ay) * sy) / L2, 0, 1);
+      const dx = b.x[i] - (ax + sx * t);
+      const dy = b.y[i] - (ay + sy * t);
+      const d = Math.hypot(dx, dy);
+      if (d < KNIFE_RADIUS && d > 1e-6) {
+        const k = (KNIFE_RADIUS - d) / d;
+        b.x[i] += dx * k;
+        b.y[i] += dy * k;
+      }
+    }
+  }
+
+  /* ---------------- input ---------------- */
+
+  /** @param {PointerEvent} e */
+  function pointerPos(e) {
+    const r = canvas.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  }
+
+  /**
+   * Nearest particle to a point across all bodies, or null when none is within maxD.
+   * @returns {{body:Body,i:number}|null}
+   */
+  function nearestParticle(px, py, maxD) {
+    let best = null;
+    let bestD = maxD;
+    for (const b of bodies) {
+      for (let i = 0; i < b.n; i++) {
+        const d = Math.hypot(b.x[i] - px, b.y[i] - py);
+        if (d < bestD) {
+          bestD = d;
+          best = { body: b, i };
+        }
+      }
+    }
+    return best;
+  }
+
+  /** @returns {{x:number,y:number}} centroid of a body's particles */
+  function centroid(b) {
+    let sx = 0;
+    let sy = 0;
+    for (let i = 0; i < b.n; i++) {
+      sx += b.x[i];
+      sy += b.y[i];
+    }
+    return { x: sx / b.n, y: sy / b.n };
+  }
+
+  /**
+   * Collects particles within the soft radius of a reference point.
+   * @param {Body} body
+   * @param {number} cx reference point x (the press point, or its mirror for pinch)
+   * @param {number} cy
+   * @param {boolean} mirror
+   * @param {number} ccx body centroid x (pinch only)
+   * @param {number} ccy body centroid y (pinch only)
+   * @returns {Group}
+   */
+  function makeGroup(body, cx, cy, mirror, ccx, ccy) {
+    const idx = [];
+    const off = [];
+    const w = [];
+    let best = -1;
+    let bestD = Infinity;
+    for (let i = 0; i < body.n; i++) {
+      const dx = body.x[i] - cx;
+      const dy = body.y[i] - cy;
+      const d = Math.hypot(dx, dy);
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+      if (d < GRAB_RADIUS) {
+        idx.push(i);
+        off.push(dx, dy);
+        w.push(0.25 + 0.75 * (1 - d / GRAB_RADIUS));
+      }
+    }
+    if (idx.length === 0) {
+      idx.push(best);
+      off.push(body.x[best] - cx, body.y[best] - cy);
+      w.push(1);
+    }
+    return {
+      body,
+      mirror,
+      cx: ccx,
+      cy: ccy,
+      idx: Int32Array.from(idx),
+      off: Float64Array.from(off),
+      w: Float64Array.from(w),
+    };
+  }
+
+  /** @param {PointerEvent} e */
+  function onPointerDown(e) {
+    const p = pointerPos(e);
+    wakeAll();
+    try {
+      canvas.setPointerCapture(e.pointerId);
+    } catch (_) {
+      /* capture is best-effort */
+    }
+    if (tool === 'knife') {
+      interactions.set(e.pointerId, { type: 'knife', x: p.x, y: p.y });
+      knifeSeg = null;
+      trail.push({ x: p.x, y: p.y, t: performance.now() });
+      return;
+    }
+    const hit = nearestParticle(p.x, p.y, PICK_RADIUS);
+    if (!hit) return;
+    const body = hit.body;
+    const groups = [makeGroup(body, p.x, p.y, false, 0, 0)];
+    if (e.shiftKey || e.button === 2) {
+      // Pinch: a second group grabbed on the mirror of the press point through the centroid.
+      const c = centroid(body);
+      groups.push(makeGroup(body, 2 * c.x - p.x, 2 * c.y - p.y, true, c.x, c.y));
+    }
+    interactions.set(e.pointerId, { type: 'grab', px: p.x, py: p.y, groups });
+  }
+
+  /** @param {PointerEvent} e */
+  function onPointerMove(e) {
+    const it = interactions.get(e.pointerId);
+    if (!it) return;
+    const p = pointerPos(e);
+    if (it.type === 'grab') {
+      it.px = p.x;
+      it.py = p.y;
+      return;
+    }
+    const seg = { ax: it.x, ay: it.y, bx: p.x, by: p.y };
+    if (Math.hypot(seg.bx - seg.ax, seg.by - seg.ay) < 0.5) return;
+    knifeSeg = seg;
+    trail.push({ x: p.x, y: p.y, t: performance.now() });
+    it.x = p.x;
+    it.y = p.y;
+    cutAlong(seg);
+  }
+
+  /** @param {PointerEvent} e */
+  function onPointerUp(e) {
+    interactions.delete(e.pointerId);
+    let knifeActive = false;
+    for (const it of interactions.values()) if (it.type === 'knife') knifeActive = true;
+    if (!knifeActive) knifeSeg = null;
+  }
+
+  /* ---------------- cutting ---------------- */
+
+  /** @returns {boolean} true when segments ab and cd properly intersect */
+  function segmentsCross(ax, ay, bx, by, cx, cy, dx, dy) {
+    const cr = (x1, y1, x2, y2, px, py) => (x2 - x1) * (py - y1) - (y2 - y1) * (px - x1);
+    const d1 = cr(cx, cy, dx, dy, ax, ay);
+    const d2 = cr(cx, cy, dx, dy, bx, by);
+    const d3 = cr(ax, ay, bx, by, cx, cy);
+    const d4 = cr(ax, ay, bx, by, dx, dy);
+    return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+  }
+
+  /**
+   * Cuts every body along a knife segment. Triangles crossed by the segment are removed,
+   * which drops the constraints on their edges. Remaining connected components become
+   * separate, independently simulated bodies.
+   * @param {{ax:number,ay:number,bx:number,by:number}} seg
+   */
+  function cutAlong(seg) {
+    const next = [];
+    let changed = false;
+    for (const body of bodies) {
+      const pieces = splitBody(body, seg);
+      if (pieces === null) {
+        next.push(body);
+      } else {
+        changed = true;
+        for (const p of pieces) next.push(p);
+      }
+    }
+    if (!changed) return;
+    bodies = next;
+    for (const [id, it] of interactions) if (it.type === 'grab') interactions.delete(id);
+  }
+
+  /**
+   * @param {Body} body
+   * @param {{ax:number,ay:number,bx:number,by:number}} seg
+   * @returns {Body[]|null} null when the segment crosses nothing
+   */
+  function splitBody(body, seg) {
+    const { x, y, tris } = body;
+    const m = body.triCount;
+    const keep = new Uint8Array(m);
+    let removed = 0;
+    for (let t = 0; t < m; t++) {
+      const a = tris[3 * t];
+      const p = tris[3 * t + 1];
+      const q = tris[3 * t + 2];
+      const hit =
+        segmentsCross(seg.ax, seg.ay, seg.bx, seg.by, x[a], y[a], x[p], y[p]) ||
+        segmentsCross(seg.ax, seg.ay, seg.bx, seg.by, x[p], y[p], x[q], y[q]) ||
+        segmentsCross(seg.ax, seg.ay, seg.bx, seg.by, x[q], y[q], x[a], y[a]);
+      if (hit) removed++;
+      else keep[t] = 1;
+    }
+    if (removed === 0) return null;
+
+    // Union-find over the vertices of the surviving triangles.
+    const parent = new Int32Array(body.n);
+    for (let i = 0; i < body.n; i++) parent[i] = i;
+    const find = (i) => {
+      while (parent[i] !== i) {
+        parent[i] = parent[parent[i]];
+        i = parent[i];
+      }
+      return i;
+    };
+    const join = (u, v) => {
+      const ru = find(u);
+      const rv = find(v);
+      if (ru !== rv) parent[ru] = rv;
+    };
+    for (let t = 0; t < m; t++) {
+      if (!keep[t]) continue;
+      join(tris[3 * t], tris[3 * t + 1]);
+      join(tris[3 * t + 1], tris[3 * t + 2]);
+    }
+    /** @type {Map<number, number[]>} */
+    const groups = new Map();
+    for (let t = 0; t < m; t++) {
+      if (!keep[t]) continue;
+      const root = find(tris[3 * t]);
+      if (!groups.has(root)) groups.set(root, []);
+      groups.get(root).push(t);
+    }
+    // A cut that leaves one component keeps the original rest shape; a split takes the current shape.
+    const fresh = groups.size > 1;
+    const pieces = [];
+    for (const triIds of groups.values()) pieces.push(extractBody(body, triIds, fresh));
+    return pieces;
+  }
+
+  /**
+   * Copies the given triangles and their vertices into a new body.
+   * @param {Body} body
+   * @param {number[]} triIds
+   * @param {boolean} fresh rest shape becomes the current shape
+   * @returns {Body}
+   */
+  function extractBody(body, triIds, fresh) {
+    const local = new Map();
+    const gid = [];
+    const tris = new Int32Array(triIds.length * 3);
+    triIds.forEach((t, k) => {
+      for (let v = 0; v < 3; v++) {
+        const g = body.tris[3 * t + v];
+        let li = local.get(g);
+        if (li === undefined) {
+          li = gid.length;
+          local.set(g, li);
+          gid.push(g);
+        }
+        tris[3 * k + v] = li;
+      }
+    });
+    /** @param {ArrayLike<number>} src */
+    const pick = (src) => Float64Array.from(gid, (g) => src[g]);
+    const s = {
+      x: pick(body.x),
+      y: pick(body.y),
+      vx: pick(body.vx),
+      vy: pick(body.vy),
+      rx: fresh ? pick(body.x) : pick(body.rx),
+      ry: fresh ? pick(body.y) : pick(body.ry),
+      ring: Uint8Array.from(gid, (g) => body.ring[g]),
+      seed: Uint8Array.from(gid, (g) => body.seed[g]),
+    };
+    return buildBody(s, tris);
+  }
+
+  /* ---------------- rendering ---------------- */
+
+  /** @returns {{minX:number,minY:number,maxX:number,maxY:number}} */
+  function bounds(b) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (let i = 0; i < b.n; i++) {
+      if (b.x[i] < minX) minX = b.x[i];
+      if (b.x[i] > maxX) maxX = b.x[i];
+      if (b.y[i] < minY) minY = b.y[i];
+      if (b.y[i] > maxY) maxY = b.y[i];
+    }
+    return { minX, minY, maxX, maxY };
+  }
+
+  /** Soft contact shadow on the floor; it fades as the piece rises. */
+  function drawShadow(b) {
+    const bb = bounds(b);
+    const height = Math.max(0, floorY - bb.maxY);
+    const alpha = 0.38 * Math.max(0, 1 - height / 380);
+    if (alpha <= 0.005) return;
+    const rx = (bb.maxX - bb.minX) * 0.55 + 12;
+    ctx.save();
+    ctx.translate((bb.minX + bb.maxX) / 2, floorY + 1);
+    ctx.scale(1, 0.14);
+    const g = ctx.createRadialGradient(0, 0, 0, 0, 0, rx);
+    g.addColorStop(0, `rgba(60, 40, 20, ${alpha})`);
+    g.addColorStop(1, 'rgba(60, 40, 20, 0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(0, 0, rx, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  /** Strokes the edges flagged by `flag` (a per-edge Uint8Array) in one path. */
+  function strokeFlagged(b, flag, strokeColor, width) {
+    const path = new Path2D();
+    for (let e = 0; e < b.eCount; e++) {
+      if (!flag[e]) continue;
+      const i = b.eA[e];
+      const j = b.eB[e];
+      path.moveTo(b.x[i], b.y[i]);
+      path.lineTo(b.x[j], b.y[j]);
+    }
+    ctx.strokeStyle = strokeColor;
+    ctx.lineWidth = width;
+    ctx.stroke(path);
+  }
+
+  /** Draws one body as a single filled mesh with gloss, rind, pith and seeds. */
+  function drawBody(b) {
+    const mesh = new Path2D();
+    const { x, y, tris } = b;
+    for (let t = 0; t < b.triCount; t++) {
+      const a = tris[3 * t];
+      const p = tris[3 * t + 1];
+      const q = tris[3 * t + 2];
+      mesh.moveTo(x[a], y[a]);
+      mesh.lineTo(x[p], y[p]);
+      mesh.lineTo(x[q], y[q]);
+      mesh.closePath();
+    }
+    // One fill over the whole mesh avoids seams between triangles.
+    ctx.fillStyle = color;
+    ctx.fill(mesh);
+
+    const bb = bounds(b);
+    const cxB = (bb.minX + bb.maxX) / 2;
+    const cyB = (bb.minY + bb.maxY) / 2;
+    const rad = Math.max(bb.maxX - bb.minX, bb.maxY - bb.minY) / 2 + 1;
+    ctx.save();
+    ctx.clip(mesh);
+    const shade = ctx.createRadialGradient(cxB - rad * 0.35, cyB - rad * 0.4, rad * 0.05, cxB, cyB, rad * 1.15);
+    shade.addColorStop(0, 'rgba(255, 255, 255, 0.42)');
+    shade.addColorStop(0.45, 'rgba(255, 255, 255, 0.05)');
+    shade.addColorStop(1, 'rgba(60, 0, 20, 0.28)');
+    ctx.fillStyle = shade;
+    ctx.fillRect(bb.minX - 2, bb.minY - 2, bb.maxX - bb.minX + 4, bb.maxY - bb.minY + 4);
+    ctx.restore();
+
+    // Rind on the outer arc, pith just inside it. Cut faces have no arc edges, so they stay pink.
+    const ringStep = melonR / RINGS;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    strokeFlagged(b, b.eArc, RIND_COLOR, ringStep * 1.3);
+    strokeFlagged(b, b.ePith, PITH_COLOR, ringStep * 0.55);
+
+    const seeds = new Path2D();
+    for (let i = 0; i < b.n; i++) {
+      if (!b.seed[i]) continue;
+      seeds.moveTo(x[i] + 3.2, y[i]);
+      seeds.ellipse(x[i], y[i], 3.2, 2.2, 0, 0, Math.PI * 2);
+    }
+    ctx.globalAlpha = 0.85;
+    ctx.fillStyle = SEED_COLOR;
+    ctx.fill(seeds);
+    ctx.globalAlpha = 1;
+  }
+
+  /** Draws the knife trail, fading out over TRAIL_LIFE_MS. */
+  function drawTrail(now) {
+    trail = trail.filter((p) => now - p.t < TRAIL_LIFE_MS);
+    if (trail.length < 2) return;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = 3;
+    for (let i = 1; i < trail.length; i++) {
+      const a = trail[i - 1];
+      const b = trail[i];
+      const life = 1 - (now - b.t) / TRAIL_LIFE_MS;
+      ctx.strokeStyle = `rgba(40, 30, 30, ${(0.85 * life).toFixed(3)})`;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    }
+  }
+
+  /** @param {number} now */
+  function render(now) {
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    const sky = ctx.createLinearGradient(0, 0, 0, H);
+    sky.addColorStop(0, '#fbf6ec');
+    sky.addColorStop(1, '#eadfcb');
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#d7c7aa';
+    ctx.fillRect(0, floorY, W, H - floorY);
+    ctx.fillStyle = '#bfae90';
+    ctx.fillRect(0, floorY, W, 2);
+    for (const b of bodies) drawShadow(b);
+    for (const b of bodies) drawBody(b);
+    drawTrail(now);
+  }
+
+  /* ---------------- loop and sizing ---------------- */
+
+  let fpsFrames = 0;
+  let fpsStamp = performance.now();
+  let last = performance.now();
+  let acc = 0;
+
+  /** @param {number} now */
+  function frame(now) {
+    const dt = Math.min((now - last) / 1000, 0.1);
+    last = now;
+    acc += dt;
+    let steps = 0;
+    while (acc >= FIXED_DT && steps < 5) {
+      stepWorld();
+      acc -= FIXED_DT;
+      steps++;
+    }
+    if (steps === 5) acc = 0; // drop backlog after a long stall
+    render(now);
+    fpsFrames++;
+    if (now - fpsStamp >= 500) {
+      const fps = (fpsFrames * 1000) / (now - fpsStamp);
+      fpsEl.textContent = `${fps.toFixed(0)} FPS`;
+      fpsFrames = 0;
+      fpsStamp = now;
+    }
+    requestAnimationFrame(frame);
+  }
+
+  function resize() {
+    W = window.innerWidth;
+    H = window.innerHeight;
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.round(W * DPR);
+    canvas.height = Math.round(H * DPR);
+    floorY = H * FLOOR_FRAC;
+    melonR = clamp(Math.min(W, H) * 0.16, 80, 170);
+  }
+
+  /* ---------------- ui ---------------- */
+
+  /** @param {string} name */
+  function setTool(name) {
+    tool = name;
+    interactions.clear();
+    knifeSeg = null;
+    for (const btn of toolButtons) {
+      btn.setAttribute('aria-pressed', String(btn.dataset.tool === name));
+    }
+    canvas.style.cursor = name === 'knife' ? 'crosshair' : 'grab';
+  }
+
+  function syncControls() {
+    for (const input of sliders) {
+      const key = /** @type {keyof typeof params} */ (input.dataset.param);
+      input.value = String(params[key]);
+      const out = document.querySelector(`output[data-for="${key}"]`);
+      if (out) out.textContent = Number(params[key]).toFixed(key === 'gravity' ? 0 : 2);
+    }
+    picker.value = color;
+  }
+
+  function resetAll() {
+    params = { ...DEFAULTS };
+    color = SWATCHES[0];
+    syncControls();
+    rebuildMelon();
+    setTool('grab');
+  }
+
+  function wireUi() {
+    const swatchHost = document.getElementById('swatches');
+    for (const hex of SWATCHES) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'swatch';
+      btn.style.background = hex;
+      btn.setAttribute('aria-label', `Flesh color ${hex}`);
+      btn.title = hex;
+      btn.addEventListener('click', () => {
+        color = hex;
+        syncControls();
+      });
+      swatchHost.appendChild(btn);
+    }
+    picker.addEventListener('input', () => {
+      color = picker.value;
+    });
+    for (const btn of toolButtons) {
+      btn.addEventListener('click', () => setTool(btn.dataset.tool || 'grab'));
+    }
+    for (const input of sliders) {
+      input.addEventListener('input', () => {
+        const key = /** @type {keyof typeof params} */ (input.dataset.param);
+        params[key] = parseFloat(input.value);
+        wakeAll();
+        const out = document.querySelector(`output[data-for="${key}"]`);
+        if (out) out.textContent = Number(params[key]).toFixed(key === 'gravity' ? 0 : 2);
+      });
+    }
+    document.getElementById('reset').addEventListener('click', resetAll);
+    fpsToggle.addEventListener('change', () => {
+      fpsEl.hidden = !fpsToggle.checked;
+    });
+    fpsEl.hidden = !fpsToggle.checked;
+  }
+
+  canvas.addEventListener('pointerdown', onPointerDown);
+  canvas.addEventListener('pointermove', onPointerMove);
+  canvas.addEventListener('pointerup', onPointerUp);
+  canvas.addEventListener('pointercancel', onPointerUp);
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  window.addEventListener('resize', resize);
+
+  resize();
+  rebuildMelon();
+  syncControls();
+  wireUi();
+  requestAnimationFrame((t) => {
+    last = t;
+    fpsStamp = t;
+    requestAnimationFrame(frame);
+  });
+})();
+</script>
+</body>
+</html>

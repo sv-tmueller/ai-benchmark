@@ -1,0 +1,80 @@
+{
+  "generated_utc": null,
+  "toml": "game-melon-jelly.toml",
+  "prompt_id": "game-melon-jelly",
+  "name_suffix": "v2",
+  "title": "Melon Jelly: XPBD soft-body watermelon slice",
+  "endpoint": "claude-agent-sdk subagent dispatch (in-harness generation; no HTTP endpoint)",
+  "model": "claude-haiku-5-5",
+  "params": {
+    "temperature": null,
+    "max_tokens_requested_initial": null,
+    "max_tokens_effective_last_attempt": null,
+    "reasoning_effort": null,
+    "stream": null,
+    "name_suffix": "v2"
+  },
+  "finish_reason": null,
+  "truncated": false,
+  "usage": null,
+  "retries": [],
+  "num_retry_api_calls": 0,
+  "grading": null,
+  "outputs": {
+    "deliverable": "results/melon-jelly/melon-jelly_claude_haiku_5_5-v2.html",
+    "review_html": null
+  },
+  "playability_verification": {
+    "playability_verdict": "BOOTS_ONLY",
+    "browser_verified": true,
+    "verifier": "saved full harness (melon212-full.js), playwright 1.58.2, chromium 145.0.7632.6, run at commit 85d9a84",
+    "page_errors": [],
+    "console_errors": [],
+    "sustained_animation": true,
+    "click_through": true,
+    "click_result": "pointer drag moves the dragged piece (right 24.783, left 51.920) and the knife cut splits the melon into two bodies",
+    "external_requests": 0,
+    "boot_paint_ms": 262,
+    "drop_settle_s": 2.33,
+    "cut_gap": "63/82 rows show a gap (bar 80%); median 68 px, min 35, max 114",
+    "cut_face_pink": "script 0.8558 (bar 0.80), green 0; visual PASS (pink flesh with seeds)",
+    "independence": "dragging the right piece moves the left (left-region mean 4.931, bar 0.5); dragging the left piece leaves the right still (0.0002)",
+    "post_cut_creep": "pieces keep creeping with no input after the cut (left-region mean 7.49, then 5.90, 1.5 s apart); judgement, not isolated",
+    "reset_no_reload": true,
+    "reset_frame_checked_ms": 3012,
+    "reset_max_channel_diff": 0,
+    "fast_drag": "PASS",
+    "failed_checks": [
+      "cut-gap",
+      "independence"
+    ],
+    "note": "Accepted as BOOTS_ONLY by the owner after the single repair round was used (#211, batch #210). Settle meets the 3.5 s gate but misses the 1-2 s target. Post-cut pieces look wedge-shaped with peaked tops while the pre-cut melon is a clean half disc (visual, not measured). Not tested: colour picker and swatches, pinch and two-finger touch, squash, tuning sliders, NaN recovery, bounce height and sag, knife-trail visibility."
+  },
+  "generation_attempts": [
+    {
+      "attempt": 1,
+      "kind": "initial",
+      "max_tokens": null,
+      "finish_reason": null,
+      "closing_html_tag_present": true,
+      "fences_stripped": false,
+      "notes": "Generated in-harness by the developer seat from the [user].text block only. Temperature 0.2 and max_tokens 65536 could not be set on this dispatch, so the harness default applies. finish_reason is not observable here, so it is null. Generation time was not recorded, so generated_utc is null; the first commit 5c51509 is dated 2026-10-13T07:45:40Z. These provenance claims, the endpoint, and the empty retries record (retries, num_retry_api_calls) are as the developer seat reported them; no dispatch record was kept, so they are not independently verified. The retry trigger (finish_reason length or a missing closing tag) did not fire on the closing-tag test: </html> is present at 5c51509."
+    },
+    {
+      "attempt": 2,
+      "kind": "repair",
+      "max_tokens": null,
+      "finish_reason": null,
+      "closing_html_tag_present": true,
+      "fences_stripped": false,
+      "findings_addressed": [2, 4, 5],
+      "notes": "Repair round 1 of 1 on the tester findings for PR #212, physics and rest only. Finding 2 and 4 (settle 3.8 s, gate 3.5 s): the bounce fired every substep on resting floor contacts, re-launching the bottom particle at about -44 px/s; the bounce now counts only landing substeps. A rest rule adds extra damping to a floor-resting body that is not held or cut, and puts it to sleep (frozen exactly, skipped by the solver) once its peak speed is below 1 px/s; pointer down and slider input wake all bodies. Finding 5 (reset frame at +2 s differs by 37): addressed by the same rest freeze. At +2 s it still fails at 85d9a84 (max channel diff 189, the melon is still falling after reset); the lead corrected the criterion to reset + 3 s, where the full run passes (max channel diff 0 at 3012 ms). Visuals, cut logic, and prompt unchanged. Finding 1 (no check suite in worktree) and finding 3 (cut-face pink metric) were not changed."
+    }
+  ],
+  "agent_dispatch_models": {
+    "architect": "haiku",
+    "developer": "haiku",
+    "tester": "haiku",
+    "reviewer": "haiku"
+  }
+}
