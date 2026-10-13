@@ -91,6 +91,12 @@
   const FRICTION = 0.6;
   /** Floor impacts slower than this (px/s) do not bounce. */
   const BOUNCE_MIN = 25;
+  /** A floor-resting body faster than this (px/s) gets extra damping. */
+  const REST_SPEED = 40;
+  /** Extra damping rate (1/s) applied to a floor-resting body. */
+  const REST_DAMP = 15;
+  /** A floor-resting body slower than this (px/s) has its velocities zeroed. */
+  const REST_STOP = 1;
   const MAX_SPEED = 2500;
   const FLOOR_FRAC = 0.86;
   const TRAIL_LIFE_MS = 500;
@@ -155,6 +161,7 @@
    * @property {Uint8Array} eRind
    * @property {Uint8Array} eArc outer rind edge (drawn green)
    * @property {Uint8Array} ePith inner pith edge (drawn white)
+   * @property {boolean} asleep at rest on the floor; skipped by the solver until woken by input
    */
 
   /**
@@ -270,6 +277,7 @@
       eRind,
       eArc,
       ePith,
+      asleep: false,
     };
   }
 
@@ -336,6 +344,11 @@
     bodies = [buildMelon()];
   }
 
+  /** Wakes every sleeping body so the solver integrates it again after an input change. */
+  function wakeAll() {
+    for (const b of bodies) b.asleep = false;
+  }
+
   /* ---------------- physics ---------------- */
 
   /** Advances the world by one fixed frame. */
@@ -362,9 +375,11 @@
     const ac = areaCompliance();
     const grabAt = GRAB_COMPLIANCE * INV_H2;
     const damp = 1 / (1 + params.damping * h);
+    // Sleeping bodies are at rest on the floor and are skipped until woken by input.
+    const active = bodies.filter((b) => !b.asleep);
 
     // Predict positions with gravity and the previous velocity.
-    for (const b of bodies) {
+    for (const b of active) {
       const { n, x, y, vx, vy, px, py } = b;
       for (let i = 0; i < n; i++) {
         vy[i] += g * h;
@@ -404,7 +419,13 @@
       }
     }
 
-    for (const b of bodies) {
+    /** @type {Set<Body>} bodies a pointer is holding this substep */
+    const held = new Set();
+    for (const it of interactions.values()) {
+      if (it.type === 'grab') for (const grp of it.groups) held.add(grp.body);
+    }
+
+    for (const b of active) {
       const { x, y, px, py, eA, eB, eL0, eLam, eRind, tris, tA0, tLam } = b;
 
       // Distance constraints (flesh and rind), XPBD with lambda accumulation.
@@ -451,11 +472,14 @@
 
       // Floor (with Coulomb friction and impact tracking), side walls.
       for (let i = 0; i < b.n; i++) {
+        // A particle already touching the floor last substep is resting, not landing.
+        const wasTouching = b.contact[i] === 1;
         b.contact[i] = 0;
         b.impact[i] = 0;
         if (y[i] > floorY) {
           const pen = y[i] - floorY;
-          b.impact[i] = (y[i] - py[i]) / h; // downward speed before projection
+          // Downward speed before projection, counted only on the landing substep so a resting particle never re-bounces.
+          if (!wasTouching) b.impact[i] = (y[i] - py[i]) / h;
           y[i] = floorY;
           const dxT = x[i] - px[i];
           const cut = Math.min(Math.abs(dxT), FRICTION * pen);
@@ -468,10 +492,13 @@
 
       // Velocities from the position change, with damping, bounce and speed clamp.
       const { vx, vy } = b;
+      let peak = 0;
+      let touching = false;
       for (let i = 0; i < b.n; i++) {
         let nvx = (x[i] - px[i]) / h;
         let nvy = (y[i] - py[i]) / h;
         if (b.contact[i]) {
+          touching = true;
           if (b.impact[i] > BOUNCE_MIN) {
             nvy = -RESTITUTION * b.impact[i];
           } else if (Math.abs(nvx) < 2 && Math.abs(nvy) < 2) {
@@ -489,6 +516,23 @@
         }
         vx[i] = nvx;
         vy[i] = nvy;
+        if (sp > peak) peak = sp;
+      }
+
+      // Rest rule: a body resting on the floor, not held or cut, sheds its residual
+      // wobble quickly and goes to sleep (frozen exactly) once nearly still.
+      if (touching && peak < REST_SPEED && !held.has(b) && !knifeSeg) {
+        if (peak < REST_STOP) {
+          b.asleep = true;
+          vx.fill(0);
+          vy.fill(0);
+        } else {
+          const k = 1 / (1 + REST_DAMP * h);
+          for (let i = 0; i < b.n; i++) {
+            vx[i] *= k;
+            vy[i] *= k;
+          }
+        }
       }
     }
   }
@@ -603,6 +647,7 @@
   /** @param {PointerEvent} e */
   function onPointerDown(e) {
     const p = pointerPos(e);
+    wakeAll();
     try {
       canvas.setPointerCapture(e.pointerId);
     } catch (_) {
@@ -1015,6 +1060,7 @@
       input.addEventListener('input', () => {
         const key = /** @type {keyof typeof params} */ (input.dataset.param);
         params[key] = parseFloat(input.value);
+        wakeAll();
         const out = document.querySelector(`output[data-for="${key}"]`);
         if (out) out.textContent = Number(params[key]).toFixed(key === 'gravity' ? 0 : 2);
       });

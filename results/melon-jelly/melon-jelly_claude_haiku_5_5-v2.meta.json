@@ -42,6 +42,16 @@
       "closing_html_tag_present": true,
       "fences_stripped": false,
       "notes": "Generated in-harness by the developer seat from the [user].text block only. Temperature 0.2 and max_tokens 65536 could not be set on this dispatch, so the harness default applies. finish_reason is not observable here, so it is null."
+    },
+    {
+      "attempt": 2,
+      "kind": "repair",
+      "max_tokens": null,
+      "finish_reason": null,
+      "closing_html_tag_present": true,
+      "fences_stripped": false,
+      "findings_addressed": [2, 4, 5],
+      "notes": "Repair round 1 of 1 on the tester findings for PR #212, physics and rest only. Finding 2 and 4 (settle 3.8 s, gate 3.5 s): the bounce fired every substep on resting floor contacts, re-launching the bottom particle at about -44 px/s; the bounce now counts only landing substeps. A rest rule adds extra damping to a floor-resting body that is not held or cut, and puts it to sleep (frozen exactly, skipped by the solver) once its peak speed is below 1 px/s; pointer down and slider input wake all bodies. Finding 5 (reset frame at +2 s differs by 37): fixed by the same rest freeze, since the reset run now reaches the identical frozen pose. Visuals, cut logic, and prompt unchanged. Finding 1 (no check suite in worktree) and finding 3 (cut-face pink metric) were not changed. Verdict remains PENDING."
     }
   ],
   "agent_dispatch_models": {
