@@ -58,7 +58,7 @@
       "finish_reason": null,
       "closing_html_tag_present": true,
       "fences_stripped": false,
-      "notes": "Generated in-harness by the developer seat from the [user].text block only. Temperature 0.2 and max_tokens 65536 could not be set on this dispatch, so the harness default applies. finish_reason is not observable here, so it is null. Generation time was not recorded, so generated_utc is null; the first commit 5c51509 is dated 2026-10-13T07:45:40Z. These provenance claims and the endpoint are as the developer seat reported them; no dispatch record was kept, so they are not independently verified."
+      "notes": "Generated in-harness by the developer seat from the [user].text block only. Temperature 0.2 and max_tokens 65536 could not be set on this dispatch, so the harness default applies. finish_reason is not observable here, so it is null. Generation time was not recorded, so generated_utc is null; the first commit 5c51509 is dated 2026-10-13T07:45:40Z. These provenance claims, the endpoint, and the empty retries record (retries, num_retry_api_calls) are as the developer seat reported them; no dispatch record was kept, so they are not independently verified. The retry trigger (finish_reason length or a missing closing tag) did not fire on the closing-tag test: </html> is present at 5c51509."
     },
     {
       "attempt": 2,
@@ -68,7 +68,7 @@
       "closing_html_tag_present": true,
       "fences_stripped": false,
       "findings_addressed": [2, 4, 5],
-      "notes": "Repair round 1 of 1 on the tester findings for PR #212, physics and rest only. Finding 2 and 4 (settle 3.8 s, gate 3.5 s): the bounce fired every substep on resting floor contacts, re-launching the bottom particle at about -44 px/s; the bounce now counts only landing substeps. A rest rule adds extra damping to a floor-resting body that is not held or cut, and puts it to sleep (frozen exactly, skipped by the solver) once its peak speed is below 1 px/s; pointer down and slider input wake all bodies. Finding 5 (reset frame at +2 s differs by 37): fixed by the same rest freeze, since the reset run now reaches the identical frozen pose. Visuals, cut logic, and prompt unchanged. Finding 1 (no check suite in worktree) and finding 3 (cut-face pink metric) were not changed."
+      "notes": "Repair round 1 of 1 on the tester findings for PR #212, physics and rest only. Finding 2 and 4 (settle 3.8 s, gate 3.5 s): the bounce fired every substep on resting floor contacts, re-launching the bottom particle at about -44 px/s; the bounce now counts only landing substeps. A rest rule adds extra damping to a floor-resting body that is not held or cut, and puts it to sleep (frozen exactly, skipped by the solver) once its peak speed is below 1 px/s; pointer down and slider input wake all bodies. Finding 5 (reset frame at +2 s differs by 37): addressed by the same rest freeze. At +2 s it still fails at 85d9a84 (max channel diff 189, the melon is still falling after reset); the lead corrected the criterion to reset + 3 s, where the full run passes (max channel diff 0 at 3012 ms). Visuals, cut logic, and prompt unchanged. Finding 1 (no check suite in worktree) and finding 3 (cut-face pink metric) were not changed."
     }
   ],
   "agent_dispatch_models": {
