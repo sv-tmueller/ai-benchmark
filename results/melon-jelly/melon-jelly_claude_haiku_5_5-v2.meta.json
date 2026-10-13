@@ -1,0 +1,53 @@
+{
+  "generated_utc": "2026-10-13T07:45:30.000000+00:00",
+  "toml": "game-melon-jelly.toml",
+  "prompt_id": "game-melon-jelly",
+  "name_suffix": "v2",
+  "title": "Melon Jelly: XPBD soft-body watermelon slice",
+  "endpoint": "claude-agent-sdk subagent dispatch (in-harness generation; no HTTP endpoint)",
+  "model": "claude-haiku-5-5",
+  "params": {
+    "temperature": null,
+    "max_tokens_requested_initial": null,
+    "max_tokens_effective_last_attempt": null,
+    "reasoning_effort": null,
+    "stream": null,
+    "name_suffix": "v2"
+  },
+  "finish_reason": null,
+  "truncated": false,
+  "usage": null,
+  "retries": [],
+  "num_retry_api_calls": 0,
+  "grading": null,
+  "outputs": {
+    "deliverable": "results/melon-jelly/melon-jelly_claude_haiku_5_5-v2.html",
+    "review_html": null
+  },
+  "playability_verification": {
+    "playability_verdict": "PENDING",
+    "browser_verified": null,
+    "page_errors": null,
+    "console_errors": null,
+    "sustained_animation": null,
+    "click_through": null,
+    "click_result": null
+  },
+  "generation_attempts": [
+    {
+      "attempt": 1,
+      "kind": "initial",
+      "max_tokens": null,
+      "finish_reason": null,
+      "closing_html_tag_present": true,
+      "fences_stripped": false,
+      "notes": "Generated in-harness by the developer seat from the [user].text block only. Temperature 0.2 and max_tokens 65536 could not be set on this dispatch, so the harness default applies. finish_reason is not observable here, so it is null."
+    }
+  ],
+  "agent_dispatch_models": {
+    "architect": "haiku",
+    "developer": "haiku",
+    "tester": "haiku",
+    "reviewer": "haiku"
+  }
+}
