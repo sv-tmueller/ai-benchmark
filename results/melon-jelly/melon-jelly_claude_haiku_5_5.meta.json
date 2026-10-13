@@ -1,0 +1,28 @@
+{
+  "generated_utc": "2026-10-13T07:31:15Z",
+  "toml": "game-melon-jelly.toml",
+  "prompt_id": "game-melon-jelly",
+  "title": "Melon Jelly: XPBD soft-body watermelon slice",
+  "endpoint": "none (generated in-session by Claude Code)",
+  "model": "claude-haiku-5-5",
+  "playability_verification": {
+    "playability_verdict": "BOOTS_ONLY",
+    "browser_verified": true,
+    "verifier": "saved full harness (melon212-full-v1.js, selector-map variant), playwright 1.58.2, chromium 145.0.7632.6",
+    "page_errors": [],
+    "console_errors": [],
+    "external_requests": 0,
+    "boot_paint_ms": 187,
+    "drop_settle_s": 1.37,
+    "cut_gap": "43/43 rows show no gap (median -1 px); cut does not split the melon",
+    "independence": "dragging one side moves the other (non-dragged mean 56.6 right / 47.4 left)",
+    "reset_no_reload": true,
+    "reset_max_channel_diff": 1,
+    "fast_drag": "PASS",
+    "failed_checks": [
+      "cut-gap",
+      "independence"
+    ],
+    "note": "Earlier PLAYABLE_VERIFIED label came from a looser scripted check; superseded by the full harness run. The harness uses a vertical knife path; a horizontal path was not run against v1 in the full harness."
+  }
+}
