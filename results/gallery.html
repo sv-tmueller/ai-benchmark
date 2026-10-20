@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Results Gallery — GLM 5.3 Flash Sweep</title>
+<title>Results Gallery — GLM 5.3 Flash · GLM 5.2 · gpt-oss-120b · Claude · DeepSeek · Orchestrated</title>
 <style>
   :root{
     --bg:#0b0e14; --panel:#121722; --card:#171d2b; --line:#232b3d;
@@ -67,7 +67,7 @@
 <body>
 <header>
   <h1>&gt; RESULTS GALLERY<span style="opacity:.5">_</span></h1>
-  <p>every artifact of the benchmark corpus — GLM&nbsp;5.3&nbsp;Flash sweep (batch&nbsp;#97), GLM&nbsp;5.2 (batch&nbsp;#111) and gpt-oss-120b (batch&nbsp;#112) frontier arms — on one page</p>
+  <p>every artifact of the benchmark corpus on one page — GLM&nbsp;5.3&nbsp;Flash sweep (batch&nbsp;#97), GLM&nbsp;5.2 (batch&nbsp;#111) and gpt-oss-120b (batch&nbsp;#112) frontier arms, Claude one-shots (Sonnet&nbsp;5.5, Opus&nbsp;5.5, Fable&nbsp;5.1, Haiku&nbsp;5.5), the Orchestrated arm of agent-authored builds (batch&nbsp;#188), and exploratory Claude / DeepSeek melon-jelly variants</p>
 </header>
 <main>
 
@@ -78,6 +78,7 @@
   <button data-f="gpt_oss_120b">GPT-OSS-120B</button>
   <button data-f="claude">CLAUDE</button>
   <button data-f="deepseek">DEEPSEEK</button>
+  <button data-f="orchestrai">ORCHESTRAI</button>
 </nav>
 
 
@@ -287,6 +288,133 @@
       <p class="cap">Exploratory arm (&times;2 attempts). No sidecar, unverified.</p>
       <a class="btn" href="melon-jelly/melon-jelly_deepseek_v41_flash.html">v1 &#9656;</a>
       <a class="btn" href="melon-jelly/melon-jelly_deepseek_v41_flash-v2.html">v2 &#9656;</a>
+    </article>
+  </div>
+</section>
+
+<section id="claude-one-shot">
+  <h2><em>&#10022; Claude one-shot</em> — Weichensteller &amp; Melon Jelly</h2>
+  <p class="cap" style="margin-bottom:14px;max-width:920px">
+    Claude results generated in-session, without the orchestrated team below. The three
+    Weichensteller runs are plain one-shots (Sonnet&nbsp;5.5, Opus&nbsp;5.5, Fable&nbsp;5.1). The two
+    Haiku&nbsp;5.5 Melon Jelly runs are <strong>not strictly one-shot</strong>: they came from a
+    Haiku agent team (batch <a href="https://github.com/sv-tmueller/ai-benchmark/issues/210" style="color:var(--accent);border-bottom:1px dotted var(--line)">#210</a>),
+    and v2 used one repair round. Each badge is the verdict recorded in that result&apos;s sidecar or PR;
+    where none exists the card says so.
+  </p>
+  <p class="cap" style="margin-bottom:10px">Weichensteller &mdash; Three.js model-railway junction game</p>
+  <div class="grid">
+    <article class="card" data-models="claude">
+      <h3><a href="weichensteller/weichensteller_claude_sonnet_5_5.html">Weichensteller &middot; Claude Sonnet 5.5</a> <span class="badge warn">UNVERIFIED</span></h3>
+      <p class="cap">Plain one-shot. Not verified in a browser: only a <code>node --check</code> syntax pass was run,
+        so playability is untested (<a href="https://github.com/sv-tmueller/ai-benchmark/pull/220" style="color:var(--accent);border-bottom:1px dotted var(--line)">PR&nbsp;#220</a>).</p>
+      <div class="stats"><span class="chip net">&#9888; needs internet</span><a class="chip" href="https://github.com/sv-tmueller/ai-benchmark/pull/220">PR #220</a></div>
+      <a class="btn" href="weichensteller/weichensteller_claude_sonnet_5_5.html">open &#9656;</a>
+    </article>
+    <article class="card" data-models="claude">
+      <h3><a href="weichensteller/weichensteller_claude_opus_5_5.html">Weichensteller &middot; Claude Opus 5.5</a> <span class="badge ok">SMOKE CHECK PASS</span></h3>
+      <p class="cap">Plain one-shot, no edits after generation. A read-only headless smoke check passed all five
+        items with 0 console and 0 page errors. Outer stations are cut off at 1280x800, and idle play
+        ends in a collision after ~40&nbsp;s. This is a smoke check, not a playability verdict.</p>
+      <div class="stats"><span class="chip net">&#9888; needs internet</span><a class="chip" href="https://github.com/sv-tmueller/ai-benchmark/issues/219">issue #219</a></div>
+      <a class="btn" href="weichensteller/weichensteller_claude_opus_5_5.html">open &#9656;</a>
+    </article>
+    <article class="card" data-models="claude">
+      <h3><a href="weichensteller/weichensteller_claude_fable_5_1.html">Weichensteller &middot; Claude Fable 5.1</a> <span class="badge ok">PLAYABLE_VERIFIED</span></h3>
+      <p class="cap">Plain one-shot, no repair round. Browser-verified in headless Chromium against the unmodified file:
+        start screen, junction toggle, scoring, life loss, game over and clean restart, zero page or
+        console errors (<a href="https://github.com/sv-tmueller/ai-benchmark/pull/222" style="color:var(--accent);border-bottom:1px dotted var(--line)">PR&nbsp;#222</a>).
+        The collision game over was exercised on a scratch copy.</p>
+      <div class="stats"><span class="chip net">&#9888; needs internet</span><a class="chip" href="https://github.com/sv-tmueller/ai-benchmark/pull/222">PR #222</a></div>
+      <a class="btn" href="weichensteller/weichensteller_claude_fable_5_1.html">open &#9656;</a>
+    </article>
+  </div>
+  <p class="cap" style="margin:22px 0 10px">Melon Jelly &mdash; XPBD soft-body watermelon slice (Haiku&nbsp;5.5)</p>
+  <div class="grid">
+    <article class="card" data-models="claude">
+      <h3><a href="melon-jelly/melon-jelly_claude_haiku_5_5.html">Melon Jelly &middot; Claude Haiku 5.5 v1</a> <span class="badge warn">BOOTS_ONLY</span></h3>
+      <p class="cap">Boots with zero errors, but fails the cut-gap and independence checks: the cut does not split the
+        melon, and dragging one side moves the other. The earlier PLAYABLE_VERIFIED label is superseded
+        by the full harness run (<a href="https://github.com/sv-tmueller/ai-benchmark/pull/214" style="color:var(--accent);border-bottom:1px dotted var(--line)">PR&nbsp;#214</a>).</p>
+      <div class="stats"><span class="chip net">offline ok</span><a class="chip" href="https://github.com/sv-tmueller/ai-benchmark/pull/214">PR #214</a></div>
+      <a class="btn" href="melon-jelly/melon-jelly_claude_haiku_5_5.html">open &#9656;</a>
+    </article>
+    <article class="card" data-models="claude">
+      <h3><a href="melon-jelly/melon-jelly_claude_haiku_5_5-v2.html">Melon Jelly &middot; Claude Haiku 5.5 v2</a> <span class="badge warn">BOOTS_ONLY</span></h3>
+      <p class="cap">Same two failures (cut-gap and independence), accepted as BOOTS_ONLY by the owner after the single repair round
+        (<a href="https://github.com/sv-tmueller/ai-benchmark/pull/212" style="color:var(--accent);border-bottom:1px dotted var(--line)">PR&nbsp;#212</a>).
+        Haiku agent team plus one repair round; boot, drop and settle, fast drag and reset pass.</p>
+      <div class="stats"><span class="chip net">offline ok</span><a class="chip" href="https://github.com/sv-tmueller/ai-benchmark/pull/212">PR #212</a></div>
+      <a class="btn" href="melon-jelly/melon-jelly_claude_haiku_5_5-v2.html">open &#9656;</a>
+    </article>
+  </div>
+</section>
+
+<section id="orchestrai">
+  <h2><em>&#9881; Orchestrated arm</em> — agent-authored builds &middot; batch #188</h2>
+  <p class="cap" style="margin-bottom:14px;max-width:920px">
+    Eight artifacts that agents built from the prompt briefs (batch
+    <a href="https://github.com/sv-tmueller/ai-benchmark/issues/188" style="color:var(--accent);border-bottom:1px dotted var(--line)">#188</a>).
+    These are <strong>not model-benchmark outputs</strong>. Each badge is the verdict recorded by that
+    build&apos;s own PR after its own headless-Chromium run, not by the #106 verifier. There are no meta
+    sidecars and no comparison-table column, by design.
+  </p>
+  <div class="grid">
+    <article class="card" data-models="orchestrai">
+      <h3><a href="melon-jelly/melon-jelly_orchestrai.html">Melon Jelly</a> <span class="badge ok">PLAYABLE</span></h3>
+      <p class="cap">XPBD soft-body playground with an independent-pieces knife. Automated suite 11/11 pass in headless
+        Chromium, 0 console errors.</p>
+      <div class="stats"><span class="chip net">offline ok</span><a class="chip" href="https://github.com/sv-tmueller/ai-benchmark/pull/197">PR #197</a></div>
+      <a class="btn" href="melon-jelly/melon-jelly_orchestrai.html">open &#9656;</a>
+    </article>
+    <article class="card" data-models="orchestrai">
+      <h3><a href="lava-lamp/lava-lamp_orchestrai.html">Lava Lamp</a> <span class="badge ok">PLAYABLE</span></h3>
+      <p class="cap">Ray-marched lava-lamp scene, hand-written WebGL2. Probe suite passed (deterministic reset, animation,
+        pause and seek), 0 fatal console errors.</p>
+      <div class="stats"><span class="chip net">offline ok</span><a class="chip" href="https://github.com/sv-tmueller/ai-benchmark/pull/198">PR #198</a></div>
+      <a class="btn" href="lava-lamp/lava-lamp_orchestrai.html">open &#9656;</a>
+    </article>
+    <article class="card" data-models="orchestrai">
+      <h3><a href="sunset-ocean/sunset-ocean_orchestrai.html">Sunset Ocean</a> <span class="badge ok">PLAYABLE</span></h3>
+      <p class="cap">Three.js sunset ocean with a Gerstner-wave water shader. Console clean, pixels animate, camera orbit and
+        resize verified.</p>
+      <div class="stats"><span class="chip net">&#9888; needs internet</span><a class="chip" href="https://github.com/sv-tmueller/ai-benchmark/pull/199">PR #199</a></div>
+      <a class="btn" href="sunset-ocean/sunset-ocean_orchestrai.html">open &#9656;</a>
+    </article>
+    <article class="card" data-models="orchestrai">
+      <h3><a href="meridian-launch/meridian-launch_orchestrai.html">Meridian Launch</a> <span class="badge ok">PLAYABLE</span></h3>
+      <p class="cap">Three.js rocket-launch scene with countdown, ignition and ascent. Console clean. Caveat: liftoff
+        brightness was measured hot, exposure was tuned, and the final visual balance was not checked.</p>
+      <div class="stats"><span class="chip net">&#9888; needs internet</span><a class="chip" href="https://github.com/sv-tmueller/ai-benchmark/pull/200">PR #200</a></div>
+      <a class="btn" href="meridian-launch/meridian-launch_orchestrai.html">open &#9656;</a>
+    </article>
+    <article class="card" data-models="orchestrai">
+      <h3><a href="minecraft/minecraft_orchestrai.html">Minecraft</a> <span class="badge ok">PLAYABLE</span></h3>
+      <p class="cap">Chunked voxel sandbox with block break and place. Console clean; movement, jump, raycast and hotbar
+        verified headlessly. Pointer-lock use on a real desktop was not tested.</p>
+      <div class="stats"><span class="chip net">&#9888; needs internet</span><a class="chip" href="https://github.com/sv-tmueller/ai-benchmark/pull/201">PR #201</a></div>
+      <a class="btn" href="minecraft/minecraft_orchestrai.html">open &#9656;</a>
+    </article>
+    <article class="card" data-models="orchestrai">
+      <h3><a href="mario-kart/mario-kart_orchestrai.html">Mario Kart</a> <span class="badge ok">PLAYABLE</span></h3>
+      <p class="cap">Arcade time-trial kart racer. 0 console, page and request errors; the autopilot completed three laps and
+        the lap counter incremented exactly three times.</p>
+      <div class="stats"><span class="chip net">&#9888; needs internet</span><a class="chip" href="https://github.com/sv-tmueller/ai-benchmark/pull/203">PR #203</a></div>
+      <a class="btn" href="mario-kart/mario-kart_orchestrai.html">open &#9656;</a>
+    </article>
+    <article class="card" data-models="orchestrai">
+      <h3><a href="horror-house/horror-house_orchestrai.html">Horror House</a> <span class="badge ok">PLAYABLE</span></h3>
+      <p class="cap">First-person haunted-house escape with a stalking ghost. Full escape path verified with 0 console
+        errors. Caveat: the raycast key pickup was not exercised headlessly (checked via debug hooks).</p>
+      <div class="stats"><span class="chip net">&#9888; needs internet</span><a class="chip" href="https://github.com/sv-tmueller/ai-benchmark/pull/204">PR #204</a></div>
+      <a class="btn" href="horror-house/horror-house_orchestrai.html">open &#9656;</a>
+    </article>
+    <article class="card" data-models="orchestrai">
+      <h3><a href="last-flight/last-flight_orchestrai.html">Last Flight</a> <span class="badge ok">PLAYABLE</span></h3>
+      <p class="cap">Superhero flight-rescue game. Boot clean; the rescue and crash paths were verified. Declared cuts: no
+        enemy jets, no intro, no audio.</p>
+      <div class="stats"><span class="chip net">&#9888; needs internet</span><a class="chip" href="https://github.com/sv-tmueller/ai-benchmark/pull/206">PR #206</a></div>
+      <a class="btn" href="last-flight/last-flight_orchestrai.html">open &#9656;</a>
     </article>
   </div>
 </section>
