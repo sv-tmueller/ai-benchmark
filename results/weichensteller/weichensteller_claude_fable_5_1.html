@@ -282,3 +282,368 @@ function toggleJunction(id) {
   setJunction(id, j.state ? 0 : 1, false);
   j.pulse = 1;
 }
+
+// ---------- landscape ----------
+function mulberry32(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const rnd = mulberry32(2024);
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(260, 260), new THREE.MeshStandardMaterial({ color: 0x79b04f, roughness: 1 }));
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+for (let i = 0; i < 18; i++) {                       // meadow patches
+  const x = (rnd() - 0.5) * 180, z = (rnd() - 0.5) * 180;
+  const m = new THREE.Mesh(new THREE.CircleGeometry(4 + rnd() * 9, 20), new THREE.MeshStandardMaterial({ color: rnd() < 0.5 ? 0x8dc35a : 0x6aa047, roughness: 1 }));
+  m.rotation.x = -Math.PI / 2; m.position.set(x, 0.012, z); m.receiveShadow = true; scene.add(m);
+}
+const rock = new THREE.MeshStandardMaterial({ color: 0x7a7267, roughness: .95, flatShading: true });
+const snow = new THREE.MeshStandardMaterial({ color: 0xf4f6fa, roughness: .8, flatShading: true });
+function cone(r, h, x, z, mat, y) {
+  const m = new THREE.Mesh(new THREE.ConeGeometry(r, h, 9), mat);
+  m.position.set(x, y === undefined ? h / 2 : y, z);
+  m.castShadow = true; m.receiveShadow = true; scene.add(m); return m;
+}
+cone(17, 22, 0, -44, rock);                            // main mountain, base edge at z = -27
+cone(5.6, 7, 0, -44, snow, 18.52);                     // snow cap
+cone(11, 13, -13, -50, rock);
+cone(10, 11, 13, -48, rock);
+cone(8, 9, -4, -57, rock);
+cone(7, 7, 20, -58, rock);
+const stone = new THREE.MeshStandardMaterial({ color: 0x9a9088, roughness: .9 });
+function box(w, h, d, x, y, z, mat) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  m.position.set(x, y, z); m.castShadow = true; m.receiveShadow = true; scene.add(m); return m;
+}
+box(1.3, 4.6, 6, -2.6, 2.3, -29, stone);               // tunnel portal: pillars + lintel
+box(1.3, 4.6, 6, 2.6, 2.3, -29, stone);
+box(6.5, 1.3, 6, 0, 5.0, -29, stone);
+box(3.9, 4.2, 0.3, 0, 2.1, -31.7, new THREE.MeshBasicMaterial({ color: 0x050505 }));  // dark tunnel interior
+
+// trees
+const NT = 170;
+const trunks = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.18, 0.26, 1.2, 6), new THREE.MeshStandardMaterial({ color: 0x6b4a2b, roughness: 1 }), NT);
+const crowns = new THREE.InstancedMesh(new THREE.ConeGeometry(1.15, 2.9, 7), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: .9, flatShading: true }), NT);
+const crownColors = [0x2e7d32, 0x388e3c, 0x1b5e20, 0x43a047];
+let k = 0;
+while (k < NT) {
+  const x = (rnd() - 0.5) * 210, z = (rnd() - 0.5) * 210;
+  if (Math.abs(x) < 19.5 && z > -36 && z < 40) continue;     // keep the track corridor clear
+  if (Math.hypot(x, z + 44) < 25 || Math.hypot(x + 13, z + 50) < 16 || Math.hypot(x - 13, z + 48) < 15 || Math.hypot(x - 20, z + 58) < 10) continue;
+  const s = 0.7 + rnd() * 0.9;
+  dummy.position.set(x, 0.6 * s, z); dummy.rotation.set(0, 0, 0); dummy.scale.setScalar(s); dummy.updateMatrix();
+  trunks.setMatrixAt(k, dummy.matrix);
+  dummy.position.y = 2.55 * s; dummy.updateMatrix();
+  crowns.setMatrixAt(k, dummy.matrix);
+  crowns.setColorAt(k, new THREE.Color(crownColors[Math.floor(rnd() * crownColors.length)]));
+  k++;
+}
+dummy.scale.setScalar(1);
+trunks.castShadow = true; crowns.castShadow = true; crowns.receiveShadow = true;
+scene.add(trunks); scene.add(crowns);
+
+// houses
+const wallMats = [0xf1e6c8, 0xe8d9b5, 0xf7f0dc, 0xdfc9a2].map(c => new THREE.MeshStandardMaterial({ color: c, roughness: .9 }));
+const roofMats = [0xa33b2a, 0x7a4a3a, 0x8c2f2f, 0x5a5a66].map(c => new THREE.MeshStandardMaterial({ color: c, roughness: .8, flatShading: true }));
+function house(x, z, rot, i) {
+  const g = new THREE.Group();
+  const w = 2.6 + (i % 3) * 0.5, d = 3 + (i % 2) * 0.8, h = 2.1 + (i % 2) * 0.5;
+  const walls = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), wallMats[i % wallMats.length]);
+  walls.position.y = h / 2; walls.castShadow = true; walls.receiveShadow = true; g.add(walls);
+  const roof = new THREE.Mesh(new THREE.ConeGeometry(Math.max(w, d) * 0.78, 1.5, 4), roofMats[i % roofMats.length]);
+  roof.rotation.y = Math.PI / 4; roof.position.y = h + 0.75; roof.castShadow = true; g.add(roof);
+  const door = new THREE.Mesh(new THREE.BoxGeometry(0.6, 1.1, 0.1), new THREE.MeshStandardMaterial({ color: 0x4a3222 }));
+  door.position.set(0, 0.55, d / 2 + 0.03); g.add(door);
+  g.position.set(x, 0, z); g.rotation.y = rot; scene.add(g);
+}
+[[-27, 8], [-32, 17], [-25, 26], [27, 6], [31, 16], [26, 26], [-30, -12], [31, -16], [-22, 36], [22, 36], [0, 38], [-38, 1], [38, -2], [8, 44], [-9, 45]]
+  .forEach((p, i) => house(p[0], p[1], (i * 0.7) % 1.2 - 0.6, i));
+
+// stations
+function label(text, color) {
+  const c = document.createElement('canvas'); c.width = 512; c.height = 128;
+  const g = c.getContext('2d');
+  g.fillStyle = '#' + color.toString(16).padStart(6, '0'); g.fillRect(0, 0, 512, 128);
+  g.lineWidth = 8; g.strokeStyle = 'rgba(0,0,0,.5)'; g.font = 'bold 66px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.strokeText(text, 256, 68); g.fillStyle = '#fff'; g.fillText(text, 256, 68);
+  const tx = new THREE.CanvasTexture(c); tx.colorSpace = THREE.SRGBColorSpace;
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tx }));
+  s.scale.set(6.4, 1.6, 1);
+  return s;
+}
+const stationFx = {};
+for (const [id, st] of Object.entries(STATIONS)) {
+  const cm = new THREE.MeshStandardMaterial({ color: st.color, roughness: .55 });
+  const px = st.x + st.side * 1.75;
+  const plat = box(1.5, 0.5, 7, px, 0.25, 27, new THREE.MeshStandardMaterial({ color: 0xbdb7ad, roughness: .95 }));
+  plat.castShadow = false;
+  box(1.5, 0.12, 7, px, 3.1, 27, cm);                 // canopy
+  for (const z of [24.2, 29.8]) box(0.12, 2.6, 0.12, px, 1.8, z, new THREE.MeshStandardMaterial({ color: 0x555 }));
+  const bx = st.x + st.side * 4.3;
+  box(2.6, 2.4, 3, bx, 1.2, 27, wallMats[1]);
+  const roof = new THREE.Mesh(new THREE.ConeGeometry(2.2, 1.4, 4), cm);
+  roof.rotation.y = Math.PI / 4; roof.position.set(bx, 3.1, 27); roof.castShadow = true; scene.add(roof);
+  box(0.12, 6, 0.12, bx, 3, 29.2, new THREE.MeshStandardMaterial({ color: 0x555 }));
+  const ball = new THREE.Mesh(new THREE.SphereGeometry(0.6, 16, 12), new THREE.MeshStandardMaterial({ color: st.color, emissive: st.color, emissiveIntensity: 0.25 }));
+  ball.position.set(bx, 6.3, 29.2); scene.add(ball);
+  const lab = label(st.name, st.color); lab.position.set(bx, 7.9, 29.2); scene.add(lab);
+  stationFx[id] = { ball, t: 1 };
+}
+
+// ---------- trains ----------
+const darkM = new THREE.MeshStandardMaterial({ color: 0x2b2b2b, roughness: .6, metalness: .3 });
+const wheelG = new THREE.CylinderGeometry(0.22, 0.22, 0.12, 10);
+wheelG.rotateZ(Math.PI / 2);
+function addWheels(g, len) {
+  for (const z of [-len * 0.3, len * 0.3]) for (const x of [-0.56, 0.56]) {
+    const w = new THREE.Mesh(wheelG, darkM); w.position.set(x, 0.22, z); g.add(w);
+  }
+}
+function makeLoco(mat) {                      // forward = +z
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.5, 2.3), darkM); body.position.y = 0.55; g.add(body);
+  const boiler = new THREE.Mesh(new THREE.CylinderGeometry(0.46, 0.46, 1.45, 14), mat); boiler.rotation.x = Math.PI / 2; boiler.position.set(0, 1.15, 0.4); g.add(boiler);
+  const cab = new THREE.Mesh(new THREE.BoxGeometry(1.25, 1.2, 0.9), mat); cab.position.set(0, 1.35, -0.6); g.add(cab);
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.12, 1.05), darkM); roof.position.set(0, 2.0, -0.6); g.add(roof);
+  const chim = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.2, 0.6, 10), darkM); chim.position.set(0, 1.85, 0.85); g.add(chim);
+  const lampf = new THREE.Mesh(new THREE.SphereGeometry(0.12, 8, 6), new THREE.MeshBasicMaterial({ color: 0xfff3b0 })); lampf.position.set(0, 1.15, 1.16); g.add(lampf);
+  addWheels(g, 2.3);
+  g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+  return g;
+}
+function makeWagon(mat) {
+  const g = new THREE.Group();
+  const base = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.3, 1.9), darkM); base.position.y = 0.45; g.add(base);
+  const bx = new THREE.Mesh(new THREE.BoxGeometry(1.25, 0.9, 1.8), mat); bx.position.y = 1.05; g.add(bx);
+  const top = new THREE.Mesh(new THREE.BoxGeometry(1.35, 0.1, 1.9), darkM); top.position.y = 1.55; g.add(top);
+  addWheels(g, 1.9);
+  g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+  return g;
+}
+const OFFS = [0, 2.5, 4.6];                   // car centres behind the locomotive centre
+const tmpT = new THREE.Vector3();
+class Train {
+  constructor(stId, sf) {
+    this.st = stId; this.sf = sf;
+    this.mat = new THREE.MeshStandardMaterial({ color: STATIONS[stId].color, roughness: .5, metalness: .1 });
+    this.cars = [makeLoco(this.mat), makeWagon(this.mat), makeWagon(this.mat)];
+    this.cars.forEach(c => scene.add(c));
+    this.pos = OFFS.map(() => new THREE.Vector3());
+    this.route = [{ seg: SEG.S0, start: 0 }];
+    this.dist = 0; this.done = false; this.resolved = false;
+    this.place();
+  }
+  posAt(d, out, tan) {
+    const r = this.route;
+    if (d < r[0].start) {                      // still behind the first segment: extrapolate
+      const s = r[0].seg;
+      tan.copy(s.curve.getTangentAt(0));
+      out.copy(s.curve.getPointAt(0)).addScaledVector(tan, d - r[0].start);
+      return;
+    }
+    for (let i = 0; i < r.length; i++) {
+      const e = r[i];
+      if (d < e.start + e.seg.len || i === r.length - 1) {
+        const u = clamp((d - e.start) / e.seg.len, 0, 1);
+        out.copy(e.seg.curve.getPointAt(u));
+        tan.copy(e.seg.curve.getTangentAt(u));
+        return;
+      }
+    }
+  }
+  place() {
+    for (let i = 0; i < OFFS.length; i++) {
+      const p = this.pos[i];
+      this.posAt(this.dist - OFFS[i], p, tmpT);
+      const c = this.cars[i];
+      c.position.copy(p);
+      c.lookAt(p.x + tmpT.x, p.y + tmpT.y, p.z + tmpT.z);
+    }
+  }
+  step(dt, speed) {
+    if (this.done) return;
+    this.dist += speed * this.sf * dt;
+    for (;;) {
+      const last = this.route[this.route.length - 1];
+      const end = last.start + last.seg.len;
+      if (this.dist < end) break;
+      const nx = resolveNext(last.seg.next);
+      if (nx === 'END') { this.dispose(); return; }
+      const s = SEG[nx];
+      this.route.push({ seg: s, start: end });
+      if (s.station) onArrive(this, s.station);
+    }
+    while (this.route.length > 1 && this.route[1].start <= this.dist - OFFS[OFFS.length - 1] - 0.5) this.route.shift();
+    this.place();
+  }
+  dispose() {
+    this.done = true;
+    this.cars.forEach(c => {
+      scene.remove(c);
+      c.traverse(o => { if (o.isMesh && o.geometry !== wheelG) o.geometry.dispose(); });
+    });
+    this.mat.dispose();
+  }
+}
+function resolveNext(n) {
+  if (n[0] === 'J') { const j = junctions[n]; return j.branches[j.state]; }
+  return n;
+}
+
+// ---------- game state ----------
+const trains = [];
+const effects = [];
+let state = 'start', score = 0, lives = 3, elapsed = 0, spawnTimer = 0, runId = 0, msgTimer = 0, hudTimer = 0;
+const baseSpeed = () => 4.2 + Math.min(6.5, elapsed / 22);
+const spawnInterval = () => Math.max(2.2, 7.5 - elapsed / 35);
+function updateHUD() {
+  $('score').textContent = score;
+  $('lives').textContent = '♥'.repeat(lives) + '♡'.repeat(3 - lives);
+  $('level').textContent = 'Speed ×' + (baseSpeed() / 4.2).toFixed(1);
+}
+function showMsg(text, color) {
+  const m = $('msg'); m.textContent = text; m.style.color = color; m.style.opacity = 1;
+  clearTimeout(msgTimer); msgTimer = setTimeout(() => { m.style.opacity = 0; }, 1500);
+}
+function spawnTrain() {
+  const ids = Object.keys(STATIONS);
+  trains.push(new Train(ids[Math.floor(Math.random() * ids.length)], 0.8 + Math.random() * 0.45));
+}
+const canSpawn = () => !trains.some(t => !t.done && t.dist < 14);
+function onArrive(tr, st) {
+  if (tr.resolved) return;
+  tr.resolved = true;
+  if (st === tr.st) {
+    score++; stationFx[st].t = 0;
+    showMsg('+1  ' + STATIONS[st].name, '#8cff8c');
+  } else {
+    lives--;
+    showMsg('Wrong station! −1 life', '#ff7a7a');
+    if (lives <= 0) { updateHUD(); gameOver('All three lives are gone.'); return; }
+  }
+  updateHUD();
+}
+function boom(p) {
+  const s = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12), new THREE.MeshBasicMaterial({ color: 0xff7a1a, transparent: true, opacity: .95 }));
+  s.position.set(p.x, 1, p.z); scene.add(s); effects.push({ m: s, t: 0, life: 0.9, grow: 7 });
+  for (let i = 0; i < 6; i++) {
+    const sm = new THREE.Mesh(new THREE.SphereGeometry(0.6, 10, 8), new THREE.MeshBasicMaterial({ color: 0x444444, transparent: true, opacity: .8 }));
+    sm.position.set(p.x + (Math.random() - .5) * 2, 0.8 + Math.random() * 1.5, p.z + (Math.random() - .5) * 2);
+    scene.add(sm); effects.push({ m: sm, t: -Math.random() * 0.3, life: 1.6, grow: 2.5, rise: 1.5 });
+  }
+}
+function checkCollisions() {
+  const R2 = 1.8 * 1.8;
+  for (let i = 0; i < trains.length; i++) {
+    const a = trains[i]; if (a.done) continue;
+    for (let j = i + 1; j < trains.length; j++) {
+      const b = trains[j]; if (b.done) continue;
+      for (const pa of a.pos) for (const pb of b.pos) {
+        if (pa.distanceToSquared(pb) < R2) {
+          boom(pa.clone().add(pb).multiplyScalar(0.5));
+          gameOver('Two trains collided!');
+          return;
+        }
+      }
+    }
+  }
+}
+function gameOver(reason) {
+  if (state !== 'run') return;
+  state = 'over';
+  const id = ++runId;
+  $('overReason').textContent = reason;
+  $('finalScore').textContent = score;
+  setTimeout(() => { if (runId === id && state === 'over') $('over').classList.remove('hidden'); }, 900);
+}
+function resetGame() {
+  runId++;
+  trains.forEach(t => t.dispose()); trains.length = 0;
+  effects.forEach(e => { scene.remove(e.m); e.m.geometry.dispose(); e.m.material.dispose(); }); effects.length = 0;
+  for (const id in junctions) { setJunction(id, 0, true); junctions[id].pulse = 0; }
+  score = 0; lives = 3; elapsed = 0; spawnTimer = 1.2;
+  updateHUD();
+  $('start').classList.add('hidden'); $('over').classList.add('hidden');
+  state = 'run';
+}
+$('btnStart').addEventListener('click', resetGame);
+$('btnRestart').addEventListener('click', resetGame);
+
+// ---------- input: orbit camera + junction clicks ----------
+let pdown = null, moved = false;
+const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+function pick(x, y) {
+  ndc.set(x / window.innerWidth * 2 - 1, -(y / window.innerHeight) * 2 + 1);
+  ray.setFromCamera(ndc, camera);
+  const h = ray.intersectObjects(hitboxes, false);
+  return h.length ? h[0].object.userData.j : null;
+}
+canvas.addEventListener('pointerdown', e => {
+  pdown = { x: e.clientX, y: e.clientY, th: orbit.theta, ph: orbit.phi }; moved = false;
+  canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener('pointermove', e => {
+  if (!pdown) { canvas.style.cursor = (state === 'run' && pick(e.clientX, e.clientY)) ? 'pointer' : 'grab'; return; }
+  const dx = e.clientX - pdown.x, dy = e.clientY - pdown.y;
+  if (Math.hypot(dx, dy) > 6) moved = true;
+  if (moved) {
+    orbit.theta = pdown.th - dx * 0.006;
+    orbit.phi = clamp(pdown.ph - dy * 0.005, 0.25, 1.32);
+    updateCamera();
+  }
+});
+canvas.addEventListener('pointerup', e => {
+  if (pdown && !moved && state === 'run') { const id = pick(e.clientX, e.clientY); if (id) toggleJunction(id); }
+  pdown = null;
+});
+canvas.addEventListener('pointercancel', () => { pdown = null; });
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  orbit.radius = clamp(orbit.radius * (1 + e.deltaY * 0.0012), 28, 130);
+  updateCamera();
+}, { passive: false });
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+// ---------- main loop ----------
+const clock = new THREE.Clock();
+function frame() {
+  const dt = Math.min(0.05, clock.getDelta());
+  if (state === 'run') {
+    elapsed += dt;
+    spawnTimer -= dt;
+    if (spawnTimer <= 0 && canSpawn()) { spawnTrain(); spawnTimer = spawnInterval(); }
+    const sp = baseSpeed();
+    for (const t of trains) t.step(dt, sp);
+    for (let i = trains.length - 1; i >= 0; i--) if (trains[i].done) trains.splice(i, 1);
+    if (state === 'run') checkCollisions();
+    hudTimer -= dt;
+    if (hudTimer <= 0) { hudTimer = 0.5; $('level').textContent = 'Speed ×' + (sp / 4.2).toFixed(1); }
+  }
+  const k = 1 - Math.pow(0.002, dt);
+  for (const id in junctions) {
+    const j = junctions[id];
+    j.arrow.quaternion.slerp(j.tq, k);
+    j.arrow.position.y = 2.9 + Math.sin(clock.elapsedTime * 3) * 0.12;
+    if (j.pulse > 0) { j.pulse = Math.max(0, j.pulse - dt * 2.5); }
+    j.ring.scale.setScalar(1 + j.pulse * 0.6);
+  }
+  for (const id in stationFx) {
+    const f = stationFx[id];
+    if (f.t < 1) { f.t = Math.min(1, f.t + dt * 1.2); const s = 1 + Math.sin(f.t * Math.PI) * 0.8; f.ball.scale.setScalar(s); f.ball.material.emissiveIntensity = 0.25 + Math.sin(f.t * Math.PI) * 1.2; }
+  }
+  for (let i = effects.length - 1; i >= 0; i--) {
+    const e = effects[i];
+    e.t += dt;
+    if (e.t < 0) continue;
+    const f = e.t / e.life;
+    if (f >= 1) { scene.remove(e.m); e.m.geometry.dispose(); e.m.material.dispose(); effects.splice(i, 1); continue; }
+    e.m.scale.setScalar(1 + f * e.grow);
+    e.m.material.opacity = (1 - f) * 0.95;
+    if (e.rise) e.m.position.y += e.rise * dt;
+  }
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+updateHUD();
+frame();
+</script>
+</body>
+</html>

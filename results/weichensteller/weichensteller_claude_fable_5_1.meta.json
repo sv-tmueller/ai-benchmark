@@ -1,0 +1,42 @@
+{
+  "generated_utc": "2026-10-20T19:05:00Z",
+  "toml": "game-weichensteller.toml",
+  "prompt_id": "game-weichensteller",
+  "title": "Weichensteller: Three.js model-railway junction game",
+  "endpoint": "none (generated in-session by Claude Code, plain one-shot; no orchestrator, no repair round)",
+  "model": "claude-fable-5-1",
+  "params": {
+    "temperature": null,
+    "max_tokens_requested_initial": null,
+    "reasoning_effort": "high",
+    "note": "Temperature 0.2 and max_tokens 65536 from the TOML could not be set on an in-session generation; the harness defaults apply. finish_reason and usage are not observable here."
+  },
+  "finish_reason": null,
+  "truncated": false,
+  "usage": null,
+  "retries": [],
+  "num_retry_api_calls": 0,
+  "grading": null,
+  "outputs": {
+    "deliverable": "results/weichensteller/weichensteller_claude_fable_5_1.html"
+  },
+  "playability_verification": {
+    "playability_verdict": "PLAYABLE_VERIFIED",
+    "browser_verified": true,
+    "verifier": "ad-hoc playwright 1.58.2 script, chromium 1248 (SwiftShader WebGL), run at commit 65b21d4 against the unmodified artifact; the collision path was exercised on a scratch copy with spawn interval and speed factors overridden so that two trains rear-end each other",
+    "page_errors": [],
+    "console_errors": [],
+    "external_requests": 1,
+    "external_request_urls": ["https://unpkg.com/three@0.160.0/build/three.module.js"],
+    "boot_paint_ms": 4538,
+    "start_screen": "shown on load; Start button hides it and the game runs",
+    "junction_toggle": "195 screen positions report a pointer cursor over junction hitboxes; a click on one flips the lamp from green to orange and moves the yellow stripe and arrow to the other branch (screenshot before/after differ)",
+    "scoring": "unattended 30 s run: wrong-station arrival removed one life and showed 'Wrong station! -1 life'; correct arrivals raised the score to 2 and showed '+1 Greenfield'",
+    "game_over_lives": "unattended run reached 'All three lives are gone.' after 28 s; overlay appeared; Play again hid it and reset score 0 / three lives without reload",
+    "game_over_collision": "scratch copy: 'Two trains collided!' after 4.5 s; Play again reset cleanly; no errors",
+    "camera": "drag rotates, wheel zooms (screenshot 06-camera)",
+    "difficulty": "Speed x1.0 at start, x1.3 after 28 s",
+    "failed_checks": [],
+    "note": "Requirements 1-10 of the prompt are all met: 5 junctions (J1, J5, J2, J3, J4), 4 stations, loco + 2 wagons on smooth Bezier curves, 3 lives, collision = game over, speed and spawn rate ramp with time, meadow/trees/houses/mountain with tunnel, HUD top-left, start and game-over screens with restart, orbit + zoom camera, zero console errors. Not tested: touch input, frame rate on a real GPU (SwiftShader only), long sessions beyond 60 s."
+  }
+}
