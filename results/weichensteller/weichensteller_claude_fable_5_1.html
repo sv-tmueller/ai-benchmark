@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weichensteller</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#87b7e0;font-family:system-ui,"Segoe UI",Roboto,sans-serif;user-select:none;-webkit-user-select:none}
+  #c{display:block;width:100%;height:100%;touch-action:none}
+  #hud{position:fixed;left:14px;top:12px;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.65);pointer-events:none}
+  #hud .big{font-size:26px;font-weight:700}
+  #hud .lives{font-size:22px;color:#ff5a5a;letter-spacing:3px}
+  #hud .sub{font-size:13px;opacity:.9;margin-top:4px}
+  #msg{position:fixed;left:50%;top:13%;transform:translateX(-50%);padding:8px 18px;border-radius:8px;background:rgba(0,0,0,.55);color:#fff;font-size:19px;font-weight:600;opacity:0;transition:opacity .25s;pointer-events:none;white-space:nowrap}
+  #hint{position:fixed;right:14px;bottom:12px;color:#fff;font-size:12px;opacity:.85;text-shadow:0 1px 3px rgba(0,0,0,.65);pointer-events:none}
+  .ov{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(10,20,40,.62);backdrop-filter:blur(3px)}
+  .ov.hidden{display:none}
+  .card{background:#fffdf7;color:#223;border-radius:14px;padding:26px 32px;max-width:540px;margin:16px;box-shadow:0 20px 60px rgba(0,0,0,.4);text-align:center}
+  .card h1{margin:0 0 6px;font-size:34px;letter-spacing:.5px}
+  .card h2{margin:0 0 8px;font-size:28px}
+  .card p{margin:8px 0;line-height:1.45;font-size:15px}
+  .card ul{text-align:left;margin:10px 0 12px 0;padding-left:20px;font-size:14px;line-height:1.5}
+  .btn{display:inline-block;margin-top:10px;padding:12px 32px;border:0;border-radius:10px;background:#d8361f;color:#fff;font-size:18px;font-weight:700;cursor:pointer;box-shadow:0 4px 0 #8f2110}
+  .btn:active{transform:translateY(3px);box-shadow:0 1px 0 #8f2110}
+  .sw{display:inline-block;width:12px;height:12px;border-radius:3px;margin:0 4px 0 8px;vertical-align:middle;border:1px solid rgba(0,0,0,.2)}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud">
+  <div class="big">Score: <span id="score">0</span></div>
+  <div class="lives" id="lives">&#9829;&#9829;&#9829;</div>
+  <div class="sub" id="level">Speed &times;1.0</div>
+</div>
+<div id="msg"></div>
+<div id="hint">Drag: rotate camera &middot; Wheel: zoom &middot; Click a junction to switch it</div>
+<div id="start" class="ov">
+  <div class="card">
+    <h1>&#128642; Weichensteller</h1>
+    <p>Colored trains leave the tunnel one after another. Guide every train to the station of its own color by switching the junctions.</p>
+    <ul>
+      <li><b>Click a junction</b> to toggle it. The yellow stripe and the arrow show where it points.</li>
+      <li>Right station: <b>+1 point</b>. Wrong station: <b>&minus;1 life</b>. You have three lives.</li>
+      <li>Trains run at slightly different speeds. Use the two passing loops to let a fast train overtake a slow one. <b>If two trains collide, the game is over.</b></li>
+      <li>Over time the trains get faster and appear more often.</li>
+      <li>Drag the mouse to rotate the camera, use the wheel to zoom.</li>
+    </ul>
+    <p><span class="sw" style="background:#e53935"></span>Redville <span class="sw" style="background:#1e88e5"></span>Bluebrook <span class="sw" style="background:#43a047"></span>Greenfield <span class="sw" style="background:#fdd835"></span>Goldhill</p>
+    <button class="btn" id="btnStart">Start</button>
+  </div>
+</div>
+<div id="over" class="ov hidden">
+  <div class="card">
+    <h2>Game over</h2>
+    <p id="overReason"></p>
+    <p>Final score: <b id="finalScore">0</b></p>
+    <button class="btn" id="btnRestart">Play again</button>
+  </div>
+</div>
+<script type="module">
+import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+
+const $ = id => document.getElementById(id);
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+
+// ---------- renderer, scene, camera ----------
+const canvas = $('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x87b7e0);
+scene.fog = new THREE.Fog(0x87b7e0, 120, 240);
+
+const camera = new THREE.PerspectiveCamera(48, 1, 0.1, 600);
+const orbit = { target: new THREE.Vector3(0, 0, -1), theta: 0, phi: 0.9, radius: 64 };
+function updateCamera() {
+  const o = orbit;
+  camera.position.set(
+    o.target.x + o.radius * Math.sin(o.phi) * Math.sin(o.theta),
+    o.target.y + o.radius * Math.cos(o.phi),
+    o.target.z + o.radius * Math.sin(o.phi) * Math.cos(o.theta));
+  camera.lookAt(o.target);
+}
+function resize() {
+  renderer.setSize(window.innerWidth, window.innerHeight, false);
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', resize);
+resize();
+updateCamera();
+
+scene.add(new THREE.HemisphereLight(0xd6ecff, 0x4f7a33, 0.75));
+const sun = new THREE.DirectionalLight(0xfff1d6, 1.7);
+sun.position.set(34, 56, 14);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+const sc = sun.shadow.camera;
+sc.left = -48; sc.right = 48; sc.top = 48; sc.bottom = -48; sc.near = 5; sc.far = 160;
+sun.shadow.bias = -0.0006;
+scene.add(sun);
+scene.add(sun.target);
+
+const dummy = new THREE.Object3D();
+
+// ---------- track graph ----------
+// All trains run towards +z (south). Junctions have one entry and two exits.
+const V = (x, z) => new THREE.Vector3(x, 0, z);
+const line = (a, b) => new THREE.LineCurve3(V(a[0], a[1]), V(b[0], b[1]));
+function scurve(a, b) {            // S-curve: tangent is +z at both ends
+  const p0 = V(a[0], a[1]), p3 = V(b[0], b[1]);
+  const h = (p3.z - p0.z) * 0.55;
+  return new THREE.CubicBezierCurve3(p0, V(p0.x, p0.z + h), V(p3.x, p3.z - h), p3);
+}
+const SEG = {};
+function seg(id, curve, next, station) {
+  SEG[id] = { id, curve, len: curve.getLength(), next, station: station || null };
+}
+seg('S0',   line([0, -40], [0, -24]), 'J1');            // inside the mountain -> portal -> J1
+seg('S1a',  line([0, -24], [0, -11]), 'SM1');           // main line
+seg('S1b1', scurve([0, -24], [5, -19.5]), 'S1b2');      // passing loop (right)
+seg('S1b2', line([5, -19.5], [5, -15.5]), 'S1b3');
+seg('S1b3', scurve([5, -15.5], [0, -11]), 'SM1');
+seg('SM1',  line([0, -11], [0, -9]), 'J5');
+seg('S5a',  line([0, -9], [0, 4]), 'SM2');              // main line
+seg('S5b1', scurve([0, -9], [-5, -4.5]), 'S5b2');       // passing loop (left)
+seg('S5b2', line([-5, -4.5], [-5, -0.5]), 'S5b3');
+seg('S5b3', scurve([-5, -0.5], [0, 4]), 'SM2');
+seg('SM2',  line([0, 4], [0, 6]), 'J2');
+seg('S2L',  scurve([0, 6], [-7, 13]), 'J3');
+seg('S2R',  scurve([0, 6], [7, 13]), 'J4');
+seg('S3b',  line([-7, 13], [-7, 24]), 'PB');
+seg('S3a',  scurve([-7, 13], [-13, 19]), 'S3a2');
+seg('S3a2', line([-13, 19], [-13, 24]), 'PA');
+seg('S4a',  line([7, 13], [7, 24]), 'PC');
+seg('S4b',  scurve([7, 13], [13, 19]), 'S4b2');
+seg('S4b2', line([13, 19], [13, 24]), 'PD');
+seg('PA',   line([-13, 24], [-13, 30]), 'END', 'A');    // station platforms
+seg('PB',   line([-7, 24], [-7, 30]), 'END', 'B');
+seg('PC',   line([7, 24], [7, 30]), 'END', 'C');
+seg('PD',   line([13, 24], [13, 30]), 'END', 'D');
+
+const JUNC = {
+  J1: { pos: [0, -24], branches: ['S1a', 'S1b1'] },
+  J5: { pos: [0, -9],  branches: ['S5a', 'S5b1'] },
+  J2: { pos: [0, 6],   branches: ['S2L', 'S2R'] },
+  J3: { pos: [-7, 13], branches: ['S3b', 'S3a'] },
+  J4: { pos: [7, 13],  branches: ['S4a', 'S4b'] },
+};
+const STATIONS = {
+  A: { name: 'Redville',   color: 0xe53935, x: -13, side: -1 },
+  B: { name: 'Bluebrook',  color: 0x1e88e5, x: -7,  side: 1 },
+  C: { name: 'Greenfield', color: 0x43a047, x: 7,   side: -1 },
+  D: { name: 'Goldhill',   color: 0xfdd835, x: 13,  side: 1 },
+};
+
+// ---------- track rendering ----------
+const M = {
+  ballast: new THREE.MeshStandardMaterial({ color: 0x8c8578, roughness: 1 }),
+  sleeper: new THREE.MeshStandardMaterial({ color: 0x5e4631, roughness: .9 }),
+  rail:    new THREE.MeshStandardMaterial({ color: 0x9a9ca1, roughness: .35, metalness: .7 }),
+};
+// flat strip following a curve between u0..u1, half width hw, at height y
+function ribbonGeo(curve, hw, u0, u1, y) {
+  const n = Math.max(4, Math.ceil(curve.getLength() * (u1 - u0) * 3));
+  const pos = [], idx = [];
+  for (let i = 0; i <= n; i++) {
+    const u = u0 + (u1 - u0) * i / n;
+    const p = curve.getPointAt(u), t = curve.getTangentAt(u);
+    const nx = -t.z, nz = t.x;
+    pos.push(p.x + nx * hw, y, p.z + nz * hw, p.x - nx * hw, y, p.z - nz * hw);
+    if (i < n) { const a = i * 2; idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+function railGeo(curve, offset, y) {
+  const n = Math.max(6, Math.ceil(curve.getLength() * 2));
+  const pts = [];
+  for (let i = 0; i <= n; i++) {
+    const u = i / n;
+    const p = curve.getPointAt(u), t = curve.getTangentAt(u);
+    pts.push(new THREE.Vector3(p.x - t.z * offset, y, p.z + t.x * offset));
+  }
+  const c = new THREE.CatmullRomCurve3(pts);
+  c.curveType = 'centripetal';
+  return new THREE.TubeGeometry(c, n * 2, 0.07, 6, false);
+}
+const trackGroup = new THREE.Group();
+scene.add(trackGroup);
+const sleeperXf = [];
+let segIndex = 0;
+for (const s of Object.values(SEG)) {
+  const yb = 0.02 + segIndex * 0.002, yr = 0.19 + segIndex * 0.001;
+  const bal = new THREE.Mesh(ribbonGeo(s.curve, 1.15, 0, 1, yb), M.ballast);
+  bal.receiveShadow = true;
+  trackGroup.add(bal);
+  for (const off of [-0.45, 0.45]) {
+    const r = new THREE.Mesh(railGeo(s.curve, off, yr), M.rail);
+    r.castShadow = true;
+    trackGroup.add(r);
+  }
+  const n = Math.floor((s.len - 0.3) / 0.65);
+  for (let i = 0; i <= n; i++) {
+    const u = clamp((i * 0.65 + 0.3) / s.len, 0, 1);
+    const p = s.curve.getPointAt(u), t = s.curve.getTangentAt(u);
+    dummy.position.set(p.x, 0.1, p.z);
+    dummy.lookAt(p.x + t.x, 0.1, p.z + t.z);
+    dummy.updateMatrix();
+    sleeperXf.push(dummy.matrix.clone());
+  }
+  segIndex++;
+}
+const sleepers = new THREE.InstancedMesh(new THREE.BoxGeometry(1.5, 0.12, 0.32), M.sleeper, sleeperXf.length);
+sleeperXf.forEach((m, i) => sleepers.setMatrixAt(i, m));
+sleepers.receiveShadow = true;
+trackGroup.add(sleepers);
+// buffer stops at the platform ends
+for (const st of Object.values(STATIONS)) {
+  const b = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.8, 0.4), new THREE.MeshStandardMaterial({ color: 0xb02020 }));
+  b.position.set(st.x, 0.4, 30.4);
+  b.castShadow = true;
+  scene.add(b);
+}
+
+// ---------- junctions ----------
+const junctions = {};
+const hitboxes = [];
+const arrowGeo = new THREE.ConeGeometry(0.5, 1.5, 4);
+arrowGeo.rotateX(Math.PI / 2);     // cone tip points +z = "forward"
+const lampGeo = new THREE.SphereGeometry(0.3, 14, 10);
+const hitMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false });
+for (const [id, j] of Object.entries(JUNC)) {
+  const g = new THREE.Group();
+  g.position.set(j.pos[0], 0, j.pos[1]);
+  scene.add(g);
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(1.0, 1.0, 0.1, 24), new THREE.MeshStandardMaterial({ color: 0x3b3b3b, roughness: .9 }));
+  base.position.y = 0.05; g.add(base);
+  const ring = new THREE.Mesh(new THREE.RingGeometry(1.1, 1.4, 32), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: .75, side: THREE.DoubleSide }));
+  ring.rotation.x = -Math.PI / 2; ring.position.y = 0.13; g.add(ring);
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.09, 2.1, 8), new THREE.MeshStandardMaterial({ color: 0x444 }));
+  pole.position.set(1.7, 1.05, 0); pole.castShadow = true; g.add(pole);
+  const lamp = new THREE.Mesh(lampGeo, new THREE.MeshStandardMaterial({ color: 0x2ee86a, emissive: 0x0a5020, roughness: .3 }));
+  lamp.position.set(1.7, 2.25, 0); g.add(lamp);
+  const arrow = new THREE.Mesh(arrowGeo, new THREE.MeshStandardMaterial({ color: 0xffd600, emissive: 0x5a4200, roughness: .4 }));
+  arrow.position.y = 2.9; arrow.castShadow = true; g.add(arrow);
+  const hit = new THREE.Mesh(new THREE.CylinderGeometry(2.4, 2.4, 3.5, 12), hitMat);
+  hit.position.y = 1.75; hit.userData.j = id; g.add(hit); hitboxes.push(hit);
+  const hl = j.branches.map(b => {
+    const s = SEG[b];
+    const m = new THREE.Mesh(ribbonGeo(s.curve, 0.55, 0, Math.min(1, 4.5 / s.len), 0.17),
+      new THREE.MeshBasicMaterial({ color: 0xffe033, transparent: true, opacity: .6, depthWrite: false, side: THREE.DoubleSide }));
+    scene.add(m);
+    return m;
+  });
+  junctions[id] = { id, branches: j.branches, state: 0, arrow, lamp, hl, ring, tq: new THREE.Quaternion(), pulse: 0 };
+  setJunction(id, 0, true);
+}
+function setJunction(id, state, instant) {
+  const j = junctions[id];
+  j.state = state;
+  j.hl.forEach((m, i) => { m.visible = i === state; });
+  const s = SEG[j.branches[state]];
+  const t = s.curve.getTangentAt(Math.min(1, 2.5 / s.len));
+  dummy.position.set(0, 0, 0);
+  dummy.lookAt(t.x, 0, t.z);
+  j.tq.copy(dummy.quaternion);
+  if (instant) j.arrow.quaternion.copy(j.tq);
+  j.lamp.material.color.set(state === 0 ? 0x2ee86a : 0xffa726);
+  j.lamp.material.emissive.set(state === 0 ? 0x0a5020 : 0x6a3a00);
+}
+function toggleJunction(id) {
+  const j = junctions[id];
+  setJunction(id, j.state ? 0 : 1, false);
+  j.pulse = 1;
+}
