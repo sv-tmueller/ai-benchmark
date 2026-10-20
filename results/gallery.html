@@ -295,11 +295,16 @@
 <section id="claude-one-shot">
   <h2><em>&#10022; Claude one-shot</em> — Weichensteller &amp; Melon Jelly</h2>
   <p class="cap" style="margin-bottom:14px;max-width:920px">
-    Claude results generated in-session, without the orchestrated team below. The three
-    Weichensteller runs are plain one-shots (Sonnet&nbsp;5.5, Opus&nbsp;5.5, Fable&nbsp;5.1). The two
-    Haiku&nbsp;5.5 Melon Jelly runs are <strong>not strictly one-shot</strong>: they came from a
-    Haiku agent team (batch <a href="https://github.com/sv-tmueller/ai-benchmark/issues/210" style="color:var(--accent);border-bottom:1px dotted var(--line)">#210</a>),
-    and v2 used one repair round. Each badge is the verdict recorded in that result&apos;s sidecar or PR;
+    Claude results, separate from the orchestrated arm below. The three Weichensteller runs are
+    plain one-shots (Sonnet&nbsp;5.5, Opus&nbsp;5.5, Fable&nbsp;5.1). Of the two Haiku&nbsp;5.5 Melon
+    Jelly runs, v1 is a plain Haiku run with no advisor loop (its sidecar records
+    &ldquo;generated in-session by Claude Code&rdquo;;
+    <a href="https://github.com/sv-tmueller/ai-benchmark/pull/214" style="color:var(--accent);border-bottom:1px dotted var(--line)">PR&nbsp;#214</a>).
+    v2 is <strong>not strictly one-shot</strong>: its sidecar records a claude-agent-sdk subagent
+    dispatch, it is part of batch
+    <a href="https://github.com/sv-tmueller/ai-benchmark/issues/210" style="color:var(--accent);border-bottom:1px dotted var(--line)">#210</a>
+    (<a href="https://github.com/sv-tmueller/ai-benchmark/pull/212" style="color:var(--accent);border-bottom:1px dotted var(--line)">PR&nbsp;#212</a>),
+    and it used one repair round. Each badge is the verdict recorded in that result&apos;s sidecar or PR;
     where none exists the card says so.
   </p>
   <p class="cap" style="margin-bottom:10px">Weichensteller &mdash; Three.js model-railway junction game</p>
