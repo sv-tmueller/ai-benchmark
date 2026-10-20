@@ -209,6 +209,22 @@
     </article>
 
     <article class="card" data-models="glm_5_3_flash">
+      <h3>Blueprint docs &middot; GLM 5.3 Flash</h3>
+      <p class="cap">Design docs from four blueprint prompts; read, don&apos;t run.</p>
+      <a class="btn" href="horror-house/horror-house_glm_5_3_flash.md">Horror House &#9656;</a>
+      <a class="btn" href="last-flight/last-flight_glm_5_3_flash.md">Last Flight &#9656;</a>
+      <a class="btn" href="mario-kart/mario-kart_glm_5_3_flash.md">Mario Kart &#9656;</a>
+      <a class="btn" href="cities-skylines/cities-skylines_glm_5_3_flash.md">Cities: Skylines &#9656;</a>
+    </article>
+
+    <article class="card" data-models="glm_5_3_flash,glm_5_2,gpt_oss_120b">
+      <h3>Comparison write-ups</h3>
+      <p class="cap">Model-comparison notes for management, and the gpt-oss-120b frontier baseline summary.</p>
+      <a class="btn" href="servicenow/model-comparison-and-management-prompt.md">model comparison &#9656;</a>
+      <a class="btn" href="frontier_summary.md">frontier summary &#9656;</a>
+    </article>
+
+    <article class="card" data-models="glm_5_3_flash">
       <h3><a href="servicenow/servicenow-catalog-stories_glm_5_3_flash.md">ServiceNow Stories</a></h3>
       <p class="cap">Five Service Catalog user stories with Gherkin acceptance criteria.</p>
       <div class="stats"><span class="chip">medium</span></div>
@@ -313,26 +329,31 @@
       <h3>Horror House <span class="badge warn">BUILD_OK · RUNTIME_BROKEN</span></h3>
       <p class="cap">Builds green, breaks at runtime — a <code>THREE</code> namespace bug: <code>import {Vector3}</code> but calls <code>THREE.Vector3</code>. Highest-yield fix across all 10 (one line per file).</p>
       <a class="btn" href="horror-house/horror-house_gpt_oss_120b.md">result ▸</a>
+      <a class="btn" href="horror-house/rebuild_verdict_gpt_oss_120b.md">verdict &#9656;</a>
     </article>
     <article class="card" data-models="gpt_oss_120b">
       <h3>Last Flight <span class="badge err">BROKEN_AT_BOOT</span></h3>
       <p class="cap">Same <code>THREE</code> namespace-mismatch family as horror-house.</p>
       <a class="btn" href="last-flight/last-flight_gpt_oss_120b.md">result ▸</a>
+      <a class="btn" href="last-flight/rebuild_verdict_gpt_oss_120b.md">verdict &#9656;</a>
     </article>
     <article class="card" data-models="gpt_oss_120b">
       <h3>Cities: Skylines <span class="badge warn">BLUEPRINT_ONLY</span></h3>
       <p class="cap">Emits a design blueprint, no runnable code.</p>
       <a class="btn" href="cities-skylines/cities-skylines_gpt_oss_120b.md">result ▸</a>
+      <a class="btn" href="cities-skylines/rebuild_verdict_gpt_oss_120b.md">verdict &#9656;</a>
     </article>
     <article class="card" data-models="gpt_oss_120b">
       <h3>Mario Kart <span class="badge warn">BLUEPRINT_INCOMPLETE</span></h3>
       <p class="cap">Blueprint + partial code — did not finish.</p>
       <a class="btn" href="mario-kart/mario-kart_gpt_oss_120b.md">result ▸</a>
+      <a class="btn" href="mario-kart/rebuild_verdict_gpt_oss_120b.md">verdict &#9656;</a>
     </article>
     <article class="card" data-models="gpt_oss_120b">
       <h3>Stillwater <span class="badge warn">BLUEPRINT_ONLY</span></h3>
       <p class="cap">Emits a design blueprint, no runnable code.</p>
       <a class="btn" href="stillwater/stillwater_gpt_oss_120b.md">result ▸</a>
+      <a class="btn" href="stillwater/rebuild_verdict_gpt_oss_120b.md">verdict &#9656;</a>
     </article>
   </div>
 
@@ -398,6 +419,21 @@
       <p class="cap">Animated ocean scene with GUI controls.</p>
       <div class="stats"><span class="chip d">hard</span><span class="chip">16,279 rtok &middot; 28,504 ctok</span></div>
       <a class="btn" href="sunset-ocean/sunset-ocean_glm_5_2.html">open &#9656;</a>
+    </article>
+    <article class="card" data-models="glm_5_2">
+      <h3><a href="angry-birds/angry-birds_glm_5_2.html">Angry Birds</a> <span class="badge warn">UNVERIFIED</span></h3>
+      <p class="cap">Slingshot physics game (&ldquo;Furious Fowl&rdquo;). No sidecar, no verifier run.</p>
+      <div class="stats"><span class="chip d">hard</span></div>
+      <a class="btn" href="angry-birds/angry-birds_glm_5_2.html">open &#9656;</a>
+    </article>
+    <article class="card" data-models="glm_5_2">
+      <h3>Blueprint docs</h3>
+      <p class="cap">Design docs from the 5 blueprint prompts; read, don&apos;t run.</p>
+      <a class="btn" href="horror-house/horror-house_glm_5_2.md">Horror House &#9656;</a>
+      <a class="btn" href="last-flight/last-flight_glm_5_2.md">Last Flight &#9656;</a>
+      <a class="btn" href="mario-kart/mario-kart_glm_5_2.md">Mario Kart &#9656;</a>
+      <a class="btn" href="cities-skylines/cities-skylines_glm_5_2.md">Cities: Skylines &#9656;</a>
+      <a class="btn" href="stillwater/stillwater_glm_5_2.md">Stillwater &#9656;</a>
     </article>
     <article class="card" data-models="glm_5_2">
       <h3><a href="meridian-launch/meridian-launch_glm_5_2.html">Meridian Launch</a> <span class="badge ok">PLAYABLE_VERIFIED</span></h3>
