@@ -1,0 +1,29 @@
+{
+  "generated_utc": "2026-10-20T18:59:05Z",
+  "toml": "game-weichensteller.toml",
+  "prompt_id": "game-weichensteller",
+  "title": "Weichensteller: Three.js model-railway junction game",
+  "endpoint": "none (generated in-session by Claude Code, plain one-shot, no orchestrator team)",
+  "model": "claude-opus-5-5",
+  "one_shot": true,
+  "edits_after_generation": 0,
+  "outputs": {
+    "deliverable": "results/weichensteller/weichensteller_claude_opus_5_5.html"
+  },
+  "smoke_check": {
+    "note": "Read-only post-generation check; the deliverable was not modified afterwards.",
+    "verifier": "playwright (headless chromium, swiftshader), 1280x800",
+    "console_errors": [],
+    "page_errors": [],
+    "external_hosts": ["cdn.jsdelivr.net"],
+    "start_screen_to_game": true,
+    "junction_toggle_visible": true,
+    "correct_station_scored": true,
+    "collision_ends_game": true,
+    "restart_clean": true,
+    "observations": [
+      "Outer stations (x=+-64) are partly cut off at the left/right edges of the default 1280x800 camera.",
+      "With one junction click and otherwise idle play, a speed-variance rear-end collision ended the game after ~40 s wall time (software rendering, dt capped at 50 ms)."
+    ]
+  }
+}
