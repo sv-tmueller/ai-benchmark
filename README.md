@@ -4,7 +4,7 @@ A curated collection of benchmark prompts and the resulting model outputs.
 
 Two things live here:
 
-- **`prompts/`** — 28 TOML prompt definitions (plus one fixtures file)
+- **`prompts/`** — 29 TOML prompt definitions (plus one fixtures file)
   spanning coding, reasoning, math, summarization, creative-writing,
   instruction-following, game-generation, app-generation, domain-probes,
   vision, and ServiceNow-style consulting tasks.
@@ -18,7 +18,7 @@ Two things live here:
 
 One TOML file per prompt. Core fields: `id`, `title`, `category`,
 `difficulty`, `temperature`, `max_tokens`, and a `[system]`/`[user]` text
-pair. The catalog below covers all 28 prompts — one row per file — stating
+pair. The catalog below covers all 29 prompts — one row per file — stating
 what it delivers, what it needs at runtime, and which harness-only features
 (if any) it relies on.
 
@@ -31,6 +31,7 @@ what it delivers, what it needs at runtime, and which harness-only features
 | `game-minecraft.toml` | Single-file HTML game | Internet — Three.js + JSZip from CDN; optional vanilla texture pack (procedural fallback if absent) | None |
 | `game-meridian-launch.toml` | Single-file HTML scene | Internet — Three.js addons via CDN import map | None |
 | `game-sunset-ocean.toml` | Single-file HTML scene | Internet — Three.js addons via CDN import map | None |
+| `game-weichensteller.toml` | Single-file HTML game | Internet — Three.js from CDN | None |
 | `game-horror-house.toml` | Multi-file project (Vite + Three.js) | Node + npm, dev server / build | None |
 | `game-last-flight.toml` | Multi-file project (Vite + TypeScript + Three.js) | Node 20+ and npm; Vitest for tests | None |
 | `game-cities-skylines.toml` | Multi-file project (Vite, one folder per subsystem) | Node + Vite; multi-agent orchestration; optional internet for CC0 assets | None |
@@ -74,8 +75,8 @@ anything beyond a capable model.
 | `vision-shape-count.toml` | Single number ("5") | Image input — `prompts/assets/shapes.png` must be supplied | `[images]` file list + `[grading]` block |
 
 Note: `param-translate.fixtures.toml` is a fixtures file for the
-parameterized translate prompt, not a prompt itself — hence 28 prompts
-under `prompts/`, not 29 TOMLs.
+parameterized translate prompt, not a prompt itself — hence 29 prompts
+under `prompts/`, not 30 TOMLs.
 
 ### Using a prompt with `@prompts/<file>.toml`
 

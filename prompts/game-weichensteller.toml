@@ -1,0 +1,52 @@
+# Source: #216 (batch #215), a German-language use case from the repo owner
+# ("Weichensteller", a model-railway junction-switching game). The prompt is
+# a faithful English translation of that original, with no requirements
+# added. Three deviations from the German original:
+#   1. Translation from German to English (the typos "index. html" and
+#      "iche" in the original were read as "index.html" and "Weiche",
+#      i.e. junction/switch).
+#   2. The target file `weichen/index.html` became `weichensteller.html`,
+#      and the sentence is the harness-neutral deliverable sentence from the
+#      melon-jelly pattern (#23): "The deliverable is one file,
+#      weichensteller.html, starting with <!DOCTYPE html>, no markdown
+#      fences, no explanations." Whether a harness captures the raw response
+#      straight into the .html artifact or an agent writes the file itself,
+#      the result is a file that opens in a browser.
+#   3. The original's closing instruction to test the game in the browser
+#      (start it, switch at least one junction, save a screenshot as
+#      `weichen/ergebnis.png`) became a "SELF-CHECK BEFORE ANSWERING" block
+#      (verify mentally), because a single-shot harness can neither run a
+#      browser nor write a screenshot.
+id          = "game-weichensteller"
+title       = "Weichensteller: Three.js model-railway junction game"
+category    = "game-generation"
+difficulty  = "hard"
+temperature = 0.2
+max_tokens  = 65536
+save_as     = "html"
+file_prefix = "weichensteller"
+
+[user]
+text = '''
+Build a 3D game as a single, self-contained HTML file. Use Three.js via a CDN, no build tools, no other files. The deliverable is one file, weichensteller.html, starting with <!DOCTYPE html>, no markdown fences, no explanations.
+
+GAME IDEA: "Weichensteller" (the pointsman)
+A model-railway landscape seen from above at an angle. Colored trains leave a tunnel one after another. Each train must reach the station of its own color. The player switches the junctions by clicking.
+
+REQUIREMENTS
+1. A track network with at least five junctions and four colored destination stations.
+2. A junction clearly shows where it is currently pointing and visibly toggles when clicked.
+3. Trains move smoothly along the tracks, including through curves, with a locomotive and at least two wagons.
+4. The right station gives one point, the wrong station costs one life. The player has three lives.
+5. If two trains collide, the game is over.
+6. Over time the trains get faster and appear more often.
+7. A landscape with meadow, trees, houses and a mountain with the tunnel.
+8. Score and lives at the top left, a start screen, and a game-over screen with a restart.
+9. The camera can be rotated and zoomed with the mouse.
+10. No errors in the browser console.
+
+It should look good and play smoothly.
+
+SELF-CHECK BEFORE ANSWERING
+Verify mentally: (1) the file opens in a browser, shows the start screen, and the game starts from it, (2) at least one junction visibly toggles when clicked and shows where it points, (3) a train reaches a station: the correct station gives a point, the wrong one costs a life, (4) a collision of two trains ends the game and the game-over screen restarts the game cleanly, (5) there are no errors in the browser console.
+'''
