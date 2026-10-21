@@ -319,8 +319,8 @@
     <article class="card" data-models="claude">
       <h3><a href="weichensteller/weichensteller_claude_opus_5_5.html">Weichensteller &middot; Claude Opus 5.5</a> <span class="badge ok">SMOKE CHECK PASS</span></h3>
       <p class="cap">Plain one-shot, no edits after generation. A read-only headless smoke check passed all five
-        items with 0 console and 0 page errors. Outer stations are cut off at 1280x800, and idle play
-        ends in a collision after ~40&nbsp;s. This is a smoke check, not a playability verdict.</p>
+        items with 0 console and 0 page errors. Outer stations are partly cut off at 1280x800, and in one near-idle
+        run a collision ended the game after ~40&nbsp;s. This is a smoke check, not a playability verdict.</p>
       <div class="stats"><span class="chip net">&#9888; needs internet</span><a class="chip" href="https://github.com/sv-tmueller/ai-benchmark/issues/219">issue #219</a></div>
       <a class="btn" href="weichensteller/weichensteller_claude_opus_5_5.html">open &#9656;</a>
     </article>
@@ -346,7 +346,8 @@
     </article>
     <article class="card" data-models="claude">
       <h3><a href="melon-jelly/melon-jelly_claude_haiku_5_5-v2.html">Melon Jelly &middot; Claude Haiku 5.5 v2</a> <span class="badge warn">BOOTS_ONLY</span></h3>
-      <p class="cap">Same two failures (cut-gap and independence), accepted as BOOTS_ONLY by the owner after the single repair round
+      <p class="cap">The cut now splits the melon, but it fails the same two checks: a gap in only 63/82 rows (bar 80%), and
+        dragging the right piece moves the left. Accepted as BOOTS_ONLY by the owner after the single repair round
         (<a href="https://github.com/sv-tmueller/ai-benchmark/pull/212" style="color:var(--accent);border-bottom:1px dotted var(--line)">PR&nbsp;#212</a>).
         Haiku agent team plus one repair round; boot, drop and settle, fast drag and reset pass.</p>
       <div class="stats"><span class="chip net">offline ok</span><a class="chip" href="https://github.com/sv-tmueller/ai-benchmark/pull/212">PR #212</a></div>
@@ -409,15 +410,15 @@
     </article>
     <article class="card" data-models="orchestrai">
       <h3><a href="horror-house/horror-house_orchestrai.html">Horror House</a> <span class="badge ok">PLAYABLE</span></h3>
-      <p class="cap">First-person haunted-house escape with a stalking ghost. Full escape path verified with 0 console
-        errors. Caveat: the raycast key pickup was not exercised headlessly (checked via debug hooks).</p>
+      <p class="cap">First-person haunted-house escape with a stalking ghost. Escape path verified via the <code>__HH__.simulateEscape</code>
+        debug hook (drives the real interact path), 0 console errors. Caveat: the raycast key pickup was not exercised headlessly (checked via debug hooks).</p>
       <div class="stats"><span class="chip net">&#9888; needs internet</span><a class="chip" href="https://github.com/sv-tmueller/ai-benchmark/pull/204">PR #204</a></div>
       <a class="btn" href="horror-house/horror-house_orchestrai.html">open &#9656;</a>
     </article>
     <article class="card" data-models="orchestrai">
       <h3><a href="last-flight/last-flight_orchestrai.html">Last Flight</a> <span class="badge ok">PLAYABLE</span></h3>
-      <p class="cap">Superhero flight-rescue game. Boot clean; the rescue and crash paths were verified. Declared cuts: no
-        enemy jets, no intro, no audio.</p>
+      <p class="cap">Superhero flight-rescue game. Boot clean; rescue (assisted via the <code>__LF__.forceLand</code> debug hook)
+        and forced-crash paths verified. Declared cuts: no enemy jets, no intro, no audio, no post stack.</p>
       <div class="stats"><span class="chip net">&#9888; needs internet</span><a class="chip" href="https://github.com/sv-tmueller/ai-benchmark/pull/206">PR #206</a></div>
       <a class="btn" href="last-flight/last-flight_orchestrai.html">open &#9656;</a>
     </article>
