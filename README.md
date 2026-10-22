@@ -328,3 +328,7 @@ Canonical copy: #108 (updates land there first; keep this quotation in sync when
 Lightweight validation only: every TOML must parse and every prompt TOML
 must declare `id` and a non-empty `user` payload
 ([workflow](.github/workflows/ci.yml)).
+
+## License
+
+© 2026 Thomas Mueller. All rights reserved. Source shown for reference only.
