@@ -4,6 +4,9 @@ category    = "math"
 difficulty  = "medium"
 temperature = 0.0
 
+[grading]
+mode = "sympy-check"
+
 [system]
 text = "You are a mathematics tutor. Show every algebraic step clearly."
 

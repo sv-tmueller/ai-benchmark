@@ -4,6 +4,9 @@ category    = "coding"
 difficulty  = "medium"
 temperature = 0.0
 
+[grading]
+mode = "python-exec"
+
 [system]
 text = "You are an expert Python developer. Write clean, production-quality code."
 

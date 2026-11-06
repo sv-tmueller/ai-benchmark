@@ -7,6 +7,9 @@ max_tokens  = 4096
 save_as     = "txt"
 file_prefix = "follow-spec"
 
+[grading]
+mode = "script-exec"
+
 [user]
 text = '''
 Write a Node.js CLI script `count-lines.js` that meets this spec exactly:
