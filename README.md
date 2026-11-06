@@ -98,6 +98,38 @@ Three caveats:
   `vision-shape-count` are consumed by the benchmark harness only;
   informal runs simply ignore them.
 
+### Execution graders
+
+Three of the prompts are graded by *running* the model's deliverable
+rather than pattern-matching its text. Each mode module lives in
+`harness/modes/` and exposes `grade(result_path, grading, prompt)`,
+returning a verdict dict `{prompt_id, model, mode, pass, detail}` that is
+written next to the result as `<result>_grading.json`.
+
+| Mode | Prompt | What it runs |
+|------|--------|--------------|
+| `python-exec` | `code-flatten-list` | Imports the extracted `flatten` function and drives it through a fixture battery of nested-list cases (including a 5,000-deep case) |
+| `script-exec` | `probe-follow-spec` | Runs the extracted Node.js script once per fixture case and compares stdout lines, stderr lines and exit code |
+| `sympy-check` | `math-second-derivative` | Parses the boxed `f''(x)` and `f''(2)` answers with `sympy.parse_expr` and checks them symbolically |
+
+Fixtures and expected answers live under `harness/fixtures/<prompt-toml-stem>/`
+(`cases.json`, `expected.json`) and never inline in mode code.
+
+**Hygiene.** Model output is untrusted data. Each execution writes the
+extracted code into a fresh temporary directory and runs it as a
+subprocess with cwd inside that directory, a fixed 10 s timeout and
+captured stdout/stderr; timeouts, non-zero exits and exceptions become
+`pass: false` verdicts with the captured error in `detail`, never a crash
+of the runner. This is *subprocess isolation, not a security sandbox* —
+the code is still executed on this machine.
+
+**Runtime.** `python-exec` uses the current interpreter
+(`<sys.executable> -I`); `script-exec` needs `node` on `PATH`;
+`sympy-check` imports sympy lazily, so `harness/modes/sympy_check.py`
+stays importable in stdlib-only environments and its unit tests skip when
+sympy is absent. The shared venv (`sympy 1.14.0`) is the reference
+interpreter for those tests.
+
 ## Results
 
 Outputs are grouped under `results/` by prompt family, one folder per
