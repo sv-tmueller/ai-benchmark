@@ -1,0 +1,7 @@
+{
+  "prompt_id": "game-melon-jelly",
+  "model": "glm_5_2",
+  "mode": "playability",
+  "pass": true,
+  "detail": "playability verdict: PLAYABLE_VERIFIED"
+}
