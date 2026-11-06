@@ -65,7 +65,7 @@ anything beyond a capable model.
 | `math-addition.toml` | Single number ("42") | None | `[grading]` block (contains-match on expected answer) |
 | `math-second-derivative.toml` | Step-by-step derivation | None | None |
 | `code-flatten-list.toml` | Python function | None | None |
-| `sql-country-analytics.toml` | SQL query (3-table join + aggregation) | None | None |
+| `sql-country-analytics.toml` | SQL query (3-table join + aggregation) | None | `[grading]` block (`sql-exec`: query run against the fixture DB) |
 | `summarize-article.toml` | 3-sentence summary | None | None |
 | `creative-water-bottle.toml` | Product-marketing copy | None | None |
 | `instruction-decline-meeting.toml` | Professional decline-the-meeting email | None | None |
@@ -94,9 +94,42 @@ Three caveats:
   concrete values before sending.
 - **`vision-shape-count`**: the `[images]` declaration is harness-only;
   when prompting ad hoc, attach `prompts/assets/shapes.png` yourself.
-- **Grading**: the `[grading]` blocks in `math-addition` and
-  `vision-shape-count` are consumed by the benchmark harness only;
-  informal runs simply ignore them.
+- **Grading**: the `[grading]` blocks in `math-addition`,
+  `vision-shape-count` and `sql-country-analytics` are consumed by the
+  benchmark harness only; informal runs simply ignore them.
+
+### The `sql-exec` grading mode
+
+`sql-country-analytics` is graded by executing the model's query, not by
+matching text. Its `[grading]` block names the fixture DB and the answer key:
+
+```toml
+[grading]
+mode       = "sql-exec"
+fixture    = "harness/fixtures/sql_country_analytics/seed.sql"
+answer_key = "harness/fixtures/sql_country_analytics/expected_rows.json"
+```
+
+- The mode (`harness/modes/sql_exec.py`) extracts the first ` ```sql `
+  fenced block from the Markdown deliverable, builds a throwaway
+  `:memory:` SQLite database from `seed.sql`, executes the query once, and
+  compares the returned rows to `expected_rows.json` by column name, with
+  numerics rounded to 6 decimals.
+- A missing SQL block, a SQL error, or a row mismatch all yield
+  `pass: false` with an explanation in `detail` (and a row diff on
+  mismatch) — never a harness crash.
+- The fixture is committed as **text**, not a binary DB, so the database is
+  rebuilt per grade call, can never be mutated, and no blob lands in git.
+  `harness/fixtures/sql_country_analytics/verify_fixture.py` rebuilds the DB,
+  runs a canonical reference query, and asserts the committed answer key
+  matches (also covered as a unit test).
+- Seed policy: the prompt leaves tie-breaking, NULL handling, and the
+  top-product revenue basis to the model, so `seed.sql` is built to make
+  every reasonable correct query agree — no NULLs, each `orders.total_amount`
+  equals the sum of its line items (so line-item and order-level revenue rank
+  the same top product), no product-revenue tie within a country, at least one
+  country with `>= 10` orders and one below the threshold, and distinct
+  `total_revenue` among qualifying countries.
 
 ## Results
 
