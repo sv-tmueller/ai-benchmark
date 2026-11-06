@@ -16,8 +16,9 @@ in git, no cross-call state), extracts the first ```` ```sql ```` fenced block
 from the Markdown deliverable, executes it once, and compares the returned rows
 against the answer key by column name.
 
-Every failure mode is a verdict, not a crash: a missing SQL block, a SQL error,
-or a row mismatch all return ``pass: false`` with an explanatory ``detail``.
+Every failure mode is a verdict, not a crash: a missing result file, a missing
+SQL block, an empty (or no-result-set) SQL block, a SQL error, or a row
+mismatch all return ``pass: false`` with an explanatory ``detail``.
 """
 
 from __future__ import annotations
@@ -117,6 +118,9 @@ def grade(result_path: Path, grading: dict, prompt: dict) -> dict:
             "detail": detail,
         }
 
+    if not result_path.is_file():
+        return verdict(False, f"result file not found: {result_path}")
+
     fixture_rel = grading.get("fixture")
     key_rel = grading.get("answer_key")
     if not fixture_rel or not key_rel:
@@ -145,6 +149,10 @@ def grade(result_path: Path, grading: dict, prompt: dict) -> dict:
         try:
             cur = conn.execute(query)
             actual_raw = cur.fetchall()
+            if cur.description is None:
+                # Statement executed but produced no result set (empty fence,
+                # comment-only fence, INSERT/CREATE/BEGIN/UPDATE, ...).
+                return verdict(False, "statement returned no result set")
             actual_columns = [d[0] for d in cur.description]
         except sqlite3.Error as exc:
             return verdict(False, f"SQL error: {exc}")

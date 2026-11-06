@@ -10,6 +10,7 @@ resolves as a namespace package.
 from __future__ import annotations
 
 import json
+import sqlite3
 import sys
 import tempfile
 import tomllib
@@ -70,6 +71,91 @@ ORDER BY total_revenue DESC;"""
 SYNTAX_ERROR_QUERY = "SELECT FROM WHERE;"
 
 NO_BLOCK_MARKDOWN = "I cannot answer that without more context."
+
+# Statements that execute cleanly but return no result set (cur.description
+# is None). Each must produce a verdict, never a TypeError.
+NO_RESULT_SET_STATEMENTS = {
+    "create_table": "CREATE TABLE scratch (id INTEGER);",
+    "begin": "BEGIN;",
+}
+
+# Columns selected in a different order than the answer key.
+REORDERED_COLUMNS_QUERY = """SELECT product_name AS top_product,
+       country,
+       num_orders,
+       avg_order_value,
+       total_revenue
+FROM (
+    SELECT m.country,
+           m.total_revenue,
+           m.num_orders,
+           m.avg_order_value,
+           r.product_name
+    FROM (
+        SELECT c.country,
+               SUM(o.total_amount) AS total_revenue,
+               COUNT(*)            AS num_orders,
+               AVG(o.total_amount) AS avg_order_value
+        FROM orders o JOIN customers c ON c.id = o.customer_id
+        GROUP BY c.country
+    ) m
+    LEFT JOIN (
+        SELECT country, product_name,
+               ROW_NUMBER() OVER (
+                   PARTITION BY country
+                   ORDER BY SUM(quantity * unit_price) DESC, product_name ASC
+               ) AS rn
+        FROM order_items i
+        JOIN orders o    ON o.id = i.order_id
+        JOIN customers c ON c.id = o.customer_id
+        GROUP BY country, product_name
+    ) r ON r.country = m.country AND r.rn = 1
+    WHERE m.num_orders >= 10
+) ORDER BY total_revenue DESC;"""
+
+# Same rows as CORRECT_QUERY, but avg_order_value derived as SUM/COUNT rather
+# than AVG: the two computations must be accepted as equivalent.
+SUM_OVER_COUNT_QUERY = """WITH country_metrics AS (
+    SELECT c.country,
+           SUM(o.total_amount)                          AS total_revenue,
+           COUNT(*)                                     AS num_orders,
+           SUM(o.total_amount) * 1.0 / COUNT(o.total_amount) AS avg_order_value
+    FROM orders o JOIN customers c ON c.id = o.customer_id
+    GROUP BY c.country
+),
+ranked AS (
+    SELECT country, product_name,
+           ROW_NUMBER() OVER (
+               PARTITION BY country
+               ORDER BY SUM(quantity * unit_price) DESC, product_name ASC
+           ) AS rn
+    FROM order_items i
+    JOIN orders o    ON o.id = i.order_id
+    JOIN customers c ON c.id = o.customer_id
+    GROUP BY country, product_name
+)
+SELECT m.country, m.total_revenue, m.num_orders, m.avg_order_value,
+       r.product_name AS top_product
+FROM country_metrics m
+LEFT JOIN ranked r ON r.country = m.country AND r.rn = 1
+WHERE m.num_orders >= 10
+ORDER BY m.total_revenue DESC;"""
+
+# CORRECT_QUERY with a 1e-9 perturbation on avg_order_value: the raw float
+# differs from the answer key, but it agrees after 6-decimal rounding, so it
+# must still pass. Without the rounding step this would be a row mismatch.
+SUB_SIX_DECIMAL_PERTURBATION_QUERY = (
+    SUM_OVER_COUNT_QUERY.replace(
+        "SUM(o.total_amount) * 1.0 / COUNT(o.total_amount) AS avg_order_value",
+        "AVG(o.total_amount) + 1e-9 AS avg_order_value",
+    )
+)
+
+RESULT_REL = "results/sql-country-analytics/sql-country-analytics_glm_5_3_flash.md"
+SIDECAR_REL = (
+    "results/sql-country-analytics/"
+    "sql-country-analytics_glm_5_3_flash_grading.json"
+)
 
 
 def _prompt() -> dict:
@@ -163,6 +249,107 @@ class SqlExecModeTests(unittest.TestCase):
         self.assertTrue(CORRECT_QUERY.rstrip().endswith(";"))
         result = grade(self._write_result(self._markdown(CORRECT_QUERY)), _grading(), _prompt())
         self.assertTrue(result["pass"])
+
+    # --- no-result-set statements (round-1 finding 1) ----------------------
+
+    def _assert_no_result_set_verdict(self, body: str):
+        result = grade(self._write_result(body), _grading(), _prompt())
+        self.assertEqual(
+            set(result.keys()),
+            {"prompt_id", "model", "mode", "pass", "detail"},
+        )
+        self.assertFalse(result["pass"])
+        self.assertIn("no result set", result["detail"].lower())
+
+    def test_empty_sql_fence_is_a_verdict_not_a_crash(self):
+        self._assert_no_result_set_verdict("Answer.\n\n```sql\n```\n")
+
+    def test_whitespace_only_sql_fence_is_a_verdict_not_a_crash(self):
+        self._assert_no_result_set_verdict("Answer.\n\n```sql\n   \n\t\n```\n")
+
+    def test_comment_only_sql_fence_is_a_verdict_not_a_crash(self):
+        self._assert_no_result_set_verdict("Answer.\n\n```sql\n-- nothing here\n```\n")
+
+    def test_non_select_statement_is_a_verdict_not_a_crash(self):
+        self._assert_no_result_set_verdict(
+            self._markdown(NO_RESULT_SET_STATEMENTS["create_table"])
+        )
+
+    def test_begin_statement_is_a_verdict_not_a_crash(self):
+        self._assert_no_result_set_verdict(self._markdown(NO_RESULT_SET_STATEMENTS["begin"]))
+
+    # --- missing result file (round-1 finding 2) --------------------------
+
+    def test_missing_result_file_is_a_verdict_naming_the_file(self):
+        missing = self.tmp / "sql-country-analytics" / "does-not-exist.md"
+        result = grade(missing, _grading(), _prompt())
+        self.assertFalse(result["pass"])
+        self.assertIn("does-not-exist.md", result["detail"])
+        self.assertIn("not found", result["detail"].lower())
+
+    # --- rounding and column-order equivalence ----------------------------
+
+    def test_sum_over_count_derivation_is_accepted(self):
+        # An alternative correct derivation of avg_order_value (SUM/COUNT
+        # instead of AVG) must be accepted as equivalent to the answer key.
+        result = grade(
+            self._write_result(self._markdown(SUM_OVER_COUNT_QUERY)), _grading(), _prompt()
+        )
+        self.assertTrue(result["pass"], result["detail"])
+
+    def test_six_decimal_rounding_absorbs_last_bit_difference(self):
+        # avg_order_value differs from the answer key by 1e-9 as a raw float,
+        # so this is green only because the mode rounds to 6 decimals first.
+        self.assertIn("+ 1e-9", SUB_SIX_DECIMAL_PERTURBATION_QUERY)
+        self.assertNotEqual(
+            SUB_SIX_DECIMAL_PERTURBATION_QUERY, SUM_OVER_COUNT_QUERY
+        )
+        result = grade(
+            self._write_result(self._markdown(SUB_SIX_DECIMAL_PERTURBATION_QUERY)),
+            _grading(),
+            _prompt(),
+        )
+        self.assertTrue(result["pass"], result["detail"])
+
+    def test_reordered_columns_compare_by_name(self):
+        # Confirm the query really returns the key columns in a different order,
+        # so green here means the mode reordered by name, not by position.
+        seed = (REPO_ROOT / "harness/fixtures/sql_country_analytics/seed.sql").read_text(
+            encoding="utf-8"
+        )
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        conn.executescript(seed)
+        returned = [
+            d[0] for d in conn.execute(REORDERED_COLUMNS_QUERY).description
+        ]
+        key = json.loads((REPO_ROOT / ANSWER_KEY).read_text(encoding="utf-8"))
+        key_columns = list(key[0].keys())
+        self.assertEqual(sorted(returned), sorted(key_columns))
+        self.assertNotEqual(returned, key_columns)
+
+        result = grade(
+            self._write_result(self._markdown(REORDERED_COLUMNS_QUERY)), _grading(), _prompt()
+        )
+        self.assertTrue(result["pass"], result["detail"])
+
+
+class SidecarFidelityTests(unittest.TestCase):
+    """The committed sidecar must be reproducible from the committed inputs."""
+
+    def test_committed_sidecar_matches_fresh_grade(self):
+        result_path = REPO_ROOT / RESULT_REL
+        sidecar_path = REPO_ROOT / SIDECAR_REL
+        self.assertTrue(result_path.is_file(), result_path)
+        self.assertTrue(sidecar_path.is_file(), sidecar_path)
+
+        committed = json.loads(sidecar_path.read_text(encoding="utf-8"))
+
+        with PROMPT_TOML.open("rb") as fh:
+            prompt = tomllib.load(fh)
+        regenerated = grade(result_path, prompt["grading"], prompt)
+
+        self.assertEqual(regenerated, committed)
 
 
 class FixtureVerificationTests(unittest.TestCase):

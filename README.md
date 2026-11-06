@@ -115,7 +115,9 @@ answer_key = "harness/fixtures/sql_country_analytics/expected_rows.json"
   `:memory:` SQLite database from `seed.sql`, executes the query once, and
   compares the returned rows to `expected_rows.json` by column name, with
   numerics rounded to 6 decimals.
-- A missing SQL block, a SQL error, or a row mismatch all yield
+- A missing result file, a missing SQL block, an empty or no-result-set SQL
+  block (e.g. `INSERT`, `CREATE TABLE`, comment-only), a SQL error, or a row
+  mismatch all yield
   `pass: false` with an explanation in `detail` (and a row diff on
   mismatch) — never a harness crash.
 - The fixture is committed as **text**, not a binary DB, so the database is
