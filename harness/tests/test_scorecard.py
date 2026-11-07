@@ -28,13 +28,31 @@ mode = "contains"
 expected = "x"
 """
 
+# Hostile nesting, past the interpreter's parser limits. Written as raw bytes
+# because the correspondng Python objects would blow the stack while being
+# built/serialised — the aggregator must still read the *file*.
+DEEP_TOML_PROMPT = (
+    b'id = "deep"\ncategory = "cat-deep"\nx = '
+    + b"[" * 600
+    + b"]" * 600
+    + b"\n"
+)
+DEEP_JSON_SIDECAR = (
+    b'{"prompt_id": "deep", "model": "deep", "pass": true, "d": '
+    + b"[" * 12000
+    + b"]" * 12000
+    + b"}"
+)
 
-def write_corpus(root, prompts, sidecars=(), metas=()):
+
+def write_corpus(root, prompts, sidecars=(), metas=(), raw_sidecars=()):
     """Materialise a synthetic corpus under ``root``.
 
     ``prompts`` maps TOML filenames to their text. ``sidecars``/``metas`` are
     ``(family, filename, payload)`` triples serialised as JSON, so a test can
     hand the aggregator a corpus that no committed fixture covers.
+    ``raw_sidecars`` are ``(family, filename, bytes)`` triples written verbatim,
+    for sidecars whose content cannot be produced by ``json.dumps``.
     """
     prompts_dir = root / "prompts"
     results_dir = root / "results"
@@ -46,24 +64,35 @@ def write_corpus(root, prompts, sidecars=(), metas=()):
         directory = results_dir / family
         directory.mkdir(parents=True, exist_ok=True)
         (directory / name).write_text(json.dumps(payload), encoding="utf-8")
+    for family, name, blob in raw_sidecars:
+        directory = results_dir / family
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / name).write_bytes(blob)
     return results_dir, prompts_dir
 
 
-def build_from(root, prompts, sidecars=(), metas=()):
+def build_from(root, prompts, sidecars=(), metas=(), raw_sidecars=()):
     """Build a scorecard payload from a corpus written into ``root``."""
-    results_dir, prompts_dir = write_corpus(root, prompts, sidecars, metas)
+    results_dir, prompts_dir = write_corpus(
+        root, prompts, sidecars, metas, raw_sidecars
+    )
     return scorecard.build_scorecard(results_dir, prompts_dir)
 
 
-def run_cli(root, prompts, sidecars=(), metas=(), raw_prompts=None):
+def run_cli(
+    root, prompts, sidecars=(), metas=(), raw_prompts=None, raw_sidecars=()
+):
     """Run ``scorecard.main`` against a corpus written under ``root``.
 
     Returns ``(exit_code, json payload, markdown, stdout)``. The payload and
     markdown are ``None`` when the run wrote nothing — the "no outputs at all"
     failure mode the malformed-input findings describe. ``raw_prompts`` writes
     prompt files as raw bytes, for corpora no text writer can produce.
+    ``raw_sidecars`` does the same for result sidecar bytes.
     """
-    results_dir, prompts_dir = write_corpus(root, prompts, sidecars, metas)
+    results_dir, prompts_dir = write_corpus(
+        root, prompts, sidecars, metas, raw_sidecars
+    )
     for name, blob in (raw_prompts or {}).items():
         (prompts_dir / name).write_bytes(blob)
     out_json = root / "out" / "scorecard.json"
@@ -687,6 +716,123 @@ class UnparseablePromptTests(unittest.TestCase):
             self.assertEqual(code, 0, out)
             self.assertEqual(
                 payload["graded"], {"m": {"cat-p": {"passed": 1, "graded": 1}}}
+            )
+
+
+class HostileNestingTests(unittest.TestCase):
+    """Over-deep untrusted input is skipped, never a crash.
+
+    Round-3 findings: ``tomllib.load``/``json.loads`` raise ``RecursionError``
+    (a ``RuntimeError`` subclass, not the ``ValueError`` family the earlier
+    catches enumerated) once nesting passes the interpreter's parser limit.
+    The lesson: enumerate what the parser can raise on hostile bytes — not the
+    exception types the last finding happened to name — so every escape is
+    inside a graceful-skip catch.
+    """
+
+    def test_deeply_nested_prompt_toml_is_skipped_never_a_crash(self):
+        # Finding 1: a prompt TOML nested ~497+ levels deep raised
+        # RecursionError out of load_prompts, aborting the run exit 1 with no
+        # outputs. Expected: the prompt is skipped, the run exits 0.
+        with tempfile.TemporaryDirectory() as tmp:
+            code, payload, _markdown, out = run_cli(
+                Path(tmp),
+                {"good.toml": GRADED_PROMPT_TOML},
+                sidecars=[
+                    (
+                        "d",
+                        "p_m1_grading.json",
+                        {"prompt_id": "p", "model": "m", "pass": True},
+                    )
+                ],
+                raw_prompts={"deep.toml": DEEP_TOML_PROMPT},
+            )
+            self.assertEqual(code, 0, out)
+            self.assertIsNotNone(payload, "the run aborted without writing the JSON")
+            # The skipped prompt contributes nothing, and the good one survives.
+            self.assertEqual(
+                payload["graded"], {"m": {"cat-p": {"passed": 1, "graded": 1}}}
+            )
+            self.assertNotIn("deep", payload["ungraded_prompts"])
+
+    def test_deeply_nested_json_sidecar_is_skipped_never_a_crash(self):
+        # Finding 2: a sidecar with a ~9997-deep nested array raised
+        # RecursionError out of _read_json -> exit 1, no outputs. Expected: the
+        # sidecar is skipped like any other unreadable one, run exits 0.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out_json = root / "out" / "scorecard.json"
+            out_md = root / "out" / "scorecard.md"
+            results_dir, prompts_dir = write_corpus(
+                root,
+                {"p.toml": GRADED_PROMPT_TOML},
+                sidecars=[
+                    (
+                        "d",
+                        "good_grading.json",
+                        {"prompt_id": "p", "model": "m", "pass": True},
+                    )
+                ],
+                raw_sidecars=[("d", "deep_grading.json", DEEP_JSON_SIDECAR)],
+            )
+            with contextlib.redirect_stdout(io.StringIO()) as stdout:
+                code = scorecard.main(
+                    [],
+                    results_dir=results_dir,
+                    prompts_dir=prompts_dir,
+                    out_json=out_json,
+                    out_md=out_md,
+                )
+            self.assertEqual(code, 0, stdout.getvalue())
+            self.assertTrue(out_json.is_file(), "the run wrote no JSON output")
+            self.assertTrue(out_md.is_file(), "the run wrote no markdown output")
+            payload = json.loads(out_json.read_text(encoding="utf-8"))
+            self.assertEqual(
+                payload["graded"], {"m": {"cat-p": {"passed": 1, "graded": 1}}}
+            )
+
+    def test_over_long_integer_prompt_is_skipped_never_a_crash(self):
+        # Same class, third escape: tomllib raises a bare ValueError (the
+        # 4300-digit int-conversion limit) that is NOT a TOMLDecodeError or
+        # UnicodeDecodeError — so the old tuple let it abort the run too.
+        with tempfile.TemporaryDirectory() as tmp:
+            code, payload, _markdown, out = run_cli(
+                Path(tmp),
+                {"good.toml": GRADED_PROMPT_TOML},
+                sidecars=[
+                    (
+                        "d",
+                        "p_m1_grading.json",
+                        {"prompt_id": "p", "model": "m", "pass": True},
+                    )
+                ],
+                raw_prompts={
+                    "big.toml": b'id = "p"\nx = ' + b"9" * 5000 + b"\n"
+                },
+            )
+            self.assertEqual(code, 0, out)
+            self.assertIsNotNone(payload, "the run aborted without writing the JSON")
+            self.assertEqual(
+                payload["graded"], {"m": {"cat-p": {"passed": 1, "graded": 1}}}
+            )
+
+    def test_deep_prompt_does_not_stop_build_scorecard(self):
+        # The library entry point must be robust too, not just the CLI.
+        with tempfile.TemporaryDirectory() as tmp:
+            score = build_from(
+                Path(tmp),
+                {"good.toml": GRADED_PROMPT_TOML},
+                sidecars=[
+                    (
+                        "d",
+                        "p_m1_grading.json",
+                        {"prompt_id": "p", "model": "m", "pass": False},
+                    )
+                ],
+                raw_sidecars=[("d", "deep_grading.json", DEEP_JSON_SIDECAR)],
+            )
+            self.assertEqual(
+                score["graded"], {"m": {"cat-p": {"passed": 0, "graded": 1}}}
             )
 
 

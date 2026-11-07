@@ -48,14 +48,30 @@ EMPTY_CELL = "—"
 SIDECAR_SOURCE = "sidecar"
 LEGACY_SOURCE = "legacy-meta"
 
+# One enumerated catch for every uninterruptible-input parse site. A parser
+# raises more on hostile bytes than its own format error, so the tuple lists
+# the whole family rather than the types a single finding named:
+# - ``OSError`` from ``open``/``read_text`` (missing, unreadable, I/O error);
+# - ``UnicodeDecodeError`` and ``TOMLDecodeError``/``JSONDecodeError`` — all
+#   ``ValueError`` subclasses — for bad encoding or malformed syntax;
+# - a bare ``ValueError`` from CPython's int-conversion digit limit
+#   (``>4300`` digits), which is *neither* ``TOMLDecodeError`` nor
+#   ``UnicodeDecodeError``; and
+# - ``RecursionError`` (a ``RuntimeError``, not a ``ValueError``) when nesting
+#   passes the interpreter's parser limit.
+# Any of these means the file cannot be associated with a result, so it is
+# skipped gracefully — never a crash that would brick the whole corpus.
+PARSE_ERRORS = (OSError, ValueError, RecursionError)
+
 
 def load_prompts(prompts_dir):
     """Return ``{prompt_id: parsed TOML}`` for every non-fixture prompt file.
 
-    A prompt file is untrusted input: it may be unparseable (bad TOML or
-    non-UTF-8 bytes) or carry a non-string ``id``. Any of those means the
-    prompt cannot be associated with a result, so it is skipped gracefully —
-    never a crash that would brick the whole corpus.
+    A prompt file is untrusted input: it may be unparseable (bad TOML,
+    non-UTF-8 bytes, an over-long integer, nesting past the parser limit) or
+    carry a non-string ``id``. Any of those means the prompt cannot be
+    associated with a result, so it is skipped gracefully — never a crash that
+    would brick the whole corpus.
     """
     prompts = {}
     for path in sorted(Path(prompts_dir).glob("*.toml")):
@@ -64,7 +80,7 @@ def load_prompts(prompts_dir):
         try:
             with path.open("rb") as handle:
                 data = tomllib.load(handle)
-        except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
+        except PARSE_ERRORS:
             continue
         prompt_id = _as_vendor_key(data.get("id"))
         if prompt_id:
@@ -73,10 +89,15 @@ def load_prompts(prompts_dir):
 
 
 def _read_json(path):
-    """Return the parsed JSON object at ``path``, or ``None`` when unreadable."""
+    """Return the parsed JSON object at ``path``, or ``None`` when unreadable.
+
+    "Unreadable" covers the whole hostile-input family — see ``PARSE_ERRORS``
+    — so a sidecar with deeply nested or otherwise pathological bytes is
+    skipped like any other, never aborting the run.
+    """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except PARSE_ERRORS:
         return None
     return data if isinstance(data, dict) else None
 
