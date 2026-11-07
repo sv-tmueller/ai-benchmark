@@ -57,6 +57,30 @@ class ExtractionTests(unittest.TestCase):
         self.assertEqual(point, "2")
         self.assertEqual(value, "88")
 
+    def test_extracts_single_double_prime_u2033_expression_box(self):
+        # U+2033 DOUBLE PRIME is a single character; "f″(x)" is one prime glyph.
+        text = "$$\\boxed{f″(x) = 36x^2 - 30x + 4}$$\n\n$$\\boxed{f″(2) = 88}$$"
+        expr, point, value = sympy_check.extract_answer(text)
+        self.assertEqual(expr, "36x^2 - 30x + 4")
+        self.assertEqual(point, "2")
+        self.assertEqual(value, "88")
+
+    def test_extracts_single_double_prime_u2033_point_box(self):
+        # U+2033 in the point/value box only; the expression box uses plain primes.
+        text = "$$\\boxed{f''(x) = 36x^2 - 30x + 4}$$\n\n$$\\boxed{f″(2) = 88}$$"
+        expr, point, value = sympy_check.extract_answer(text)
+        self.assertEqual(expr, "36x^2 - 30x + 4")
+        self.assertEqual(point, "2")
+        self.assertEqual(value, "88")
+
+    def test_extracts_braced_exponent_expression_box(self):
+        # x^{2} is legitimate LaTeX; the capture must not stop at the brace.
+        text = "$$\\boxed{f''(x) = 36x^{2} - 30x + 4}$$\n\n$$\\boxed{f''(2) = 88}$$"
+        expr, point, value = sympy_check.extract_answer(text)
+        self.assertEqual(expr, "36x^2 - 30x + 4")
+        self.assertEqual(point, "2")
+        self.assertEqual(value, "88")
+
     def test_missing_box_is_none(self):
         expr, point, value = sympy_check.extract_answer("no boxes here")
         self.assertEqual((expr, point, value), (None, None, None))
@@ -92,6 +116,22 @@ class GradeSympyCheckTests(unittest.TestCase):
         verdict = sympy_check.grade(DATA / "math-second-derivative_wrongvalue.md", {}, load_prompt())
         self.assertIs(verdict["pass"], False)
         self.assertIn("f''(2)", verdict["detail"])
+
+    @requires_sympy
+    def test_double_prime_u2033_answer_passes(self):
+        # U+2033 spelling of f''(x), as the model uses in prose.
+        verdict = sympy_check.grade(
+            DATA / "math-second-derivative_doubleprime.md", {}, load_prompt()
+        )
+        self.assertIs(verdict["pass"], True, verdict["detail"])
+
+    @requires_sympy
+    def test_braced_exponent_answer_passes(self):
+        # x^{2}: braces must be tolerated (stripped) so the answer still grades.
+        verdict = sympy_check.grade(
+            DATA / "math-second-derivative_braced.md", {}, load_prompt()
+        )
+        self.assertIs(verdict["pass"], True, verdict["detail"])
 
     @requires_sympy
     def test_real_committed_result_passes(self):

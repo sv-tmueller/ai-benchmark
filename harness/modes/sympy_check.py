@@ -22,9 +22,13 @@ from pathlib import Path
 MODE = "sympy-check"
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "math-second-derivative" / "expected.json"
 
-PRIMES = "['\u2032\u2019\u2018]"  # ASCII ', U+2032 prime, curly variants
+PRIMES = "['\u2032\u2019\u2018\u2033]{2,}|\u2033"  # doubled primes, or one U+2033 DOUBLE PRIME
+# Right-hand side of a boxed statement: plain text plus single-level braced
+# groups, so braced exponents like ``x^{2}`` survive the capture (the braces are
+# stripped in :func:`_clean` before parsing).
+EXPR = r"(?:[^{}]|\{[^{}]*\})*?"
 BOX = re.compile(
-    r"\\boxed\s*\{\s*f\s*" + PRIMES + r"{2}\s*\(\s*([^)]*?)\s*\)\s*=\s*([^{}]*?)\s*\}",
+    r"\\boxed\s*\{\s*f\s*(?:" + PRIMES + r")\s*\(\s*([^)]*?)\s*\)\s*=\s*(" + EXPR + r")\s*\}",
     re.DOTALL,
 )
 
@@ -39,7 +43,13 @@ def derive_model(result_path: Path, prompt: dict) -> str:
 
 
 def _clean(expr: str) -> str:
-    return expr.replace("\\", " ").replace("$", " ").strip()
+    """Normalize a captured boxed fragment for ``parse_expr``.
+
+    Braces are dropped: a braced exponent ``x^{2}`` becomes ``x^2``, which
+    ``convert_xor`` handles.  ``parse_expr`` on the LaTeX-ish ``x^{2}`` form
+    would fail, so this is what makes braced answers grade like unbraced ones.
+    """
+    return expr.replace("{", "").replace("}", "").replace("\\", " ").replace("$", " ").strip()
 
 
 def extract_answer(text: str):
