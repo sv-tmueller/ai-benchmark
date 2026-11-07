@@ -1,0 +1,7 @@
+{
+  "prompt_id": "delta-prompt",
+  "model": "m-delta",
+  "mode": "playability",
+  "pass": false,
+  "detail": "playability verdict: BROKEN_AT_BOOT"
+}

@@ -1,0 +1,6 @@
+id       = "zeta-prompt"
+title    = "Zeta fixtures"
+category = "cat-zeta"
+
+[user]
+text = "Fixture-only prompt; must be skipped entirely."

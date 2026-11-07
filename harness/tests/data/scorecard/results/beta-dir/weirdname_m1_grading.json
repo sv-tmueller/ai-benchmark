@@ -1,0 +1,7 @@
+{
+  "prompt_id": "beta-prompt",
+  "model": "m1",
+  "mode": "manual",
+  "pass": true,
+  "detail": "human-verified pass"
+}
