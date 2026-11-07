@@ -50,7 +50,13 @@ LEGACY_SOURCE = "legacy-meta"
 
 
 def load_prompts(prompts_dir):
-    """Return ``{prompt_id: parsed TOML}`` for every non-fixture prompt file."""
+    """Return ``{prompt_id: parsed TOML}`` for every non-fixture prompt file.
+
+    A prompt file is untrusted input: it may be unparseable (bad TOML or
+    non-UTF-8 bytes) or carry a non-string ``id``. Any of those means the
+    prompt cannot be associated with a result, so it is skipped gracefully —
+    never a crash that would brick the whole corpus.
+    """
     prompts = {}
     for path in sorted(Path(prompts_dir).glob("*.toml")):
         if path.name.endswith(FIXTURES_SUFFIX):
@@ -58,9 +64,9 @@ def load_prompts(prompts_dir):
         try:
             with path.open("rb") as handle:
                 data = tomllib.load(handle)
-        except (OSError, tomllib.TOMLDecodeError):
+        except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
             continue
-        prompt_id = data.get("id")
+        prompt_id = _as_vendor_key(data.get("id"))
         if prompt_id:
             prompts[prompt_id] = data
     return prompts
@@ -197,6 +203,18 @@ def gradable_prompts(prompts, playability_prompts):
     return gradable
 
 
+def _as_category(value):
+    """Return ``value`` when it is a non-empty category string, else ``None``.
+
+    ``category`` comes from the same untrusted prompt TOML as ``id``/``model``,
+    and it is used as a column key and sorted. A list or dict aborts with
+    ``TypeError: unhashable type``, and an int next to a string breaks
+    ``sorted()`` with ``'<' not supported`` — routing every category through
+    this guard keeps the column set and its sort string-only.
+    """
+    return value if isinstance(value, str) and value else None
+
+
 def build_scorecard(results_dir=None, prompts_dir=None, now=None):
     """Return the scorecard payload for the corpus rooted at the given dirs."""
     if results_dir is None:
@@ -209,9 +227,9 @@ def build_scorecard(results_dir=None, prompts_dir=None, now=None):
     prompts = load_prompts(prompts_dir)
     categories = sorted(
         {
-            prompt["category"]
+            category
             for prompt in prompts.values()
-            if prompt.get("category")
+            if (category := _as_category(prompt.get("category")))
         }
     )
     verdicts, playability_prompts = collect_verdicts(results_dir)
@@ -226,9 +244,9 @@ def build_scorecard(results_dir=None, prompts_dir=None, now=None):
         if prompt_id not in gradable:
             continue  # ungraded results never enter numerators or denominators
         prompt = prompts.get(prompt_id)
-        category = prompt.get("category") if prompt else None
+        category = _as_category(prompt.get("category")) if prompt else None
         if not category:
-            continue
+            continue  # a non-string category cannot be a column — skip it
         row = graded.setdefault(verdict["model"], {c: None for c in categories})
         counts = row.get(category)
         if counts is None:

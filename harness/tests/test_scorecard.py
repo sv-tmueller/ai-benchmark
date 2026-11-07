@@ -55,6 +55,38 @@ def build_from(root, prompts, sidecars=(), metas=()):
     return scorecard.build_scorecard(results_dir, prompts_dir)
 
 
+def run_cli(root, prompts, sidecars=(), metas=(), raw_prompts=None):
+    """Run ``scorecard.main`` against a corpus written under ``root``.
+
+    Returns ``(exit_code, json payload, markdown, stdout)``. The payload and
+    markdown are ``None`` when the run wrote nothing — the "no outputs at all"
+    failure mode the malformed-input findings describe. ``raw_prompts`` writes
+    prompt files as raw bytes, for corpora no text writer can produce.
+    """
+    results_dir, prompts_dir = write_corpus(root, prompts, sidecars, metas)
+    for name, blob in (raw_prompts or {}).items():
+        (prompts_dir / name).write_bytes(blob)
+    out_json = root / "out" / "scorecard.json"
+    out_md = root / "out" / "scorecard.md"
+    try:
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            code = scorecard.main(
+                [],
+                results_dir=results_dir,
+                prompts_dir=prompts_dir,
+                out_json=out_json,
+                out_md=out_md,
+            )
+        out = stdout.getvalue()
+    except Exception as exc:  # the abort these findings are about
+        return None, None, None, "{}: {}".format(type(exc).__name__, exc)
+    payload = None
+    if out_json.is_file():
+        payload = json.loads(out_json.read_text(encoding="utf-8"))
+    markdown = out_md.read_text(encoding="utf-8") if out_md.is_file() else None
+    return code, payload, markdown, out
+
+
 class ScorecardTestCase(unittest.TestCase):
     """Shared setup: build the scorecard from the committed fixtures."""
 
@@ -437,6 +469,225 @@ class NonBoolPassTests(unittest.TestCase):
             ],
         )
         self.assertEqual(score["graded"]["m"]["cat-p"], {"passed": 1, "graded": 2})
+
+
+class PromptTomlCategoryTests(unittest.TestCase):
+    """A prompt TOML's ``category`` is untrusted input: normalize or skip it.
+
+    These pin the prompt-TOML half of the malformed-input crash class (round-2
+    findings 1-2). The column set and its sort must route through the same
+    scalar-string normalization the verdict keys already use, so a non-scalar
+    or mixed-type ``category`` can never reach ``sorted()``.
+    """
+
+    def test_non_scalar_category_is_skipped_not_a_crash(self):
+        # Finding 1: category = ["c"] used to raise TypeError: unhashable
+        # type: 'list' at the column set, aborting the run and writing nothing.
+        with tempfile.TemporaryDirectory() as tmp:
+            code, payload, _markdown, out = run_cli(
+                Path(tmp),
+                {"p.toml": 'id = "p"\ncategory = ["c"]\n[user]\ntext = "x"\n'},
+            )
+            self.assertEqual(code, 0, out)
+            self.assertEqual(payload["graded"], {})
+            self.assertNotIn("c", json.dumps(payload["graded"]))
+
+    def test_dict_category_is_skipped_not_a_crash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            code, payload, _markdown, out = run_cli(
+                Path(tmp),
+                {"p.toml": 'id = "p"\ncategory = {a = 1}\n[user]\ntext = "x"\n'},
+            )
+            self.assertEqual(code, 0, out)
+            self.assertEqual(payload["graded"], {})
+
+    def test_mixed_type_category_pair_does_not_break_the_column_sort(self):
+        # Finding 2: an int category next to a str one used to raise
+        # TypeError: '<' not supported between 'int' and 'str' at the column
+        # sort. Only the string category may survive as a column.
+        with tempfile.TemporaryDirectory() as tmp:
+            code, payload, _markdown, out = run_cli(
+                Path(tmp),
+                {
+                    "p.toml": GRADED_PROMPT_TOML,
+                    "q.toml": 'id = "q"\ncategory = 7\n[user]\ntext = "y"\n',
+                },
+                sidecars=[
+                    (
+                        "d",
+                        "p_m1_grading.json",
+                        {"prompt_id": "p", "model": "m", "pass": True},
+                    ),
+                    (
+                        "d",
+                        "q_m1_grading.json",
+                        {"prompt_id": "q", "model": "m", "pass": True},
+                    ),
+                ],
+            )
+            self.assertEqual(code, 0, out)
+            self.assertEqual(
+                payload["graded"], {"m": {"cat-p": {"passed": 1, "graded": 1}}}
+            )
+
+    def test_int_category_alone_is_not_a_column(self):
+        # A gradable prompt with an int category: today that category becomes
+        # a column keyed 7 and the verdict is counted under it — a column that
+        # is not a category string. Normalization must drop both.
+        with tempfile.TemporaryDirectory() as tmp:
+            code, payload, markdown, out = run_cli(
+                Path(tmp),
+                {
+                    "p.toml": 'id = "p"\ncategory = 7\n[grading]\nmode = "contains"\n[user]\ntext = "x"\n',
+                },
+                sidecars=[
+                    (
+                        "d",
+                        "p_m1_grading.json",
+                        {"prompt_id": "p", "model": "m", "pass": True},
+                    )
+                ],
+            )
+            self.assertEqual(code, 0, out)
+            self.assertEqual(payload["graded"], {})
+            self.assertNotIn("| 7 ", markdown)
+
+    def test_string_categories_still_form_sorted_columns(self):
+        # The normalization must keep the normal case: string categories are
+        # columns, in sorted order.
+        with tempfile.TemporaryDirectory() as tmp:
+            code, payload, markdown, out = run_cli(
+                Path(tmp),
+                {
+                    "a.toml": 'id = "a"\ncategory = "cat-b"\n[grading]\nmode = "contains"\n[user]\ntext = "x"\n',
+                    "b.toml": 'id = "b"\ncategory = "cat-a"\n[grading]\nmode = "contains"\n[user]\ntext = "x"\n',
+                },
+                sidecars=[
+                    (
+                        "d",
+                        "a_m1_grading.json",
+                        {"prompt_id": "a", "model": "m", "pass": True},
+                    ),
+                    (
+                        "d",
+                        "b_m1_grading.json",
+                        {"prompt_id": "b", "model": "m", "pass": True},
+                    ),
+                ],
+            )
+            self.assertEqual(code, 0, out)
+            for line in markdown.splitlines():
+                if line.startswith("| model |"):
+                    self.assertEqual(
+                        [part.strip() for part in line.strip().strip("|").split("|")],
+                        ["model", "cat-a", "cat-b"],
+                    )
+                    break
+            else:
+                self.fail("no matrix header row in markdown")
+
+
+class PromptTomlIdTests(unittest.TestCase):
+    """A prompt TOML's ``id`` is untrusted input too: a non-scalar skips it."""
+
+    def test_non_scalar_id_is_skipped_not_a_crash(self):
+        # Finding 3: id = ["p"] raised TypeError: unhashable type: 'list' at
+        # load time, before any verdict was read.
+        with tempfile.TemporaryDirectory() as tmp:
+            code, payload, _markdown, out = run_cli(
+                Path(tmp),
+                {"p.toml": 'id = ["p"]\ncategory = "cat-p"\n[user]\ntext = "x"\n'},
+            )
+            self.assertEqual(code, 0, out)
+            self.assertEqual(payload["graded"], {})
+
+    def test_non_scalar_id_does_not_brick_a_verdictless_corpus(self):
+        # No sidecars and no metas: this must still exit 0 and write outputs.
+        with tempfile.TemporaryDirectory() as tmp:
+            code, payload, _markdown, out = run_cli(
+                Path(tmp),
+                {"p.toml": 'id = ["p"]\ncategory = "cat-p"\n[user]\ntext = "x"\n'},
+            )
+            self.assertEqual(code, 0, out)
+            self.assertIsNotNone(payload)
+            self.assertEqual(payload["graded"], {})
+
+    def test_non_string_id_is_skipped(self):
+        # id = 5 is not a usable string prompt key either.
+        with tempfile.TemporaryDirectory() as tmp:
+            code, payload, _markdown, out = run_cli(
+                Path(tmp),
+                {"p.toml": 'id = 5\ncategory = "cat-p"\n[user]\ntext = "x"\n'},
+            )
+            self.assertEqual(code, 0, out)
+            self.assertEqual(payload["graded"], {})
+
+    def test_good_prompts_survive_a_bad_sibling_id(self):
+        # One unreadable prompt must not take the readable ones with it.
+        with tempfile.TemporaryDirectory() as tmp:
+            code, payload, _markdown, out = run_cli(
+                Path(tmp),
+                {
+                    "bad.toml": 'id = ["p"]\ncategory = "cat-x"\n[user]\ntext = "x"\n',
+                    "good.toml": GRADED_PROMPT_TOML,
+                },
+                sidecars=[
+                    (
+                        "d",
+                        "p_m1_grading.json",
+                        {"prompt_id": "p", "model": "m", "pass": True},
+                    )
+                ],
+            )
+            self.assertEqual(code, 0, out)
+            self.assertEqual(
+                payload["graded"], {"m": {"cat-p": {"passed": 1, "graded": 1}}}
+            )
+
+
+class UnparseablePromptTests(unittest.TestCase):
+    """A prompt TOML that cannot be read is skipped, never a crash."""
+
+    def test_unparseable_prompt_toml_is_skipped_gracefully(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            code, payload, _markdown, out = run_cli(
+                Path(tmp),
+                {"p.toml": 'id = "p\n', "good.toml": GRADED_PROMPT_TOML},
+                sidecars=[
+                    (
+                        "d",
+                        "p_m1_grading.json",
+                        {"prompt_id": "p", "model": "m", "pass": True},
+                    )
+                ],
+            )
+            self.assertEqual(code, 0, out)
+            self.assertEqual(
+                payload["graded"], {"m": {"cat-p": {"passed": 1, "graded": 1}}}
+            )
+
+    def test_invalid_utf8_prompt_toml_is_skipped_gracefully(self):
+        # tomllib decodes without a BOM as UTF-8, so a stray non-UTF-8 byte
+        # raises UnicodeDecodeError — a sibling of the TOMLDecodeError path.
+        with tempfile.TemporaryDirectory() as tmp:
+            code, payload, _markdown, out = run_cli(
+                Path(tmp),
+                {"good.toml": GRADED_PROMPT_TOML},
+                sidecars=[
+                    (
+                        "d",
+                        "p_m1_grading.json",
+                        {"prompt_id": "p", "model": "m", "pass": True},
+                    )
+                ],
+                raw_prompts={
+                    "bad.toml": b'id = "bad"\ncategory = "cat-bad"\n\xff\xfe\n'
+                },
+            )
+            self.assertEqual(code, 0, out)
+            self.assertEqual(
+                payload["graded"], {"m": {"cat-p": {"passed": 1, "graded": 1}}}
+            )
 
 
 class CliTests(unittest.TestCase):
