@@ -75,6 +75,27 @@ def _read_json(path):
     return data if isinstance(data, dict) else None
 
 
+def _as_vendor_key(value):
+    """Return ``value`` when it is a non-empty string id, else ``None``.
+
+    ``prompt_id``/``model`` are used as dict keys and sorted downstream, so a
+    list or dict would abort the whole run with ``TypeError: unhashable type``
+    and mixed key types would break the sort. Anything that is not a string
+    means the verdict is malformed — skip it, never crash.
+    """
+    return value if isinstance(value, str) and value else None
+
+
+def _as_bool(value):
+    """Return ``value`` only when it is a genuine ``bool``, else ``None``.
+
+    Coercing with ``bool()`` would silently turn ``"false"`` into a PASS and
+    ``None``/``[]`` into a recorded failure. A wrong-typed verdict is rejected
+    outright, so a bad sidecar can neither fabricate a pass nor mask a fail.
+    """
+    return value if isinstance(value, bool) else None
+
+
 def _has_playability(meta):
     """True when ``meta`` carries a playability verdict/label (gradable)."""
     verification = meta.get("playability_verification")
@@ -114,14 +135,15 @@ def collect_verdicts(results_dir):
             data = _read_json(path)
             if data is None:
                 continue
-            prompt_id = data.get("prompt_id")
-            model = data.get("model")
-            if not prompt_id or not model or "pass" not in data:
+            prompt_id = _as_vendor_key(data.get("prompt_id"))
+            model = _as_vendor_key(data.get("model"))
+            passed = _as_bool(data.get("pass"))
+            if not prompt_id or not model or passed is None:
                 continue
             verdicts[(directory.name, stem)] = {
                 "prompt_id": prompt_id,
                 "model": model,
-                "pass": bool(data["pass"]),
+                "pass": passed,
                 "source": SIDECAR_SOURCE,
             }
 
@@ -134,22 +156,25 @@ def collect_verdicts(results_dir):
             data = _read_json(path)
             if data is None:
                 continue
-            if _has_playability(data) and data.get("prompt_id"):
-                playability_prompts.add(data["prompt_id"])
+            meta_prompt_id = _as_vendor_key(data.get("prompt_id"))
+            if _has_playability(data) and meta_prompt_id:
+                playability_prompts.add(meta_prompt_id)
             key = (directory.name, stem)
             if key in verdicts:
                 continue  # a sidecar already owns this result
             grading = data.get("grading")
             if not isinstance(grading, dict) or "pass" not in grading:
                 continue  # "grading": null is *no verdict*, never a failure
-            prompt_id = data.get("prompt_id")
-            model = data.get("model")
-            if not prompt_id or not model:
+            passed = _as_bool(grading.get("pass"))
+            if passed is None:
+                continue  # non-bool pass is malformed, not a coerced verdict
+            model = _as_vendor_key(data.get("model"))
+            if not meta_prompt_id or not model:
                 continue
             verdicts[key] = {
-                "prompt_id": prompt_id,
+                "prompt_id": meta_prompt_id,
                 "model": model,
-                "pass": bool(grading["pass"]),
+                "pass": passed,
                 "source": LEGACY_SOURCE,
             }
 
