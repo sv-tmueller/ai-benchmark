@@ -116,10 +116,13 @@ answer_key = "harness/fixtures/sql_country_analytics/expected_rows.json"
   compares the returned rows to `expected_rows.json` by column name, with
   numerics rounded to 6 decimals.
 - A missing result file, a missing SQL block, an empty or no-result-set SQL
-  block (e.g. `INSERT`, `CREATE TABLE`, comment-only), a SQL error, or a row
-  mismatch all yield
+  block (e.g. `INSERT`, `CREATE TABLE`, comment-only), a SQL error, a
+  malformed or wrong-shaped `answer_key` (anything other than a JSON list of
+  objects keyed by column name), a non-string `fixture`/`answer_key` grading
+  value, or a row mismatch all yield
   `pass: false` with an explanation in `detail` (and a row diff on
-  mismatch) — never a harness crash.
+  mismatch) — never a harness crash. The mode returns a verdict for *any*
+  input, however malformed; it does not raise.
 - The fixture is committed as **text**, not a binary DB, so the database is
   rebuilt per grade call, can never be mutated, and no blob lands in git.
   `harness/fixtures/sql_country_analytics/verify_fixture.py` rebuilds the DB,

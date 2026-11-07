@@ -445,6 +445,180 @@ class IoAndParseBoundaryTests(unittest.TestCase):
         self.assertIn("answer key", result["detail"].lower())
 
 
+class ShapeBoundaryTests(unittest.TestCase):
+    """Round-3 findings 1-2: wrong-shaped JSON keys and non-string grading values.
+
+    A parse boundary has two stages: decode/parse the text, then validate the
+    *shape* of what was parsed. Round 2 guarded the first (JSONDecodeError);
+    these tests pin the second. The contract is total: no input to this mode,
+    however malformed, may raise.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name)
+        self.results_dir = self.tmp / "sql-country-analytics"
+        self.results_dir.mkdir()
+
+    def _good_result(self) -> Path:
+        p = self.results_dir / "sql-country-analytics_glm_5_3_flash.md"
+        p.write_text(f"Here is my answer.\n\n```sql\n{CORRECT_QUERY}\n```\n", encoding="utf-8")
+        return p
+
+    def _write_json_key(self, obj, name: str) -> str:
+        p = self.tmp / name
+        p.write_text(json.dumps(obj), encoding="utf-8")
+        return str(p)
+
+    def _grading(self, *, fixture=FIXTURE, answer_key=ANSWER_KEY) -> dict:
+        return {"mode": "sql-exec", "fixture": fixture, "answer_key": answer_key}
+
+    def _assert_verdict_shape(self, result: dict):
+        self.assertEqual(
+            set(result.keys()),
+            {"prompt_id", "model", "mode", "pass", "detail"},
+        )
+        self.assertFalse(result["pass"])
+
+    # --- finding 1: syntactically valid but wrong-SHAPED answer key -------
+
+    def _assert_wrong_shape_is_a_verdict(self, label: str, key_obj):
+        key_path = self._write_json_key(key_obj, f"key_{label}.json")
+        result = grade(
+            self._good_result(),
+            self._grading(answer_key=key_path),
+            _prompt(),
+        )
+        self._assert_verdict_shape(result)
+        self.assertIn("answer key", result["detail"].lower())
+        self.assertIn("shape", result["detail"].lower())
+
+    def test_list_of_lists_answer_key_is_a_verdict_not_a_crash(self):
+        self._assert_wrong_shape_is_a_verdict("list_of_lists", [[1, 2, 3]])
+
+    def test_bare_dict_answer_key_is_a_verdict_not_a_crash(self):
+        self._assert_wrong_shape_is_a_verdict("bare_dict", {"country": "Germany"})
+
+    def test_scalar_string_answer_key_is_a_verdict_not_a_crash(self):
+        self._assert_wrong_shape_is_a_verdict("scalar_string", "not a key")
+
+    def test_scalar_number_answer_key_is_a_verdict_not_a_crash(self):
+        self._assert_wrong_shape_is_a_verdict("scalar_number", 42)
+
+    def test_numeric_row_answer_key_is_a_verdict_not_a_crash(self):
+        # A flat numeric list (a "row" of values, not objects).
+        self._assert_wrong_shape_is_a_verdict("numeric_row", [1, 2, 3])
+
+    def test_mixed_list_answer_key_is_a_verdict_not_a_crash(self):
+        self._assert_wrong_shape_is_a_verdict("mixed_list", [{"c": 1}, 5])
+
+    def test_bool_answer_key_is_a_verdict_not_a_crash(self):
+        self._assert_wrong_shape_is_a_verdict("bool", True)
+
+    def test_list_of_strings_answer_key_is_a_verdict_not_a_crash(self):
+        self._assert_wrong_shape_is_a_verdict("list_of_strings", ["a", "b"])
+
+    def test_null_answer_key_is_a_verdict_not_a_crash(self):
+        self._assert_wrong_shape_is_a_verdict("null", None)
+
+    # --- finding 2: non-string fixture / answer_key grading values --------
+
+    def test_non_string_fixture_is_a_verdict_not_a_crash(self):
+        result = grade(
+            self._good_result(),
+            self._grading(fixture=42),
+            _prompt(),
+        )
+        self._assert_verdict_shape(result)
+        self.assertIn("string", result["detail"].lower())
+        self.assertIn("fixture", result["detail"].lower())
+
+    def test_non_string_fixture_list_is_a_verdict_not_a_crash(self):
+        result = grade(
+            self._good_result(),
+            self._grading(fixture=["a.sql"]),
+            _prompt(),
+        )
+        self._assert_verdict_shape(result)
+        self.assertIn("string", result["detail"].lower())
+
+    def test_non_string_answer_key_is_a_verdict_not_a_crash(self):
+        result = grade(
+            self._good_result(),
+            self._grading(answer_key=7),
+            _prompt(),
+        )
+        self._assert_verdict_shape(result)
+        self.assertIn("string", result["detail"].lower())
+        self.assertIn("answer key", result["detail"].lower())
+
+    def test_non_string_answer_key_list_is_a_verdict_not_a_crash(self):
+        result = grade(
+            self._good_result(),
+            self._grading(answer_key=["key.json"]),
+            _prompt(),
+        )
+        self._assert_verdict_shape(result)
+        self.assertIn("string", result["detail"].lower())
+
+    # --- other uncontrolled-shape data on this path -----------------------
+
+    def test_fixture_with_nul_byte_is_a_verdict_not_a_crash(self):
+        # sqlite3 raises ValueError (not sqlite3.Error) for NUL bytes, so the
+        # executescript guard alone does not cover it.
+        bad = self.tmp / "nul_seed.sql"
+        bad.write_bytes(b"CREATE TABLE t (id INTEGER);\x00\n")
+        result = grade(
+            self._good_result(),
+            self._grading(fixture=str(bad)),
+            _prompt(),
+        )
+        self._assert_verdict_shape(result)
+        self.assertIn("fixture", result["detail"].lower())
+
+    def test_key_with_nul_byte_is_a_verdict_not_a_crash(self):
+        bad = self.tmp / "nul_key.json"
+        bad.write_bytes(b'[{"country": "Germany"}\x00]')
+        result = grade(
+            self._good_result(),
+            self._grading(answer_key=str(bad)),
+            _prompt(),
+        )
+        self._assert_verdict_shape(result)
+        self.assertIn("answer key", result["detail"].lower())
+
+    def test_non_dict_grading_argument_is_a_verdict_not_a_crash(self):
+        for label, grading in [
+            ("none", None),
+            ("list", []),
+            ("scalar", 42),
+            ("string", "fixture"),
+        ]:
+            with self.subTest(grading=label):
+                result = grade(self._good_result(), grading, _prompt())
+                self._assert_verdict_shape(result)
+                self.assertIn("grading", result["detail"].lower())
+
+    def test_non_dict_prompt_argument_is_a_verdict_not_a_crash(self):
+        result = grade(self._good_result(), self._grading(), None)
+        self._assert_verdict_shape(result)
+        self.assertIn("prompt", result["detail"].lower())
+
+    def test_non_pathlike_result_path_is_a_verdict_not_a_crash(self):
+        result = grade(42, self._grading(), _prompt())
+        self._assert_verdict_shape(result)
+
+    def test_non_string_prompt_id_is_a_verdict_not_a_crash(self):
+        # prompt_id only ever lands in the verdict dict; a non-string must not
+        # break the contract of returning the five keys.
+        result = grade(self._good_result(), self._grading(), {"id": 123})
+        self.assertEqual(
+            set(result.keys()),
+            {"prompt_id", "model", "mode", "pass", "detail"},
+        )
+
+
 class SidecarFidelityTests(unittest.TestCase):
     """The committed sidecar must be reproducible from the committed inputs."""
 
