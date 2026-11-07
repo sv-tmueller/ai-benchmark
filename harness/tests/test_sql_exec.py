@@ -334,6 +334,117 @@ class SqlExecModeTests(unittest.TestCase):
         self.assertTrue(result["pass"], result["detail"])
 
 
+class IoAndParseBoundaryTests(unittest.TestCase):
+    """Every I/O and parse boundary is a verdict, never a crash (round-2 findings).
+
+    The ``every failure mode is a verdict`` contract needs a guard at the file
+    decode, the answer-key JSON parse, and the fixture load — not only around
+    the query execution.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name)
+        self.results_dir = self.tmp / "sql-country-analytics"
+        self.results_dir.mkdir()
+
+    def _result_bytes(self, payload: bytes) -> Path:
+        p = self.results_dir / "sql-country-analytics_glm_5_3_flash.md"
+        p.write_bytes(payload)
+        return p
+
+    def _good_markdown_result(self) -> Path:
+        body = f"Here is my answer.\n\n```sql\n{CORRECT_QUERY}\n```\n".encode()
+        return self._result_bytes(body)
+
+    def _grading(self, *, fixture: str = FIXTURE, answer_key: str = ANSWER_KEY) -> dict:
+        return {"mode": "sql-exec", "fixture": fixture, "answer_key": answer_key}
+
+    def test_non_utf8_result_file_is_a_verdict_not_a_crash(self):
+        # Round-2 finding 1: invalid bytes in a model deliverable must yield a
+        # pass:false verdict naming the decode error, not UnicodeDecodeError.
+        path = self._result_bytes(b"Answer.\n\n```sql\nSELECT 1;\n```\n\xff\xfe bad\n")
+        self.assertRaises(UnicodeDecodeError, path.read_text, "utf-8")
+        result = grade(path, self._grading(), _prompt())
+        self.assertEqual(
+            set(result.keys()),
+            {"prompt_id", "model", "mode", "pass", "detail"},
+        )
+        self.assertFalse(result["pass"])
+        self.assertIn("decode", result["detail"].lower())
+
+    def test_malformed_answer_key_is_a_verdict_not_a_crash(self):
+        # Round-2 finding 2: unparseable JSON must yield a pass:false verdict
+        # carrying the parse error, not a JSONDecodeError traceback.
+        bad_key = self.tmp / "expected_rows_bad.json"
+        bad_key.write_text('{"unterminated": ', encoding="utf-8")
+        result = grade(
+            self._good_markdown_result(),
+            self._grading(answer_key=str(bad_key)),
+            _prompt(),
+        )
+        self.assertEqual(
+            set(result.keys()),
+            {"prompt_id", "model", "mode", "pass", "detail"},
+        )
+        self.assertFalse(result["pass"])
+        self.assertIn("answer key", result["detail"].lower())
+        self.assertIn("json", result["detail"].lower())
+
+    def test_truncated_answer_key_is_a_verdict_not_a_crash(self):
+        # Second malformed-JSON shape: syntactically truncated array.
+        bad_key = self.tmp / "expected_rows_truncated.json"
+        bad_key.write_text('[{"country": "Germany",', encoding="utf-8")
+        result = grade(
+            self._good_markdown_result(),
+            self._grading(answer_key=str(bad_key)),
+            _prompt(),
+        )
+        self.assertFalse(result["pass"])
+        self.assertIn("answer key", result["detail"].lower())
+
+    def test_malformed_fixture_is_a_verdict_not_a_crash(self):
+        # Round-2 finding 3: a garbage SQL fixture must yield a pass:false
+        # verdict carrying the DB error, not OperationalError from executescript.
+        bad_fixture = self.tmp / "seed_bad.sql"
+        bad_fixture.write_text("THIS IS NOT VALID SQL;", encoding="utf-8")
+        result = grade(
+            self._good_markdown_result(),
+            self._grading(fixture=str(bad_fixture)),
+            _prompt(),
+        )
+        self.assertEqual(
+            set(result.keys()),
+            {"prompt_id", "model", "mode", "pass", "detail"},
+        )
+        self.assertFalse(result["pass"])
+        self.assertIn("fixture", result["detail"].lower())
+
+    def test_non_utf8_fixture_is_a_verdict_not_a_crash(self):
+        # A fixture file with invalid bytes cannot be decoded into SQL text.
+        bad_fixture = self.tmp / "seed_nonutf8.sql"
+        bad_fixture.write_bytes(b"CREATE TABLE t (id INTEGER);\n\xff\xfe\n")
+        result = grade(
+            self._good_markdown_result(),
+            self._grading(fixture=str(bad_fixture)),
+            _prompt(),
+        )
+        self.assertFalse(result["pass"])
+        self.assertIn("fixture", result["detail"].lower())
+
+    def test_non_utf8_answer_key_is_a_verdict_not_a_crash(self):
+        bad_key = self.tmp / "expected_rows_nonutf8.json"
+        bad_key.write_bytes(b'[{"country": "Germany"}\xff\xfe]')
+        result = grade(
+            self._good_markdown_result(),
+            self._grading(answer_key=str(bad_key)),
+            _prompt(),
+        )
+        self.assertFalse(result["pass"])
+        self.assertIn("answer key", result["detail"].lower())
+
+
 class SidecarFidelityTests(unittest.TestCase):
     """The committed sidecar must be reproducible from the committed inputs."""
 

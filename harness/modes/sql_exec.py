@@ -16,9 +16,12 @@ in git, no cross-call state), extracts the first ```` ```sql ```` fenced block
 from the Markdown deliverable, executes it once, and compares the returned rows
 against the answer key by column name.
 
-Every failure mode is a verdict, not a crash: a missing result file, a missing
-SQL block, an empty (or no-result-set) SQL block, a SQL error, or a row
-mismatch all return ``pass: false`` with an explanatory ``detail``.
+Every failure mode is a verdict, not a crash: a missing result file, a result
+file that is not valid UTF-8, a missing SQL block, an empty (or no-result-set)
+SQL block, a SQL error, a malformed (or non-UTF-8) fixture, a malformed (or
+non-UTF-8) answer key, or a row mismatch all return ``pass: false`` with an
+explanatory ``detail``. Each I/O and parse boundary is guarded, not only the
+query execution.
 """
 
 from __future__ import annotations
@@ -133,19 +136,45 @@ def grade(result_path: Path, grading: dict, prompt: dict) -> dict:
     if not key_path.is_file():
         return verdict(False, f"answer key file not found: {key_rel}")
 
-    query = _extract_query(result_path.read_text(encoding="utf-8"))
+    # Decoding a model deliverable is an I/O boundary: invalid bytes must be a
+    # verdict, not a UnicodeDecodeError escaping the runner.
+    try:
+        result_text = result_path.read_text(encoding="utf-8")
+    except (UnicodeDecodeError, OSError) as exc:
+        return verdict(False, f"result file could not be decoded as UTF-8: {exc}")
+
+    query = _extract_query(result_text)
     if query is None:
         return verdict(False, "no SQL code block found")
 
-    expected_raw = json.loads(key_path.read_text(encoding="utf-8"))
+    # Parsing the answer key is a parse boundary: a malformed or non-UTF-8 key
+    # must be a verdict carrying the parse error, never a JSONDecodeError.
+    try:
+        expected_raw = json.loads(key_path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, OSError) as exc:
+        return verdict(False, f"answer key could not be decoded as UTF-8: {exc}")
+    except json.JSONDecodeError as exc:
+        return verdict(False, f"answer key is not valid JSON: {exc}")
+
     key_columns = list(expected_raw[0].keys()) if expected_raw else []
     expected_rows = [
         {k: _normalize(v) for k, v in row.items()} for row in expected_raw
     ]
 
+    # Loading the fixture is a parse boundary too: a malformed (or non-UTF-8)
+    # seed must be a verdict carrying the DB error, not an OperationalError
+    # from executescript escaping the runner.
+    try:
+        fixture_sql = fixture_path.read_text(encoding="utf-8")
+    except (UnicodeDecodeError, OSError) as exc:
+        return verdict(False, f"fixture file could not be decoded as UTF-8: {exc}")
+
     conn = sqlite3.connect(":memory:")
     try:
-        conn.executescript(fixture_path.read_text(encoding="utf-8"))
+        try:
+            conn.executescript(fixture_sql)
+        except sqlite3.Error as exc:
+            return verdict(False, f"fixture SQL error: {exc}")
         try:
             cur = conn.execute(query)
             actual_raw = cur.fetchall()
