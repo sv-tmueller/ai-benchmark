@@ -68,6 +68,18 @@ def discover_modes(package=MODES_PACKAGE):
     return modes
 
 
+def module_name_for_mode(mode_name):
+    """Map a ``[grading].mode`` string to its module name (D1a).
+
+    TOML mode strings may be hyphenated (``sql-exec``) while module files are
+    underscored (``sql_exec.py``); the sidecar ``mode`` field keeps the
+    literal TOML string. Non-string values are returned unchanged.
+    """
+    if isinstance(mode_name, str):
+        return mode_name.replace("-", "_")
+    return mode_name
+
+
 def load_prompts(prompts_dir):
     """Return ``{prompt_id: parsed TOML}`` for every prompt file."""
     prompts = {}
@@ -159,6 +171,14 @@ def grade_all(modes, prompts, results_dir, prompt_filter=None, out=None):
     for result_path in iter_results(results_dir):
         meta = read_meta(result_path)
         prompt = resolve_prompt(result_path, meta, prompts)
+
+        # A meta verdict whose prompt_id resolves to no prompt TOML (and whose
+        # directory matches none either) cannot be graded — skip it, never
+        # fail, under both --all and --prompt.
+        if prompt is None:
+            skipped += 1
+            continue
+
         mode_name, grading = resolve_mode(prompt, meta)
 
         if mode_name is None:
@@ -168,7 +188,7 @@ def grade_all(modes, prompts, results_dir, prompt_filter=None, out=None):
         if prompt_filter is not None and prompt["id"] != prompt_filter:
             continue
 
-        grade_fn = modes.get(mode_name)
+        grade_fn = modes.get(module_name_for_mode(mode_name))
         if grade_fn is None:
             errors += 1
             print(
@@ -214,7 +234,7 @@ def parse_args(argv):
     return parser.parse_args(argv)
 
 
-def main(argv=None, results_dir=None, prompts_dir=None, out=None):
+def main(argv=None, results_dir=None, prompts_dir=None, out=None, modes=None):
     """CLI entry point; returns the process exit code."""
     if results_dir is None:
         results_dir = RESULTS_DIR
@@ -230,7 +250,8 @@ def main(argv=None, results_dir=None, prompts_dir=None, out=None):
         print("unknown prompt id: {}".format(args.prompt), file=out)
         return 1
 
-    modes = discover_modes()
+    if modes is None:
+        modes = discover_modes()
 
     prompt_filter = None if args.all else args.prompt
     graded, skipped, errors = grade_all(

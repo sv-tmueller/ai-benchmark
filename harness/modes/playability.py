@@ -37,10 +37,10 @@ def resolve_verdict(meta):
     return None
 
 
-def _result(prompt_id, result_path, passed, detail):
+def _result(prompt, result_path, passed, detail):
     return {
-        "prompt_id": prompt_id,
-        "model": derive_model(result_path),
+        "prompt_id": prompt["id"],
+        "model": derive_model(result_path, prompt),
         "mode": MODE,
         "pass": passed,
         "detail": detail,
@@ -49,27 +49,26 @@ def _result(prompt_id, result_path, passed, detail):
 
 def grade(result_path, grading, prompt):
     """Return the verdict dict derived from the paired meta sidecar."""
-    prompt_id = prompt["id"]
     meta_path = pair_meta(result_path)
     if meta_path is None:
-        return _result(prompt_id, result_path, False, "playability meta not found")
+        return _result(prompt, result_path, False, "playability meta not found")
 
     try:
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         return _result(
-            prompt_id, result_path, False, "playability meta unreadable ({})".format(exc)
+            prompt, result_path, False, "playability meta unreadable ({})".format(exc)
         )
 
     if not isinstance(meta, dict):
-        return _result(prompt_id, result_path, False, "playability verdict missing")
+        return _result(prompt, result_path, False, "playability verdict missing")
 
     verdict = resolve_verdict(meta)
     if verdict is None:
-        return _result(prompt_id, result_path, False, "playability verdict missing")
+        return _result(prompt, result_path, False, "playability verdict missing")
 
     return _result(
-        prompt_id,
+        prompt,
         result_path,
         verdict == PASSING_LABEL,
         "playability verdict: {}".format(verdict),

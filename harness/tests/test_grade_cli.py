@@ -46,6 +46,18 @@ file_prefix = "game-alpha"
 text = "Build a game."
 """
 
+SQL_EXEC_TOML = """\
+id          = "sql-write"
+title       = "Write a SQL query"
+file_prefix = "sql-write"
+
+[grading]
+mode = "sql-exec"
+
+[user]
+text = "Write a query."
+"""
+
 
 def _write(path: Path, text: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -126,12 +138,15 @@ class GradeCliTest(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def _run(self, args):
+    def _run(self, args, modes=None):
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
             try:
                 code = grade_mod.main(
-                    args, results_dir=self.results, prompts_dir=self.prompts
+                    args,
+                    results_dir=self.results,
+                    prompts_dir=self.prompts,
+                    modes=modes,
                 )
             except SystemExit as exc:  # argparse rejects missing/unknown args
                 code = exc.code if isinstance(exc.code, int) else 1
@@ -288,6 +303,104 @@ class GradeCliTest(unittest.TestCase):
         self.assertIn("playability", modes)
         self.assertTrue(all(callable(fn) for fn in modes.values()))
         self.assertTrue(all(not name.startswith("_") for name in modes))
+
+    # --- D1a: hyphenated mode -> underscored module ----------------------
+
+    def test_hyphenated_mode_dispatches_to_underscored_module(self):
+        """D1a: ``sql-exec`` must dispatch to ``harness/modes/sql_exec.py``."""
+        _write(self.prompts / "sql-write.toml", SQL_EXEC_TOML)
+        _write(self.results / "sql-write" / "sql-write_glm_5_3_flash.md", "SELECT 1\n")
+        _write(
+            self.results / "sql-write" / "sql-write_glm_5_3_flash.meta.json",
+            json.dumps({"prompt_id": "sql-write"}),
+        )
+
+        def sql_exec_grade(result_path, grading, prompt):
+            return {
+                "prompt_id": prompt["id"],
+                "model": "glm_5_3_flash",
+                "mode": "sql-exec",
+                "pass": True,
+                "detail": "dispatched to sql_exec",
+            }
+
+        # ``sql_exec`` is the underscored module name grade.py must map the
+        # hyphenated TOML mode string onto during its registry lookup.
+        modes = dict(grade_mod.discover_modes())
+        modes["sql_exec"] = sql_exec_grade
+
+        code, out = self._run(["--all"], modes=modes)
+
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("no module for mode", out)
+        verdict = self._load(
+            self.results / "sql-write" / "sql-write_glm_5_3_flash_grading.json"
+        )
+        self.assertEqual(verdict["mode"], "sql-exec")
+        self.assertIs(verdict["pass"], True)
+
+    # --- D1a: meta with a ghost prompt_id is skipped ---------------------
+
+    def test_playability_meta_with_ghost_prompt_id_is_skipped(self):
+        """A meta verdict whose prompt_id resolves to no TOML must skip."""
+        _write(
+            self.results / "lava-lamp" / "lava-lamp_ghost.html",
+            "<html></html>",
+        )
+        _write(
+            self.results / "lava-lamp" / "lava-lamp_ghost.meta.json",
+            json.dumps(
+                {
+                    "prompt_id": "ghost-prompt",
+                    "playability_verification": {
+                        "playability_verdict": "PLAYABLE_VERIFIED"
+                    },
+                }
+            ),
+        )
+
+        code, out = self._run(["--all"])
+
+        self.assertEqual(code, 0, out)
+        self.assertFalse(
+            (self.results / "lava-lamp" / "lava-lamp_ghost_grading.json").exists()
+        )
+
+    def test_ghost_prompt_id_is_skipped_under_prompt_filter(self):
+        _write(
+            self.results / "lava-lamp" / "lava-lamp_ghost.html",
+            "<html></html>",
+        )
+        _write(
+            self.results / "lava-lamp" / "lava-lamp_ghost.meta.json",
+            json.dumps(
+                {
+                    "prompt_id": "ghost-prompt",
+                    "playability_verification": {
+                        "playability_verdict": "PLAYABLE_VERIFIED"
+                    },
+                }
+            ),
+        )
+
+        code, out = self._run(["--prompt", "game-alpha"])
+
+        self.assertEqual(code, 0, out)
+        self.assertFalse(
+            (self.results / "lava-lamp" / "lava-lamp_ghost_grading.json").exists()
+        )
+
+    # --- README-documented --all behaviour -------------------------------
+
+    def test_all_writes_one_sidecar_per_defined_rule(self):
+        """README: one sidecar per defined [grading] block or playability meta."""
+        code, _ = self._run(["--all"])
+
+        self.assertEqual(code, 0)
+        self.assertEqual(len(self._sidecars()), 2)
+        self.assertEqual({p.name for p in self._sidecars()},
+                         {"math-basic_glm_5_3_flash_grading.json",
+                          "game-alpha_model_x_grading.json"})
 
 
 if __name__ == "__main__":

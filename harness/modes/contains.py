@@ -21,7 +21,7 @@ def grade(result_path, grading, prompt):
     except OSError as exc:
         return {
             "prompt_id": prompt["id"],
-            "model": derive_model(result_path),
+            "model": derive_model(result_path, prompt),
             "mode": "contains",
             "pass": False,
             "detail": "result file not found ({})".format(exc.strerror),
@@ -34,7 +34,7 @@ def grade(result_path, grading, prompt):
 
     return {
         "prompt_id": prompt["id"],
-        "model": derive_model(result_path),
+        "model": derive_model(result_path, prompt),
         "mode": "contains",
         "pass": expected in text,
         "detail": detail,

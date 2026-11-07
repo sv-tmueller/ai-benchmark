@@ -120,7 +120,10 @@ field, not the filename prefix.
 
 Opt-in table in a prompt TOML. `mode` names the module under
 `harness/modes/` that grades the result; the module receives
-`(result_path, grading, prompt)` and returns a verdict dict.
+`(result_path, grading, prompt)` and returns a verdict dict. Hyphenated
+mode strings map to underscored module files (`sql-exec` →
+`harness/modes/sql_exec.py`), while the sidecar `mode` field keeps the
+literal TOML string.
 
 ```toml
 [grading]
@@ -164,8 +167,9 @@ present in `results/`: the newer
 }
 ```
 
-`model` is the filename remainder after `<dirname>_`; `detail` is free text
-explaining the outcome.
+`model` is the filename remainder after `<file_prefix>_` (from the prompt
+TOML, falling back to the prompt id); `detail` is free text explaining the
+outcome.
 
 ## Results
 
