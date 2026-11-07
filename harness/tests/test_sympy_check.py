@@ -81,6 +81,31 @@ class ExtractionTests(unittest.TestCase):
         self.assertEqual(point, "2")
         self.assertEqual(value, "88")
 
+    def test_third_derivative_boxes_do_not_shadow_the_second_derivative(self):
+        # Round-2 regression: three primes is f''', not a second-derivative
+        # marker, so the trailing f''' aside boxes must not be extracted.
+        text = (
+            "$$\\boxed{f''(x) = 36x^2 - 30x + 4}$$\n\n"
+            "$$\\boxed{f''(2) = 88}$$\n\n"
+            "$$\\boxed{f'''(x) = 12x - 30}$$\n\n"
+            "$$\\boxed{f'''(2) = 6}$$"
+        )
+        self.assertEqual(
+            sympy_check.extract_answer(text), ("36x^2 - 30x + 4", "2", "88")
+        )
+
+    def test_lone_third_derivative_box_is_not_extracted(self):
+        text = "$$\\boxed{f'''(x) = 12x - 30}$$\n\n$$\\boxed{f'''(2) = 6}$$"
+        self.assertEqual(sympy_check.extract_answer(text), (None, None, None))
+
+    def test_single_ascii_prime_is_not_a_second_derivative_marker(self):
+        text = "$$\\boxed{f'(x) = 12x^2 - 30x + 4}$$\n\n$$\\boxed{f'(2) = 88}$$"
+        self.assertEqual(sympy_check.extract_answer(text), (None, None, None))
+
+    def test_single_u2032_prime_is_not_a_second_derivative_marker(self):
+        text = "$$\\boxed{f′(x) = 12x^2 - 30x + 4}$$\n\n$$\\boxed{f′(2) = 88}$$"
+        self.assertEqual(sympy_check.extract_answer(text), (None, None, None))
+
     def test_missing_box_is_none(self):
         expr, point, value = sympy_check.extract_answer("no boxes here")
         self.assertEqual((expr, point, value), (None, None, None))

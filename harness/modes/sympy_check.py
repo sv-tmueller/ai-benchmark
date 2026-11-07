@@ -22,7 +22,11 @@ from pathlib import Path
 MODE = "sympy-check"
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "math-second-derivative" / "expected.json"
 
-PRIMES = "['\u2032\u2019\u2018\u2033]{2,}|\u2033"  # doubled primes, or one U+2033 DOUBLE PRIME
+# Exactly two single-prime glyphs (ASCII apostrophe, U+2032 PRIME, curly
+# variants), or one U+2033 DOUBLE PRIME glyph.  Deliberately not a braced
+# quantifier: a run of three-or-more primes is f''', a different derivative,
+# and must not be mistaken for the second-derivative marker.
+PRIMES = "['\u2032\u2019\u2018]{2}|\u2033"
 # Right-hand side of a boxed statement: plain text plus single-level braced
 # groups, so braced exponents like ``x^{2}`` survive the capture (the braces are
 # stripped in :func:`_clean` before parsing).
