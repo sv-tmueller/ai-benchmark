@@ -43,7 +43,8 @@ class ExtractionTests(unittest.TestCase):
         self.assertEqual(sympy_check.derive_model(REAL_RESULT, prompt), "glm_5_3_flash")
 
     def test_extracts_unicode_prime_boxed_answer(self):
-        text = "$$\\boxed{f''(x) = 36x^2 - 30x + 4}$$\n\n$$\\boxed{f''(2) = 88}$$"
+        # U+2032 PRIME twice, as the model writes them in prose.
+        text = "$$\\boxed{f′′(x) = 36x^2 - 30x + 4}$$\n\n$$\\boxed{f′′(2) = 88}$$"
         expr, point, value = sympy_check.extract_answer(text)
         self.assertEqual(expr, "36x^2 - 30x + 4")
         self.assertEqual(point, "2")
