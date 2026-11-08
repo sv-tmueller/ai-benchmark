@@ -836,6 +836,179 @@ class HostileNestingTests(unittest.TestCase):
             )
 
 
+class UnencodableKeyTests(unittest.TestCase):
+    """A key that cannot be encoded as UTF-8 is unusable: skip it, never abort.
+
+    Round-4 finding: ``json.loads`` accepts a lone surrogate escape
+    (``"\\ud800"``) while ``tomllib`` rejects it, so the value survived the
+    read-time guards, became a row key, and only failed at the *write* site —
+    ``out_json`` was written while ``UnicodeEncodeError`` left ``out_md`` at
+    0 bytes (exit 1, inconsistent partial outputs). The boundary guard must
+    reject any key string that cannot be UTF-8 encoded, so the verdict is
+    skipped like any other unusable value and both outputs stay consistent.
+    """
+
+    def run_corpus(self, root, sidecars=(), metas=()):
+        return run_cli(
+            root, {"p.toml": GRADED_PROMPT_TOML}, sidecars=sidecars, metas=metas
+        )
+
+    def markdown_rows(self, markdown):
+        """Return the matrix row keys, in render order."""
+        rows = []
+        for line in markdown.splitlines():
+            if not line.startswith("| ") or line.startswith("| model |"):
+                continue
+            if line[2:5] == "---":  # the header separator
+                continue
+            rows.append(line.strip().strip("|").split("|")[0].strip())
+        return rows
+
+    def assert_consistent_outputs(self, payload, markdown, out):
+        """Both outputs are written, non-empty, and describe the same rows."""
+        self.assertIsNotNone(payload, out)
+        self.assertIsNotNone(markdown, out)
+        self.assertTrue(markdown, "out.md was written but left empty: " + out)
+        self.assertEqual(
+            self.markdown_rows(markdown),
+            sorted(payload["graded"]),
+            "the markdown rows and the JSON row keys must agree: " + out,
+        )
+
+    def test_lone_surrogate_model_in_sidecar_does_not_abort_the_run(self):
+        # The exact round-4 trigger: a sidecar whose model is "\ud800" aborted
+        # at write_outputs after out.json had already been flushed.
+        with tempfile.TemporaryDirectory() as tmp:
+            code, payload, markdown, out = self.run_corpus(
+                Path(tmp),
+                sidecars=[
+                    (
+                        "d",
+                        "good_grading.json",
+                        {"prompt_id": "p", "model": "m", "pass": True},
+                    ),
+                    (
+                        "d",
+                        "bad_grading.json",
+                        {"prompt_id": "p", "model": "\ud800", "pass": True},
+                    ),
+                ],
+            )
+            self.assertEqual(code, 0, out)
+            self.assert_consistent_outputs(payload, markdown, out)
+            self.assertEqual(
+                payload["graded"], {"m": {"cat-p": {"passed": 1, "graded": 1}}}
+            )
+            # The unencodable key is gone from the payload, not merely escaped
+            # into it: json.dumps would render a surviving surrogate as the
+            # six-character sequence \ud800.
+            self.assertNotIn("\\ud800", json.dumps(payload))
+
+    def test_lone_surrogate_model_in_legacy_meta_does_not_abort_the_run(self):
+        # Same class through the legacy .meta.json grading path.
+        with tempfile.TemporaryDirectory() as tmp:
+            code, payload, markdown, out = self.run_corpus(
+                Path(tmp),
+                metas=[
+                    (
+                        "d",
+                        "good.meta.json",
+                        {"prompt_id": "p", "model": "m", "grading": {"pass": True}},
+                    ),
+                    (
+                        "d",
+                        "bad.meta.json",
+                        {
+                            "prompt_id": "p",
+                            "model": "\ud800",
+                            "grading": {"pass": True},
+                        },
+                    ),
+                ],
+            )
+            self.assertEqual(code, 0, out)
+            self.assert_consistent_outputs(payload, markdown, out)
+            self.assertEqual(
+                payload["graded"], {"m": {"cat-p": {"passed": 1, "graded": 1}}}
+            )
+            self.assertNotIn("\\ud800", json.dumps(payload))
+
+    def test_lone_surrogate_prompt_id_is_skipped_not_a_crash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            code, payload, markdown, out = self.run_corpus(
+                Path(tmp),
+                sidecars=[
+                    (
+                        "d",
+                        "good_grading.json",
+                        {"prompt_id": "p", "model": "m", "pass": True},
+                    ),
+                    (
+                        "d",
+                        "bad_grading.json",
+                        {"prompt_id": "\ud800", "model": "m", "pass": True},
+                    ),
+                ],
+            )
+            self.assertEqual(code, 0, out)
+            self.assert_consistent_outputs(payload, markdown, out)
+            self.assertEqual(
+                payload["graded"], {"m": {"cat-p": {"passed": 1, "graded": 1}}}
+            )
+
+    def test_corpus_of_only_unencodable_keys_still_writes_both_outputs(self):
+        # No salvageable verdict at all: the matrix is empty, but both files
+        # must still be written and consistent (never a 0-byte out.md).
+        with tempfile.TemporaryDirectory() as tmp:
+            code, payload, markdown, out = self.run_corpus(
+                Path(tmp),
+                sidecars=[
+                    (
+                        "d",
+                        "bad_grading.json",
+                        {"prompt_id": "p", "model": "\ud800", "pass": True},
+                    )
+                ],
+            )
+            self.assertEqual(code, 0, out)
+            self.assert_consistent_outputs(payload, markdown, out)
+            self.assertEqual(payload["graded"], {})
+            self.assertIn(UNGRADED_HEADING, markdown.lower())
+
+    def test_astral_model_key_still_counts(self):
+        # The guard must reject only *unpaired* surrogates: a legitimate
+        # astral-plane character (written as a JSON surrogate pair, decoded by
+        # json.loads to one scalar) is encodable and stays verbatim.
+        with tempfile.TemporaryDirectory() as tmp:
+            code, payload, markdown, out = self.run_corpus(
+                Path(tmp),
+                sidecars=[
+                    (
+                        "d",
+                        "emoji_grading.json",
+                        {"prompt_id": "p", "model": "\U0001f600", "pass": True},
+                    )
+                ],
+            )
+            self.assertEqual(code, 0, out)
+            self.assert_consistent_outputs(payload, markdown, out)
+            self.assertEqual(
+                payload["graded"], {"\U0001f600": {"cat-p": {"passed": 1, "graded": 1}}}
+            )
+
+    def test_boundary_guards_reject_unencodable_key_strings(self):
+        # The predicate itself: what TOML cannot even produce (its decoder
+        # rejects lone surrogates) must still be rejected at the key boundary.
+        for bad in ("\ud800", "a\ud800b", "\udfff"):
+            self.assertIsNone(scorecard._as_vendor_key(bad), repr(bad))
+            self.assertIsNone(scorecard._as_category(bad), repr(bad))
+        # ...while an ordinary non-ASCII key is encodable and survives intact.
+        self.assertEqual(
+            scorecard._as_vendor_key("münchen/モデル"), "münchen/モデル"
+        )
+        self.assertEqual(scorecard._as_category("katégorie"), "katégorie")
+
+
 class CliTests(unittest.TestCase):
     def test_exit_zero_run_writes_both_outputs(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -102,15 +102,39 @@ def _read_json(path):
     return data if isinstance(data, dict) else None
 
 
+def _is_encodable(value):
+    """True when ``value`` survives a UTF-8 encode, else ``False``.
+
+    ``json.loads`` accepts a lone surrogate escape (``"\\ud800"``) that
+    ``tomllib`` rejects at parse time (``TOMLDecodeError``, caught), so an
+    unpaired surrogate reaches the key boundary only through the sidecar or
+    legacy-meta path. Such a string is not a usable scalar: it cannot be
+    written to either output file, and ``write_text`` raises
+    ``UnicodeEncodeError`` *after* the JSON half was already flushed — exit 1
+    with a 0-byte markdown. The boundary treats it like any other unusable
+    value (skip it), so no unencodable byte can become a dict key, a column,
+    or a file.
+    """
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def _as_vendor_key(value):
-    """Return ``value`` when it is a non-empty string id, else ``None``.
+    """Return ``value`` when it is a non-empty, UTF-8-encodable string id.
 
     ``prompt_id``/``model`` are used as dict keys and sorted downstream, so a
     list or dict would abort the whole run with ``TypeError: unhashable type``
-    and mixed key types would break the sort. Anything that is not a string
-    means the verdict is malformed — skip it, never crash.
+    and mixed key types would break the sort. A lone surrogate passes
+    ``json.loads`` but cannot be encoded — see ``_is_encodable``. Anything that
+    is not a usable string means the verdict is malformed — skip it, never
+    crash.
     """
-    return value if isinstance(value, str) and value else None
+    if isinstance(value, str) and value and _is_encodable(value):
+        return value
+    return None
 
 
 def _as_bool(value):
@@ -225,15 +249,18 @@ def gradable_prompts(prompts, playability_prompts):
 
 
 def _as_category(value):
-    """Return ``value`` when it is a non-empty category string, else ``None``.
+    """Return ``value`` when it is a non-empty, UTF-8-encodable category string.
 
     ``category`` comes from the same untrusted prompt TOML as ``id``/``model``,
     and it is used as a column key and sorted. A list or dict aborts with
-    ``TypeError: unhashable type``, and an int next to a string breaks
-    ``sorted()`` with ``'<' not supported`` — routing every category through
-    this guard keeps the column set and its sort string-only.
+    ``TypeError: unhashable type``, an int next to a string breaks ``sorted()``
+    with ``'<' not supported``, and a lone surrogate (which ``json.loads`` would
+    accept) cannot be written to the markdown — routing every category through
+    this guard keeps the column set, its sort and its output string-only.
     """
-    return value if isinstance(value, str) and value else None
+    if isinstance(value, str) and value and _is_encodable(value):
+        return value
+    return None
 
 
 def build_scorecard(results_dir=None, prompts_dir=None, now=None):
