@@ -24,11 +24,19 @@ grading value, a non-mapping ``grading``/``prompt`` argument, a non-path-like
 ``result_path``, or a row mismatch all return ``pass: false`` with an
 explanatory ``detail``. No input to this mode, however malformed, raises: each
 I/O, parse, and shape boundary is guarded, not only the query execution.
+
+That totality extends to *coercing* caller-supplied values. ``str()``,
+``repr()``, f-string interpolation and ``Path()`` conversion all run code the
+caller owns -- a hostile ``__str__``/``__repr__``/``__fspath__`` may raise
+anything, and stringifying a deeply nested container exhausts the recursion
+limit -- so every such site is routed through the helpers below rather than
+called directly.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 from pathlib import Path
@@ -73,9 +81,16 @@ def _model_from_filename(result_path: Path) -> str:
     The result files are named ``<family>_<model>.<ext>`` where the numeric
     prefix is the prompt *family* directory, not the prompt id (see sub-plan
     point 2), so ``sql-country-analytics_glm_5_3_flash.md`` -> ``glm_5_3_flash``.
+
+    ``result_path`` can still be a ``Path`` holding caller-owned string
+    subclasses (``Path()`` accepts those), so ``.stem``/``.parent`` are coercions
+    too: any raise degrades to an empty model id rather than escaping.
     """
-    stem = result_path.stem
-    parent = result_path.parent.name
+    try:
+        stem = _safe_str(result_path.stem)
+        parent = _safe_str(result_path.parent.name)
+    except Exception:
+        return ""
     prefix = f"{parent}_"
     if stem.startswith(prefix):
         return stem[len(prefix):]
@@ -88,21 +103,122 @@ def _normalize(value):
     return value
 
 
+# ---------------------------------------------------------------------------
+# Coercion helpers.
+#
+# Every value these helpers touch comes from the caller, so each one is total:
+# ``str()``, ``repr()``, ``type(...).__name__``, ``bool()`` and ``Path()`` all
+# execute methods the caller owns -- a hostile ``__str__``/``__repr__``/
+# ``__fspath__`` may raise anything, an overridden ``__class__`` breaks
+# ``isinstance``, and stringifying a deeply nested container exhausts the
+# recursion limit. ``Exception`` (not ``BaseException``) is the boundary:
+# ``SystemExit``/``KeyboardInterrupt`` are control flow, not malformed data.
+# ---------------------------------------------------------------------------
+
+
+def _is_mapping(value) -> bool:
+    """``isinstance(value, dict)``, tolerating a hostile ``__class__``."""
+    try:
+        return isinstance(value, dict)
+    except Exception:
+        return False
+
+
+def _is_str(value) -> bool:
+    """``isinstance(value, str)``, tolerating a hostile ``__class__``."""
+    try:
+        return isinstance(value, str)
+    except Exception:
+        return False
+
+
+def _as_exact_str(value) -> str:
+    """Return a ``str`` (or subclass) as an exact ``str`` without running it.
+
+    ``"".join`` reads the underlying character buffer, so a subclass's
+    ``__str__``/``__repr__``/``__getitem__``/``__bool__`` never run -- which
+    matters, because those are exactly the methods a hostile value overrides.
+    """
+    return "".join([value])
+
+
 def _type_name(value) -> str:
-    """Human-readable JSON-ish type name for a detail message."""
-    if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "bool"
-    if isinstance(value, (int, float)):
-        return "number"
-    if isinstance(value, str):
-        return "string"
-    if isinstance(value, list):
-        return "list"
-    if isinstance(value, dict):
+    """Human-readable JSON-ish type name for a detail message; never raises."""
+    try:
+        if value is None:
+            return "null"
+        if isinstance(value, bool):
+            return "bool"
+        if isinstance(value, (int, float)):
+            return "number"
+        if isinstance(value, str):
+            return "string"
+        if isinstance(value, list):
+            return "list"
+        if isinstance(value, dict):
+            return "object"
+        # A hostile metaclass may return a str subclass from __name__; flatten.
+        return _as_exact_str(type(value).__name__)
+    except Exception:
         return "object"
-    return type(value).__name__
+
+
+def _safe_str(value) -> str:
+    """A JSON-safe exact ``str`` for the verdict; never raises.
+
+    A real ``str`` (or subclass) is flattened without running any override, so
+    a caller's legitimate id/value survives. Anything else goes through
+    ``str()`` -- whose result may itself be a ``str`` subclass -- and is then
+    flattened too, since the verdict is interpolated and JSON-encoded.
+    """
+    try:
+        if _is_str(value):
+            return _as_exact_str(value)
+        return _as_exact_str(str(value))
+    except Exception:
+        return f"<unstringable {_type_name(value)}>"
+
+
+def _safe_repr(value) -> str:
+    """``repr(value)`` as an exact ``str`` for a detail message; never raises.
+
+    ``repr()`` is allowed to return a ``str`` subclass, which an f-string would
+    then hand to that subclass's ``__format__``; flatten before returning.
+    """
+    try:
+        return _as_exact_str(repr(value))
+    except Exception:
+        return f"<unreprable {_type_name(value)}>"
+
+
+def _is_falsy(value) -> bool:
+    """``not value``, treating a hostile ``__bool__`` as truthy."""
+    try:
+        return not value
+    except Exception:
+        return False
+
+
+def _safe_get(mapping, key, default):
+    """``mapping.get(key, default)``, tolerating a hostile ``get`` override."""
+    try:
+        return mapping.get(key, default)
+    except Exception:
+        return default
+
+
+def _safe_eq(a, b) -> bool:
+    """``a == b``; deep containers from the answer key may blow the stack.
+
+    Equality recurses over nested values, so a key parsed at the very edge of
+    the JSON recursion limit can still raise ``RecursionError`` here. Treat
+    "cannot compare" as "not equal": both the match test and the diff then
+    take the conservative pass:false path instead of raising.
+    """
+    try:
+        return a == b
+    except Exception:
+        return False
 
 
 def _answer_key_shape_error(parsed) -> str | None:
@@ -144,6 +260,11 @@ def _format_row(row: dict) -> str:
 
 
 def _diff_detail(expected_rows, actual_rows) -> str:
+    # Expected rows come from the caller's answer key, so both ``!=`` and the
+    # ``!r`` interpolation below are coercions of caller data: a key nested to
+    # the JSON recursion limit may not survive either. Route both through the
+    # total helpers so the diff -- the last thing between grade() and its
+    # verdict -- cannot raise.
     parts = [
         f"row mismatch: expected {len(expected_rows)} row(s), got {len(actual_rows)}"
     ]
@@ -151,15 +272,19 @@ def _diff_detail(expected_rows, actual_rows) -> str:
     for i in range(max(len(expected_rows), len(actual_rows))):
         exp = expected_rows[i] if i < len(expected_rows) else None
         act = actual_rows[i] if i < len(actual_rows) else None
-        if exp != act:
-            parts.append(f"  row {i}: expected {exp!r} got {act!r}")
+        if not _safe_eq(exp, act):
+            parts.append(
+                f"  row {i}: expected {_safe_repr(exp)} got {_safe_repr(act)}"
+            )
             shown += 1
             if shown >= _MAX_DIFF_ROWS:
                 remaining = sum(
                     1
                     for j in range(i + 1, max(len(expected_rows), len(actual_rows)))
-                    if (expected_rows[j] if j < len(expected_rows) else None)
-                    != (actual_rows[j] if j < len(actual_rows) else None)
+                    if not _safe_eq(
+                        expected_rows[j] if j < len(expected_rows) else None,
+                        actual_rows[j] if j < len(actual_rows) else None,
+                    )
                 )
                 if remaining:
                     parts.append(f"  ... and {remaining} more differing row(s)")
@@ -176,8 +301,10 @@ def grade(result_path: Path, grading: dict, prompt: dict) -> dict:
 
     # The arguments themselves are outside this mode's control: the runner
     # passes whatever the prompt TOML (or a caller) produced, and each must
-    # degrade to a verdict rather than a traceback.
-    if not isinstance(prompt, dict):
+    # degrade to a verdict rather than a traceback. Every coercion of those
+    # arguments goes through the helpers above, because ``isinstance``,
+    # ``dict.get``, ``str()`` and ``Path()`` all run caller-owned code.
+    if not _is_mapping(prompt):
         return _verdict(
             "",
             "",
@@ -185,12 +312,11 @@ def grade(result_path: Path, grading: dict, prompt: dict) -> dict:
             "prompt is not a mapping: expected the parsed prompt TOML, got "
             f"{_type_name(prompt)}",
         )
-    prompt_id = prompt.get("id", "")
-    if not isinstance(prompt_id, str):
-        # detail/prompt_id land in a JSON sidecar; keep them JSON-safe.
-        prompt_id = str(prompt_id)
+    # detail/prompt_id land in a JSON sidecar; keep them JSON-safe. _safe_str
+    # reduces a str subclass to an exact str without running its overrides.
+    prompt_id = _safe_str(_safe_get(prompt, "id", ""))
 
-    if not isinstance(grading, dict):
+    if not _is_mapping(grading):
         return _verdict(
             prompt_id,
             "",
@@ -199,11 +325,23 @@ def grade(result_path: Path, grading: dict, prompt: dict) -> dict:
             f"'answer_key', got {_type_name(grading)}",
         )
 
-    # Deriving the model id reads the result path's name; a non-path-like
-    # value must not raise from Path()/`.stem`.
+    # Deriving the model id reads the result path's name. A non-path-like value
+    # must not raise from Path(); nor may a caller-supplied __fspath__ (which
+    # Path() calls) or a str subclass Path() preserves internally raise later.
     try:
         result_path = Path(result_path)
-    except TypeError:
+    except Exception:
+        return _verdict(
+            prompt_id,
+            "",
+            False,
+            f"result_path is not path-like: got {_type_name(result_path)}",
+        )
+    try:
+        # os.fspath() reaches the path's own text; flattening it to an exact
+        # str drops any caller-owned subclass before .stem/.parent/read_text().
+        result_path = Path(_as_exact_str(os.fspath(result_path)))
+    except Exception:
         return _verdict(
             prompt_id,
             "",
@@ -213,31 +351,35 @@ def grade(result_path: Path, grading: dict, prompt: dict) -> dict:
 
     model = _model_from_filename(result_path)
 
-    fixture_rel = grading.get("fixture")
-    key_rel = grading.get("answer_key")
-    if not fixture_rel or not key_rel:
+    fixture_rel = _safe_get(grading, "fixture", None)
+    key_rel = _safe_get(grading, "answer_key", None)
+    if _is_falsy(fixture_rel) or _is_falsy(key_rel):
         return _verdict(
             prompt_id,
             model,
             False,
             "grading table is missing 'fixture' or 'answer_key'",
         )
-    if not isinstance(fixture_rel, str):
+    if not _is_str(fixture_rel):
         return _verdict(
             prompt_id,
             model,
             False,
             "fixture path in the grading table must be a string, got "
-            f"{_type_name(fixture_rel)}: {fixture_rel!r}",
+            f"{_type_name(fixture_rel)}: {_safe_repr(fixture_rel)}",
         )
-    if not isinstance(key_rel, str):
+    if not _is_str(key_rel):
         return _verdict(
             prompt_id,
             model,
             False,
             "answer key path in the grading table must be a string, got "
-            f"{_type_name(key_rel)}: {key_rel!r}",
+            f"{_type_name(key_rel)}: {_safe_repr(key_rel)}",
         )
+    # Flatten before the join and the detail f-strings, so neither the path
+    # arithmetic nor __format__ can run a hostile subclass method.
+    fixture_rel = _as_exact_str(fixture_rel)
+    key_rel = _as_exact_str(key_rel)
 
     fixture_path = REPO_ROOT / fixture_rel
     key_path = REPO_ROOT / key_rel
@@ -360,7 +502,10 @@ def grade(result_path: Path, grading: dict, prompt: dict) -> dict:
         for row in actual_raw
     ]
 
-    if actual_rows == expected_rows:
+    # Both sides are caller-derived (the key via json.loads, the actual rows
+    # via sqlite); _safe_eq keeps the match test total for the same reason the
+    # diff below uses it.
+    if _safe_eq(actual_rows, expected_rows):
         return _verdict(prompt_id, model, True, f"{len(expected_rows)} row(s) match the answer key")
 
     return _verdict(prompt_id, model, False, _diff_detail(expected_rows, actual_rows))

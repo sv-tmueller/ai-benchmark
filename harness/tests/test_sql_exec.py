@@ -696,6 +696,254 @@ class ShapeBoundaryTests(unittest.TestCase):
         )
 
 
+class CallerDataCoercionTests(unittest.TestCase):
+    """Round-5 findings 1-3, and every other site of the same class.
+
+    Coercing caller-supplied data -- ``str()``/``repr()``/f-string
+    interpolation of ``prompt["id"]`` or of a non-string ``grading`` value,
+    and ``Path()`` conversion of ``result_path`` -- can itself raise:
+    ``RecursionError`` on a bone-deep container, or any exception a hostile
+    ``__repr__``/``__str__``/``__fspath__`` chooses to raise. Each such site
+    must degrade to the same pass:false verdict as any other malformed input,
+    and the verdict it returns must itself be JSON-encodable.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name)
+        self.results_dir = self.tmp / "sql-country-analytics"
+        self.results_dir.mkdir()
+
+    def _good_result(self) -> Path:
+        p = self.results_dir / "sql-country-analytics_glm_5_3_flash.md"
+        p.write_text(
+            f"Here is my answer.\n\n```sql\n{CORRECT_QUERY}\n```\n", encoding="utf-8"
+        )
+        return p
+
+    def _grading(self, *, fixture=FIXTURE, answer_key=ANSWER_KEY) -> dict:
+        return {"mode": "sql-exec", "fixture": fixture, "answer_key": answer_key}
+
+    @staticmethod
+    def _nest(depth: int):
+        value: object = 1
+        for _ in range(depth):
+            value = [value]
+        return value
+
+    def _assert_total_verdict(self, result: dict):
+        """The contract: five keys, JSON-encodable, no raise -- whatever pass."""
+        self.assertEqual(
+            set(result.keys()),
+            {"prompt_id", "model", "mode", "pass", "detail"},
+        )
+        # The verdict lands in a JSON sidecar: every field must encode, even
+        # when the caller's own values were hostile.
+        json.dumps(result)
+
+    def _assert_failed_verdict(self, result: dict):
+        self._assert_total_verdict(result)
+        self.assertFalse(result["pass"])
+
+    # --- finding 1: RecursionError at the caller-data coercion sites ------
+
+    def test_deep_nested_fixture_is_a_verdict_not_a_recursion_error(self):
+        deep = self._nest(20_000)
+        # Precondition: the raw coercion really does blow the stack, so this
+        # test is vacuous unless grade() guards RecursionError at the site.
+        with self.assertRaises(RecursionError):
+            repr(deep)
+        result = grade(self._good_result(), self._grading(fixture=deep), _prompt())
+        self._assert_failed_verdict(result)
+        self.assertIn("fixture", result["detail"].lower())
+
+    def test_deep_nested_answer_key_is_a_verdict_not_a_recursion_error(self):
+        deep = self._nest(20_000)
+        with self.assertRaises(RecursionError):
+            repr(deep)
+        result = grade(self._good_result(), self._grading(answer_key=deep), _prompt())
+        self._assert_failed_verdict(result)
+        self.assertIn("answer key", result["detail"].lower())
+
+    def test_deep_nested_prompt_id_is_a_verdict_not_a_recursion_error(self):
+        deep = self._nest(20_000)
+        with self.assertRaises(RecursionError):
+            repr(deep)  # the raw str(prompt_id) coercion would blow up here
+        # fixture/answer_key/result are all valid, so grading itself still
+        # succeeds; the point is that the hostile prompt_id was coerced to a
+        # safe fallback string rather than blowing the verdict apart.
+        result = grade(self._good_result(), self._grading(), {"id": deep})
+        self._assert_total_verdict(result)
+        self.assertIsInstance(result["prompt_id"], str)
+        self.assertIsNot(result["prompt_id"], deep)
+        self.assertNotIn("[", result["prompt_id"])
+
+    # --- finding 2: hostile __repr__ / __str__ in the f-string sites ------
+
+    def test_hostile_repr_in_grading_values_is_a_verdict_not_a_crash(self):
+        class BadRepr:
+            def __repr__(self):
+                raise RuntimeError("repr blew up")
+
+        with self.assertRaises(RuntimeError):
+            repr(BadRepr())
+        for label, grading in [
+            ("fixture", self._grading(fixture=BadRepr())),
+            ("answer_key", self._grading(answer_key=BadRepr())),
+        ]:
+            with self.subTest(field=label):
+                result = grade(self._good_result(), grading, _prompt())
+                self._assert_failed_verdict(result)
+
+    def test_hostile_str_prompt_id_is_a_verdict_not_a_crash(self):
+        class BadStr:
+            def __str__(self):
+                raise RuntimeError("str blew up")
+
+            def __repr__(self):
+                raise RuntimeError("repr blew up")
+
+        with self.assertRaises(RuntimeError):
+            str(BadStr())
+        result = grade(self._good_result(), self._grading(), {"id": BadStr()})
+        self._assert_total_verdict(result)
+        self.assertIsInstance(result["prompt_id"], str)
+
+    def test_hostile_str_subclass_in_grading_values_is_a_verdict_not_a_crash(self):
+        # A str subclass passes isinstance(..., str) while carrying hostile
+        # methods; it must be flattened (never stringified via its overrides)
+        # before the path arithmetic. The flattened text is a real path here,
+        # so grading then legitimately succeeds -- the invariant is only that
+        # no override is ever invoked and the verdict stays well-formed.
+        class HostileStr(str):
+            def __bool__(self):
+                raise RuntimeError("bool blew up")
+
+            def startswith(self, *a, **k):
+                raise RuntimeError("startswith blew up")
+
+            def __str__(self):
+                raise RuntimeError("str blew up")
+
+            def __repr__(self):
+                raise RuntimeError("repr blew up")
+
+            def __format__(self, spec):
+                raise RuntimeError("format blew up")
+
+        with self.assertRaises(RuntimeError):
+            bool(HostileStr("seed.sql"))
+        for label, grading in [
+            ("fixture", self._grading(fixture=HostileStr(FIXTURE))),
+            ("answer_key", self._grading(answer_key=HostileStr(ANSWER_KEY))),
+        ]:
+            with self.subTest(field=label):
+                result = grade(self._good_result(), grading, _prompt())
+                self._assert_total_verdict(result)
+                self.assertIsInstance(result["prompt_id"], str)
+                self.assertIsInstance(result["model"], str)
+
+    def test_hostile_metaclass_type_name_is_a_verdict_not_a_crash(self):
+        # _type_name() calls type(value).__name__; a hostile metaclass turns
+        # that into a raise. It feeds every "wrong type" detail message.
+        class Meta(type):
+            @property
+            def __name__(cls):
+                raise RuntimeError("name blew up")
+
+        class MetaObj(metaclass=Meta):
+            pass
+
+        with self.assertRaises(RuntimeError):
+            type(MetaObj()).__name__
+        for label, args in [
+            ("grading", (self._good_result(), MetaObj(), _prompt())),
+            ("prompt", (self._good_result(), self._grading(), MetaObj())),
+            (
+                "fixture",
+                (self._good_result(), self._grading(fixture=MetaObj()), _prompt()),
+            ),
+        ]:
+            with self.subTest(arg=label):
+                result = grade(*args)
+                self._assert_failed_verdict(result)
+
+    def test_hostile_dict_subclass_grading_is_a_verdict_not_a_crash(self):
+        class BadDict(dict):
+            def get(self, *a, **k):
+                raise RuntimeError("get blew up")
+
+        with self.assertRaises(RuntimeError):
+            BadDict().get("fixture")
+        result = grade(
+            self._good_result(), BadDict(self._grading()), _prompt()
+        )
+        self._assert_failed_verdict(result)
+
+    def test_hostile_bool_grading_value_is_a_verdict_not_a_crash(self):
+        class BadBool:
+            def __bool__(self):
+                raise RuntimeError("bool blew up")
+
+        with self.assertRaises(RuntimeError):
+            bool(BadBool())
+        result = grade(
+            self._good_result(), self._grading(fixture=BadBool()), _prompt()
+        )
+        self._assert_failed_verdict(result)
+
+    # --- finding 3: hostile __fspath__ on result_path ---------------------
+
+    def test_hostile_fspath_result_path_is_a_verdict_not_a_crash(self):
+        class BadFspath:
+            def __fspath__(self):
+                raise RuntimeError("fspath blew up")
+
+        with self.assertRaises(RuntimeError):
+            Path(BadFspath())
+        result = grade(BadFspath(), self._grading(), _prompt())
+        self._assert_failed_verdict(result)
+        self.assertIn("path-like", result["detail"])
+
+    def test_hostile_fspath_value_error_result_path_is_a_verdict_not_a_crash(self):
+        class BadFspath:
+            def __fspath__(self):
+                raise ValueError("fspath value blew up")
+
+        with self.assertRaises(ValueError):
+            Path(BadFspath())
+        result = grade(BadFspath(), self._grading(), _prompt())
+        self._assert_failed_verdict(result)
+
+    def test_repr_returning_hostile_str_subclass_is_a_verdict_not_a_crash(self):
+        # A fourth site of the same class: repr(value) may *return* a str
+        # subclass, and interpolating that in the detail f-string would invoke
+        # its __format__. Every helper that builds a detail string must flatten
+        # what it returns to an exact str.
+        class EvilStr(str):
+            def __format__(self, spec):
+                raise RuntimeError("format blew up")
+
+        class BadReprSubclass:
+            def __repr__(self):
+                return EvilStr("<bad>")
+
+        # Precondition: the raw repr() result really does raise when formatted.
+        raw = repr(BadReprSubclass())
+        self.assertIsInstance(raw, EvilStr)
+        with self.assertRaises(RuntimeError):
+            f"{raw}"
+
+        result = grade(
+            self._good_result(),
+            self._grading(fixture=BadReprSubclass()),
+            _prompt(),
+        )
+        self._assert_failed_verdict(result)
+        self.assertIn("fixture", result["detail"].lower())
+
+
 class SidecarFidelityTests(unittest.TestCase):
     """The committed sidecar must be reproducible from the committed inputs."""
 
