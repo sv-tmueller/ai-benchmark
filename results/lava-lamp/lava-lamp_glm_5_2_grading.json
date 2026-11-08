@@ -1,0 +1,7 @@
+{
+  "prompt_id": "game-lava-lamp",
+  "model": "glm_5_2",
+  "mode": "playability",
+  "pass": false,
+  "detail": "playability verdict: BROKEN_AT_BOOT"
+}

@@ -98,6 +98,79 @@ Three caveats:
   `vision-shape-count` are consumed by the benchmark harness only;
   informal runs simply ignore them.
 
+### Harness: grading results with `grade.py`
+
+`harness/grade.py` grades results retroactively — it never generates new
+model output. For every result file whose prompt defines a grading rule it
+writes a verdict sidecar `<result>_grading.json` next to the result:
+
+```sh
+python harness/grade.py --all              # grade the whole corpus
+python harness/grade.py --prompt math-addition   # one prompt only
+```
+
+A result is gradable when its prompt TOML carries a `[grading]` block or its
+paired `.meta.json` carries a playability verdict. Results with neither are
+**skipped, never failed**, as are the harness's own artifacts
+(`*.meta.json`, `*_grading.json`, `*_review.html`, `rebuild_verdict*.md`,
+images). Prompt association goes through the meta sidecar's `prompt_id`
+field, not the filename prefix.
+
+#### `[grading]` spec
+
+Opt-in table in a prompt TOML. `mode` names the module under
+`harness/modes/` that grades the result; the module receives
+`(result_path, grading, prompt)` and returns a verdict dict. Hyphenated
+mode strings map to underscored module files (`sql-exec` →
+`harness/modes/sql_exec.py`), while the sidecar `mode` field keeps the
+literal TOML string.
+
+```toml
+[grading]
+mode     = "contains"
+expected = "42"
+```
+
+- **`contains`** — passes when `expected` appears verbatim in the result
+  text; used by `math-addition` and `vision-shape-count`.
+- **`playability`** — meta-driven, needs no `[grading]` block; not
+  auto-selected by the `mode` field.
+
+#### Playability labels
+
+The `playability` mode reads the browser-verification verdict from
+`<stem>.meta.json`, without re-verifying anything. It accepts both shapes
+present in `results/`: the newer
+`playability_verification.playability_verdict` and the older top-level
+`playability.label`.
+
+| Label | Verdict |
+|---|---|
+| `PLAYABLE_VERIFIED` | pass — the only passing label |
+| `BOOTS_ONLY` | fail |
+| `BROKEN_AT_BOOT` | fail |
+| `BLUEPRINT_ONLY` | fail |
+| `BLUEPRINT_INCOMPLETE` | fail |
+| `SCRIPT_TRUNCATED` | fail (documented; appears in prose only) |
+
+#### Verdict sidecar schema
+
+`<result>_grading.json`, exactly five keys:
+
+```json
+{
+  "prompt_id": "math-addition",
+  "model": "glm_5_3_flash",
+  "mode": "contains",
+  "pass": true,
+  "detail": "expected \"42\" found"
+}
+```
+
+`model` is the filename remainder after `<file_prefix>` (from the prompt
+TOML, falling back to the prompt id); `detail` is free text explaining the
+outcome.
+
 ### Execution graders
 
 Three of the prompts are graded by *running* the model's deliverable
@@ -129,6 +202,78 @@ the code is still executed on this machine.
 stays importable in stdlib-only environments and its unit tests skip when
 sympy is absent. The shared venv (`sympy 1.14.0`) is the reference
 interpreter for those tests.
+
+
+`harness/grade.py` grades results retroactively — it never generates new
+model output. For every result file whose prompt defines a grading rule it
+writes a verdict sidecar `<result>_grading.json` next to the result:
+
+```sh
+python harness/grade.py --all              # grade the whole corpus
+python harness/grade.py --prompt math-addition   # one prompt only
+```
+
+A result is gradable when its prompt TOML carries a `[grading]` block or its
+paired `.meta.json` carries a playability verdict. Results with neither are
+**skipped, never failed**, as are the harness's own artifacts
+(`*.meta.json`, `*_grading.json`, `*_review.html`, `rebuild_verdict*.md`,
+images). Prompt association goes through the meta sidecar's `prompt_id`
+field, not the filename prefix.
+
+#### `[grading]` spec
+
+Opt-in table in a prompt TOML. `mode` names the module under
+`harness/modes/` that grades the result; the module receives
+`(result_path, grading, prompt)` and returns a verdict dict. Hyphenated
+mode strings map to underscored module files (`sql-exec` →
+`harness/modes/sql_exec.py`), while the sidecar `mode` field keeps the
+literal TOML string.
+
+```toml
+[grading]
+mode     = "contains"
+expected = "42"
+```
+
+- **`contains`** — passes when `expected` appears verbatim in the result
+  text; used by `math-addition` and `vision-shape-count`.
+- **`playability`** — meta-driven, needs no `[grading]` block; not
+  auto-selected by the `mode` field.
+
+#### Playability labels
+
+The `playability` mode reads the browser-verification verdict from
+`<stem>.meta.json`, without re-verifying anything. It accepts both shapes
+present in `results/`: the newer
+`playability_verification.playability_verdict` and the older top-level
+`playability.label`.
+
+| Label | Verdict |
+|---|---|
+| `PLAYABLE_VERIFIED` | pass — the only passing label |
+| `BOOTS_ONLY` | fail |
+| `BROKEN_AT_BOOT` | fail |
+| `BLUEPRINT_ONLY` | fail |
+| `BLUEPRINT_INCOMPLETE` | fail |
+| `SCRIPT_TRUNCATED` | fail (documented; appears in prose only) |
+
+#### Verdict sidecar schema
+
+`<result>_grading.json`, exactly five keys:
+
+```json
+{
+  "prompt_id": "math-addition",
+  "model": "glm_5_3_flash",
+  "mode": "contains",
+  "pass": true,
+  "detail": "expected \"42\" found"
+}
+```
+
+`model` is the filename remainder after `<file_prefix>_` (from the prompt
+TOML, falling back to the prompt id); `detail` is free text explaining the
+outcome.
 
 ## Results
 

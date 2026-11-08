@@ -1,0 +1,7 @@
+{
+  "prompt_id": "game-cities-skylines",
+  "model": "gpt_oss_120b",
+  "mode": "playability",
+  "pass": false,
+  "detail": "playability verdict: BLUEPRINT_ONLY"
+}
