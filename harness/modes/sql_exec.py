@@ -30,7 +30,11 @@ That totality extends to *coercing* caller-supplied values. ``str()``,
 caller owns -- a hostile ``__str__``/``__repr__``/``__fspath__`` may raise
 anything, and stringifying a deeply nested container exhausts the recursion
 limit -- so every such site is routed through the helpers below rather than
-called directly.
+called directly. A type test can also be *lied to*: an object whose
+``__class__`` is a property returning ``str`` passes ``isinstance(_, str)``
+without being a str, and the flatten then raises ``TypeError``. Every coercion
+that trusts a preceding type test is therefore guarded at the coercion site
+itself, not just at the test.
 """
 
 from __future__ import annotations
@@ -377,9 +381,32 @@ def grade(result_path: Path, grading: dict, prompt: dict) -> dict:
             f"{_type_name(key_rel)}: {_safe_repr(key_rel)}",
         )
     # Flatten before the join and the detail f-strings, so neither the path
-    # arithmetic nor __format__ can run a hostile subclass method.
-    fixture_rel = _as_exact_str(fixture_rel)
-    key_rel = _as_exact_str(key_rel)
+    # arithmetic nor __format__ can run a hostile subclass method. These two
+    # sites pass the _is_str test above, but that test can be *lied to*: a
+    # caller object whose ``__class__`` is a property returning ``str`` makes
+    # ``isinstance(value, str)`` true without being a str, and the flatten then
+    # raises TypeError. Guard it here exactly as the sibling coercions are, so
+    # the lie degrades to the same pass:false verdict as any other bad value.
+    try:
+        fixture_rel = _as_exact_str(fixture_rel)
+    except Exception:
+        return _verdict(
+            prompt_id,
+            model,
+            False,
+            "fixture path in the grading table could not be coerced to a "
+            f"string: {_safe_repr(fixture_rel)}",
+        )
+    try:
+        key_rel = _as_exact_str(key_rel)
+    except Exception:
+        return _verdict(
+            prompt_id,
+            model,
+            False,
+            "answer key path in the grading table could not be coerced to a "
+            f"string: {_safe_repr(key_rel)}",
+        )
 
     fixture_path = REPO_ROOT / fixture_rel
     key_path = REPO_ROOT / key_rel

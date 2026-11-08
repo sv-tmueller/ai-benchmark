@@ -10,6 +10,7 @@ resolves as a namespace package.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 import tempfile
@@ -942,6 +943,72 @@ class CallerDataCoercionTests(unittest.TestCase):
         )
         self._assert_failed_verdict(result)
         self.assertIn("fixture", result["detail"].lower())
+
+    # --- round 6: a `__class__` that *lies* rather than raises ------------
+
+    def test_lying_dunder_class_fixture_is_a_verdict_not_a_crash(self):
+        # Distinct from the round-5 class: nothing hostile is ever *invoked*.
+        # The object merely lies to the type test -- ``__class__`` is a
+        # property returning ``str`` -- so ``isinstance(value, str)`` passes
+        # while ``"".join([value])``, the exact-str coercion, still sees a
+        # non-str sequence item and raises TypeError. Every site that assumes
+        # a passed ``_is_str`` really is a str must guard that assumption.
+        class FakeStrClass:
+            @property
+            def __class__(self):
+                return str
+
+        fake = FakeStrClass()
+        # Preconditions: the spoof really does fool the type test, and the
+        # raw coercion really does raise -- otherwise this test is vacuous.
+        self.assertIsInstance(fake, str)
+        with self.assertRaises(TypeError):
+            "".join([fake])
+
+        result = grade(
+            self._good_result(),
+            self._grading(fixture=fake),
+            _prompt(),
+        )
+        self._assert_failed_verdict(result)
+        self.assertIn("fixture", result["detail"].lower())
+
+    def test_lying_dunder_class_answer_key_is_a_verdict_not_a_crash(self):
+        class FakeStrClass:
+            @property
+            def __class__(self):
+                return str
+
+        fake = FakeStrClass()
+        self.assertIsInstance(fake, str)
+        with self.assertRaises(TypeError):
+            "".join([fake])
+
+        result = grade(
+            self._good_result(),
+            self._grading(answer_key=fake),
+            _prompt(),
+        )
+        self._assert_failed_verdict(result)
+        self.assertIn("answer key", result["detail"].lower())
+
+    def test_lying_dunder_class_result_path_is_a_verdict_not_a_crash(self):
+        # The sibling site: ``Path(fake)`` stores the spoof lazily, and the
+        # first real use of it raises -- but that use is inside the guarded
+        # path-coercion block, so this already degrades to a verdict. The test
+        # pins that it stays one.
+        class FakeStrClass:
+            @property
+            def __class__(self):
+                return str
+
+        fake = FakeStrClass()
+        self.assertIsInstance(fake, str)
+        with self.assertRaises(TypeError):
+            os.fspath(Path(fake))
+
+        result = grade(fake, self._grading(), _prompt())
+        self._assert_failed_verdict(result)
 
 
 class SidecarFidelityTests(unittest.TestCase):
