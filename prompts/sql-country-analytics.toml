@@ -4,6 +4,11 @@ category    = "coding"
 difficulty  = "medium"
 temperature = 0.0
 
+[grading]
+mode       = "sql-exec"
+fixture    = "harness/fixtures/sql_country_analytics/seed.sql"
+answer_key = "harness/fixtures/sql_country_analytics/expected_rows.json"
+
 [system]
 text = "You are a senior data engineer. Write portable ANSI-SQL."
 
