@@ -1,0 +1,6 @@
+id       = "epsilon-prompt"
+title    = "Epsilon"
+category = "cat-epsilon"
+
+[user]
+text = "Write free-form prose."

@@ -275,6 +275,23 @@ present in `results/`: the newer
 TOML, falling back to the prompt id); `detail` is free text explaining the
 outcome.
 
+### Harness: scorecard with `scorecard.py`
+
+`harness/scorecard.py` aggregates the committed grading evidence — the
+`*_grading.json` verdict sidecars and the legacy `grading` fields in the
+`.meta.json` sidecars — into a per-model × per-category pass-rate matrix:
+
+```sh
+python harness/scorecard.py    # writes results/scorecard.json + .md
+```
+
+The matrix shows a model only when it has at least one verdict; a category
+the model has no graded verdict for renders as `—` (an absence, not a
+zero), and prompts this harness cannot grade are listed separately, never
+counted as failures. There is deliberately no single composite index. The
+regenerated `results/scorecard.json` / `results/scorecard.md` are committed
+once the grading batch has merged and the full sidecar set exists.
+
 ## Results
 
 Outputs are grouped under `results/` by prompt family, one folder per

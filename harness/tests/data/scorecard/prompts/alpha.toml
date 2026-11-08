@@ -1,0 +1,10 @@
+id       = "alpha-prompt"
+title    = "Alpha"
+category = "cat-alpha"
+
+[grading]
+mode     = "contains"
+expected = "x"
+
+[user]
+text = "Say x."

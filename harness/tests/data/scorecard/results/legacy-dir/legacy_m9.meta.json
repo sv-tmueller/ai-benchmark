@@ -1,0 +1,11 @@
+{
+  "generated_utc": "2026-01-01T00:00:00+00:00",
+  "toml": "alpha.toml",
+  "prompt_id": "alpha-prompt",
+  "model": "vllm/qsu/m9-route",
+  "grading": {
+    "mode": "contains",
+    "expected": "x",
+    "pass": true
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "prompt_id": "alpha-prompt",
+  "model": "m1",
+  "mode": "contains",
+  "pass": true,
+  "detail": "expected x found"
+}

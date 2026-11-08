@@ -1,0 +1,10 @@
+{
+  "generated_utc": "2026-01-01T00:00:00+00:00",
+  "toml": "beta.toml",
+  "prompt_id": "beta-prompt",
+  "model": "vllm/qsu/m1-route",
+  "playability_verification": {
+    "playability_verdict": "PLAYABLE_VERIFIED",
+    "browser_verified": true
+  }
+}

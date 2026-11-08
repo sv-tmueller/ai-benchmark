@@ -1,0 +1,10 @@
+id       = "gamma-prompt"
+title    = "Gamma"
+category = "cat-gamma"
+
+[grading]
+mode     = "contains"
+expected = "y"
+
+[user]
+text = "Say y."
