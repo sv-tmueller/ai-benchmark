@@ -1,0 +1,10 @@
+#!/usr/bin/env node
+
+'use strict';
+
+// Deliberately ignores the spec: prints every path without counts and
+// never exits non-zero.
+const args = process.argv.slice(2);
+for (const p of args) {
+  console.log(p);
+}

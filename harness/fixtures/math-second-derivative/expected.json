@@ -1,0 +1,6 @@
+{
+  "$comment": "Expected final answers for math-second-derivative: f''(x) = 36*x**2 - 30*x + 4 evaluated at x = 2 gives 88. The expression is parsed with sympy.parse_expr (convert_xor + implicit multiplication), not a LaTeX parser.",
+  "expression": "36*x**2 - 30*x + 4",
+  "eval_point": 2,
+  "eval_value": 88
+}

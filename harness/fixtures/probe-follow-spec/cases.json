@@ -1,0 +1,42 @@
+{
+  "$comment": "Fixture battery for `count-lines.js`. Each case declares the input files by name and content, the argv passed after the script name, and the expected stdout lines / stderr lines / exit code. stdout and stderr are compared as line lists, independent of interleaving. Ambiguous corners (empty files, no trailing newline, extra flags) are deliberately excluded.",
+  "cases": [
+    {
+      "name": "multi-file-happy-path",
+      "files": {
+        "a.txt": "one\ntwo\nthree\n",
+        "b.txt": "solo\n"
+      },
+      "argv": ["a.txt", "b.txt"],
+      "stdout": ["3\ta.txt", "1\tb.txt"],
+      "stderr": [],
+      "exit_code": 0
+    },
+    {
+      "name": "unreadable-file",
+      "files": {
+        "a.txt": "one\n"
+      },
+      "argv": ["a.txt", "missing.txt"],
+      "stdout": ["1\ta.txt"],
+      "stderr": ["error: missing.txt"],
+      "exit_code": 1
+    },
+    {
+      "name": "only-bad-file",
+      "files": {},
+      "argv": ["nope.txt"],
+      "stdout": [],
+      "stderr": ["error: nope.txt"],
+      "exit_code": 1
+    },
+    {
+      "name": "no-arguments-usage",
+      "files": {},
+      "argv": [],
+      "stdout": [],
+      "stderr": ["usage: count-lines <file...>"],
+      "exit_code": 2
+    }
+  ]
+}

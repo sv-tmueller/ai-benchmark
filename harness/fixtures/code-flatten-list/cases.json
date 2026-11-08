@@ -1,0 +1,35 @@
+{
+  "$comment": "Unit-test battery for the code-flatten-list `flatten` function. Contract: arbitrarily nested lists of ints, depth-first left-to-right order. Cases with a `deep` key are expanded by the runner into a nested list of that depth. Out-of-contract model behaviour (e.g. bare scalars) is deliberately not graded.",
+  "cases": [
+    {
+      "name": "spec-example",
+      "input": [1, [2, [3, 4]], 5],
+      "expected": [1, 2, 3, 4, 5]
+    },
+    {
+      "name": "empty-top-level",
+      "input": [],
+      "expected": []
+    },
+    {
+      "name": "nested-empty-lists",
+      "input": [[], [[]], [[[[]]]]],
+      "expected": []
+    },
+    {
+      "name": "duplicates-and-sibling-order",
+      "input": [[[1], [2, 3]], [4], 1],
+      "expected": [1, 2, 3, 4, 1]
+    },
+    {
+      "name": "single-leaf",
+      "input": [7],
+      "expected": [7]
+    },
+    {
+      "name": "deep-nesting",
+      "deep": {"depth": 5000, "leaf": 42},
+      "expected": [42]
+    }
+  ]
+}
