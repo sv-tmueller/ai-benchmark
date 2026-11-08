@@ -444,6 +444,83 @@ class IoAndParseBoundaryTests(unittest.TestCase):
         self.assertFalse(result["pass"])
         self.assertIn("answer key", result["detail"].lower())
 
+    # --- round-4 finding 1: deeply nested answer key ----------------------
+    #
+    # json.loads recurses once per nesting level, so an answer key nested past
+    # the interpreter's recursion limit raises RecursionError -- a RuntimeError
+    # subclass that the JSONDecodeError and (UnicodeDecodeError, OSError)
+    # guards do not cover. It must degrade to a pass:false verdict.
+
+    def test_deeply_nested_answer_key_is_a_verdict_not_a_crash(self):
+        # The C JSON scanner's recursion guard trips at ~10_000 nesting levels;
+        # 20_000 is comfortably past it on any interpreter.
+        depth = 20_000
+        deep_key = self.tmp / "expected_rows_deep.json"
+        deep_key.write_text("[" * depth + "]" * depth, encoding="utf-8")
+        # Precondition: the raw parse really does blow the stack, so this test
+        # fails (or is vacuous) unless grade() guards RecursionError itself.
+        with self.assertRaises(RecursionError):
+            json.loads(deep_key.read_text(encoding="utf-8"))
+
+        result = grade(
+            self._good_markdown_result(),
+            self._grading(answer_key=str(deep_key)),
+            _prompt(),
+        )
+        self.assertEqual(
+            set(result.keys()),
+            {"prompt_id", "model", "mode", "pass", "detail"},
+        )
+        self.assertFalse(result["pass"])
+        self.assertIn("answer key", result["detail"].lower())
+
+    # --- round-4 finding 2: over-long path component ----------------------
+    #
+    # Path.is_file() only swallows ENOENT/ENOTDIR/EBADF/ELOOP, so a component
+    # longer than NAME_MAX (255 bytes) raises OSError(ENAMETOOLONG). Every one
+    # of the three path arguments must degrade like the "file not found" path.
+
+    def test_over_long_fixture_path_is_a_verdict_not_a_crash(self):
+        long_fixture = self.tmp / ("a" * 300 + ".sql")
+        with self.assertRaises(OSError):
+            long_fixture.is_file()
+        result = grade(
+            self._good_markdown_result(),
+            self._grading(fixture=str(long_fixture)),
+            _prompt(),
+        )
+        self.assertEqual(
+            set(result.keys()),
+            {"prompt_id", "model", "mode", "pass", "detail"},
+        )
+        self.assertFalse(result["pass"])
+
+    def test_over_long_answer_key_path_is_a_verdict_not_a_crash(self):
+        long_key = self.tmp / ("b" * 300 + ".json")
+        with self.assertRaises(OSError):
+            long_key.is_file()
+        result = grade(
+            self._good_markdown_result(),
+            self._grading(answer_key=str(long_key)),
+            _prompt(),
+        )
+        self.assertEqual(
+            set(result.keys()),
+            {"prompt_id", "model", "mode", "pass", "detail"},
+        )
+        self.assertFalse(result["pass"])
+
+    def test_over_long_result_path_is_a_verdict_not_a_crash(self):
+        long_result = self.tmp / ("c" * 300 + ".md")
+        with self.assertRaises(OSError):
+            long_result.is_file()
+        result = grade(long_result, self._grading(), _prompt())
+        self.assertEqual(
+            set(result.keys()),
+            {"prompt_id", "model", "mode", "pass", "detail"},
+        )
+        self.assertFalse(result["pass"])
+
 
 class ShapeBoundaryTests(unittest.TestCase):
     """Round-3 findings 1-2: wrong-shaped JSON keys and non-string grading values.

@@ -241,12 +241,28 @@ def grade(result_path: Path, grading: dict, prompt: dict) -> dict:
 
     fixture_path = REPO_ROOT / fixture_rel
     key_path = REPO_ROOT / key_rel
-    if not fixture_path.is_file():
+    # Path.is_file() only swallows ENOENT/ENOTDIR/EBADF/ELOOP: a path with a
+    # component longer than NAME_MAX (or a total longer than PATH_MAX) raises
+    # OSError(ENAMETOOLONG) at the stat boundary. An over-long path is treated
+    # exactly like the missing-file case -- a verdict, never a traceback.
+    try:
+        fixture_is_file = fixture_path.is_file()
+    except OSError:
+        fixture_is_file = False
+    if not fixture_is_file:
         return _verdict(prompt_id, model, False, f"fixture file not found: {fixture_rel}")
-    if not key_path.is_file():
+    try:
+        key_is_file = key_path.is_file()
+    except OSError:
+        key_is_file = False
+    if not key_is_file:
         return _verdict(prompt_id, model, False, f"answer key file not found: {key_rel}")
 
-    if not result_path.is_file():
+    try:
+        result_is_file = result_path.is_file()
+    except OSError:
+        result_is_file = False
+    if not result_is_file:
         return _verdict(prompt_id, model, False, f"result file not found: {result_path}")
 
     # Decoding a model deliverable is an I/O boundary: invalid bytes must be a
@@ -264,6 +280,9 @@ def grade(result_path: Path, grading: dict, prompt: dict) -> dict:
 
     # Parsing the answer key is a parse boundary: a malformed or non-UTF-8 key
     # must be a verdict carrying the parse error, never a JSONDecodeError.
+    # RecursionError is a RuntimeError, not a JSONDecodeError/OSError, and
+    # json.loads recurses once per nesting level: a pathologically deep key
+    # (>= ~10_000 levels) must also degrade to a verdict, not blow the stack.
     try:
         expected_raw = json.loads(key_path.read_text(encoding="utf-8"))
     except (UnicodeDecodeError, OSError) as exc:
@@ -273,6 +292,10 @@ def grade(result_path: Path, grading: dict, prompt: dict) -> dict:
     except json.JSONDecodeError as exc:
         return _verdict(
             prompt_id, model, False, f"answer key is not valid JSON: {exc}"
+        )
+    except RecursionError as exc:
+        return _verdict(
+            prompt_id, model, False, f"answer key is nested too deeply to parse: {exc}"
         )
 
     # A parse boundary has two stages: decode/parse the text (above), then
