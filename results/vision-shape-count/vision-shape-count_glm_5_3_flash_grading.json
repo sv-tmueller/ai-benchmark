@@ -1,0 +1,7 @@
+{
+  "prompt_id": "vision-shape-count",
+  "model": "glm_5_3_flash",
+  "mode": "contains",
+  "pass": true,
+  "detail": "expected \"5\" found"
+}
