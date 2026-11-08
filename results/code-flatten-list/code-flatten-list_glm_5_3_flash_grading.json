@@ -1,0 +1,7 @@
+{
+  "prompt_id": "code-python-function",
+  "model": "glm_5_3_flash",
+  "mode": "python-exec",
+  "pass": true,
+  "detail": "all 6 cases passed"
+}
