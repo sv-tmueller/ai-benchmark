@@ -604,6 +604,10 @@ click-through transition, sustained animation (pixel motion sampled over
 at least 3 s), per-script brace/paren balance, and console capture across
 10 s. The result is labelled `PLAYABLE_VERIFIED`, `BOOTS_ONLY` or
 `BROKEN_AT_BOOT` (defined in the Playability labels sections above). The
+five blueprint rows (horror-house, last-flight, cities-skylines, mario-kart,
+stillwater) are not browser-checked as delivered: as in the earlier sweeps,
+the blueprint is materialized, built and smoke-tested, and the result may
+also be labelled `BLUEPRINT_ONLY` or `BLUEPRINT_INCOMPLETE`. The
 [scorecard](#harness-scorecard-with-scorecardpy) only counts a game result
 once its sidecar carries `playability_verification.playability_verdict`, so
 a result has no playability verdict until this browser check has run;
