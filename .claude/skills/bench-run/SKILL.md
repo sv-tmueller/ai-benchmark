@@ -158,7 +158,8 @@ if mode == "meta" and (not Path(target).is_file() or Path(target).stat().st_size
 
 # meta sidecar (Fable 5.1 shape plus the one-shot keys)
 ctx = ("The Claude Code system context was present alongside the TOML system text."
-       if "system" in prompt else "The TOML has no system text.")
+       if "system" in prompt
+       else "The TOML has no system text; the Claude Code system context was present.")
 
 
 def given(key, name):
