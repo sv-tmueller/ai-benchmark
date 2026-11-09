@@ -554,6 +554,80 @@ Usage: replace `<MODEL_ID>`, then run with the advisor (`hermes -s tm-advisor`) 
 ```
 Canonical copy: #108 (updates land there first; keep this quotation in sync when re-issuing).
 
+## Claude Fable 5.2 one-shot arm
+
+A protocol for adding Claude Fable 5.2 to the game/app tier as a plain
+one-shot arm, so every run follows the same written rules. Nothing has run
+yet; the table below is the ledger.
+
+**Test set (11 prompts).** The 10 game/app-tier prompts of the frontier
+sweep above (`game-melon-jelly`, `game-lava-lamp`, `game-minecraft`,
+`game-meridian-launch`, `game-sunset-ocean`, `game-horror-house`,
+`game-last-flight`, `game-cities-skylines`, `game-mario-kart`,
+`app-stillwater`) plus `game-weichensteller`, the only prompt that already
+has a Fable 5.1 result
+([`weichensteller_claude_fable_5_1.html`](results/weichensteller/weichensteller_claude_fable_5_1.html)).
+
+**Model tag.** `claude_fable_5_2`. Result paths follow the usual
+`results/<family>/<prefix>_<model_tag>.<ext>` convention; the family folder
+and `<prefix>` come from the existing tree and each prompt's `file_prefix`.
+Each deliverable gets a `.meta.json` sidecar next to it.
+
+**Deliverable shape.** Follows the prompt TOML, as in the earlier arms: one
+self-contained HTML file for the single-file prompts, one markdown blueprint
+for the multi-file project prompts (the same shape as the GLM 5.2 and
+gpt-oss-120b arms).
+
+**How to run.** One prompt per run, started with the `/bench-run <prompt-id>`
+project skill (added separately), for example `/bench-run game-melon-jelly`.
+The prompt TOML under `prompts/` is used unmodified.
+
+**In-session generation caveats.** The generation happens inside a Claude
+Code session, not through the gateway runner, so:
+
+- `temperature` and `max_tokens` from the TOML cannot be set; the session
+  defaults apply.
+- `finish_reason` and token `usage` are not observable. The sidecar records
+  them as `null` with a note, exactly like
+  [`weichensteller_claude_fable_5_1.meta.json`](results/weichensteller/weichensteller_claude_fable_5_1.meta.json).
+- There is no length-retry ladder, so there is no orchestrator or repair
+  round: the first complete output is the result.
+- Comparisons against the gateway arms (reasoning-token burn, truncation
+  events) are therefore qualitative for this arm.
+
+**Verification split.** Generation runs on the small dev box. Browser
+verification is a separate step on a stronger machine, because launching
+browsers is too memory-heavy for the dev box.
+
+**Verification bar.** The same as the frontier sweep: per artifact, a
+click-through transition, sustained animation (pixel motion sampled over
+at least 3 s), per-script brace/paren balance, and console capture across
+10 s. The result is labelled `PLAYABLE_VERIFIED`, `BOOTS_ONLY` or
+`BROKEN_AT_BOOT` (defined in the Playability labels sections above). The
+five blueprint rows (horror-house, last-flight, cities-skylines, mario-kart,
+stillwater) are not browser-checked as delivered: as in the earlier sweeps,
+the blueprint is materialized, built and smoke-tested, and the result may
+also be labelled `BLUEPRINT_ONLY` or `BLUEPRINT_INCOMPLETE`. The
+[scorecard](#harness-scorecard-with-scorecardpy) only counts a game result
+once its sidecar carries `playability_verification.playability_verdict`, so
+a result has no playability verdict until this browser check has run;
+generation alone does not earn one.
+
+**Status.** Update a row when its result and sidecar are committed.
+
+| Prompt | Deliverable | Target path | Status |
+|---|---|---|---|
+| `game-melon-jelly` | HTML | `results/melon-jelly/melon-jelly_claude_fable_5_2.html` | not run |
+| `game-lava-lamp` | HTML | `results/lava-lamp/lava-lamp_claude_fable_5_2.html` | not run |
+| `game-minecraft` | HTML | `results/minecraft/minecraft_claude_fable_5_2.html` | not run |
+| `game-meridian-launch` | HTML | `results/meridian-launch/meridian-launch_claude_fable_5_2.html` | not run |
+| `game-sunset-ocean` | HTML | `results/sunset-ocean/sunset-ocean_claude_fable_5_2.html` | not run |
+| `game-horror-house` | blueprint (md) | `results/horror-house/horror-house_claude_fable_5_2.md` | not run |
+| `game-last-flight` | blueprint (md) | `results/last-flight/last-flight_claude_fable_5_2.md` | not run |
+| `game-cities-skylines` | blueprint (md) | `results/cities-skylines/cities-skylines_claude_fable_5_2.md` | not run |
+| `game-mario-kart` | blueprint (md) | `results/mario-kart/mario-kart_claude_fable_5_2.md` | not run |
+| `app-stillwater` | blueprint (md) | `results/stillwater/stillwater_claude_fable_5_2.md` | not run |
+| `game-weichensteller` | HTML | `results/weichensteller/weichensteller_claude_fable_5_2.html` | not run |
 
 ## CI
 
