@@ -7,6 +7,8 @@ argument-hint: <prompt-id> [--dry-run]
 
 You are reading this because the user typed `/bench-run <prompt-id>`. The arguments are in `$ARGUMENTS`: a prompt id (or a TOML file stem) and an optional `--dry-run`. Do exactly what follows, in order. This is a plain in-session one-shot: no orchestrator, no agent team, no repair round.
 
+Every `python` command below (the resolver, the prompt print, `grade.py`) must be run as `python3` where `python` is not on PATH, as on the dev box.
+
 The model under test is **you**. The model id is the exact one stated in your system prompt (for example `claude-fable-5-2`). If you do not know it with certainty, stop and ask the user; never guess.
 
 ## One-shot rules
@@ -22,6 +24,8 @@ The model under test is **you**. The model id is the exact one stated in your sy
 
 If any of these rules was broken, or the Write failed, the run is **void**: delete the files you wrote, create no issue, and report "run void, re-run in a fresh session".
 
+A failure after the Write (a `gh` or network error in the meta resolver, a failed push, a failed `gh pr create`) does not void the run. Keep the files, fix the cause and re-run only the failing step (the meta resolver can be re-run while no meta file exists). If you cannot finish, report the issue number, branch and untracked paths left behind.
+
 **Never:** launch a browser or Playwright, start a dev server or `http.server`, use `open`/`xdg-open`, run the generated code, touch `prompts/`, merge a PR, or enable auto-merge. The only code that runs a result is `harness/grade.py`'s own execution modes. This skill never writes a playability verdict.
 
 ## Steps
@@ -33,11 +37,11 @@ If any of these rules was broken, or the Write failed, the run is **void**: dele
    - `git status --porcelain --untracked-files=no` must be empty, and there must be no untracked files under `results/` or `prompts/`.
    - `gh auth status` must succeed.
 4. **Plan.** Run the resolver (below) in `plan` mode from the repo root. It stops with a `STOP:` line if the prompt, folder, extension or model tag cannot be resolved, or if any target already exists locally, on `origin/main` or in an open PR. Relay a stop to the user and end. With `--dry-run`, show the plan output and end here: no writes, no issue, no branch, no PR (the resolver makes only read-only `git` and `gh` calls).
-5. **Print the prompt verbatim:** `python -c "import tomllib,sys; d=tomllib.load(open(sys.argv[1],'rb')); print(d.get('system',{}).get('text','')); print('-----'); print(d['user']['text'])" prompts/<toml>` using the `toml` value from the plan. If the TOML has `[images]`, Read those files (read-only).
+5. **Print the prompt verbatim:** `python -c "import tomllib,sys; d=tomllib.load(open(sys.argv[1],'rb')); print(d.get('system',{}).get('text','')); print('-----'); print(d['user']['text']); [print('image: prompts/'+f) for f in d.get('images',{}).get('files',[])]" prompts/<toml>` using the `toml` value from the plan. Each `image:` line is a path from `[images].files`, already prefixed with `prompts/`; Read exactly those files (read-only).
 6. **Generate** the deliverable and Write it to the planned target path (one Write, see the one-shot rules).
 7. **Meta.** Run the resolver in `meta` mode. It requires the deliverable to exist and be non-empty and writes the sidecar shown in the plan preview, with `generated_utc` stamped now.
-8. **Grade only if the plan says a grading mode** (the TOML has `[grading]`): run `python harness/grade.py --prompt <id>` and keep its output for the PR body. On a non-zero exit, keep the result, commit no grading sidecar and report the error line (for example a missing sympy). Without `[grading]`, skip this step and write nothing about playability.
-9. **Scope check.** `git status --porcelain --untracked-files=all` must show only the run's own 2 or 3 new paths (deliverable, meta, and the grading sidecar if one was produced). `grade.py --prompt` can rewrite the sidecars of other models' results for the same prompt; restore any such file with `git restore -- <path>` and mention it in the PR.
+8. **Grade only if the plan says a grading mode** (the TOML has `[grading]`): run `python harness/grade.py --prompt <id>` and keep its output for the PR body. On a non-zero exit, keep the deliverable and meta, delete the run's own grading sidecar if `grade.py` wrote one (`rm` that single path; it is never committed), restore any other sidecar it touched as in step 9, and report the error line (for example a missing sympy). Without `[grading]`, skip this step and write nothing about playability.
+9. **Scope check.** `git status --porcelain --untracked-files=all` must show only the run's own 2 or 3 new paths (deliverable, meta, and the grading sidecar if `grade.py` exited 0 and wrote one). `grade.py --prompt` can rewrite the sidecars of other models' results for the same prompt; restore any such file with `git restore -- <path>` and mention it in the PR.
 10. **Issue.** `gh issue create` with the title and body below; note the number `N`.
 11. **Branch.** `git switch -c <branch>`; the untracked new files carry over.
 12. **Commit.** `git add` each run path explicitly. `git diff --cached --name-only` must equal exactly the run's own paths, with nothing under `prompts/`. Commit with the message below. Follow the session's own commit attribution rules; this skill does not prescribe any.
@@ -56,7 +60,7 @@ If any of these rules was broken, or the Write failed, the run is **void**: dele
 
 ## Resolver
 
-Run from the repo root (not with `-I`, so the `harness` import works). Replace `<prompt-id>` and `<model-id>`; the mode is `plan` or `meta`. It needs `python` 3.11+ and read-only `git` and `gh`. In `plan` mode it prints only `key: value` lines and a meta preview, never any content from a result file.
+Run from the repo root (not with `-I`, so the `harness` import works). Replace `<prompt-id>` and `<model-id>`; the mode is `plan` or `meta`. It needs Python 3.11+ (`python3` where `python` is absent) and read-only `git` and `gh`. In `plan` mode it prints only `key: value` lines and a meta preview, never any content from a result file.
 
 ```bash
 python - "<prompt-id>" "<model-id>" plan <<'PY'
@@ -64,14 +68,16 @@ import json, re, subprocess, sys, tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
-arg, model, mode = sys.argv[1:4]
-sys.path.insert(0, ".")
-from harness.modes._common import derive_model
-
-
 def stop(msg):
     print("STOP: " + msg)
     sys.exit(1)
+
+
+if len(sys.argv) != 4 or sys.argv[3] not in ("plan", "meta"):
+    stop("usage: <prompt-id> <model-id> plan|meta (3 arguments)")
+arg, model, mode = sys.argv[1:4]
+sys.path.insert(0, ".")
+from harness.modes._common import derive_model
 
 
 def sh(*cmd):
@@ -121,7 +127,7 @@ else:
     kind = "text answer"
 
 # 6. model tag from the session model id, 7. harness agreement
-model_id = re.sub(r"\[[^\]]*\]$", "", model.strip())
+model_id = re.sub(r"\[[^\]]*\]$", "", model.strip()).strip()
 tag = re.sub(r"[^a-z0-9]+", "_", re.sub(r"-\d{8}$", "", model_id).lower())
 if not re.fullmatch(r"[a-z][a-z0-9_]*[a-z0-9]", tag):
     stop("model tag %r from %r is not usable" % (tag, model))
@@ -140,13 +146,21 @@ for p in (target, meta_path, grade_path):
 prs = sh("gh", "pr", "list", "--state", "open", "--limit", "200", "--json", "number,files")
 if prs.returncode:
     stop("gh pr list failed: " + prs.stderr.strip())
-for pr in json.loads(prs.stdout):
+try:
+    open_prs = json.loads(prs.stdout)
+except ValueError:
+    stop("gh pr list printed non-JSON output")
+for pr in open_prs:
     if any(f["path"] == target for f in pr["files"]):
         stop("open PR #%d already touches %s" % (pr["number"], target))
 if mode == "meta" and (not Path(target).is_file() or Path(target).stat().st_size == 0):
     stop("%s is missing or empty; write the deliverable first" % target)
 
 # meta sidecar (Fable 5.1 shape plus the one-shot keys)
+ctx = ("The Claude Code system context was present alongside the TOML system text."
+       if "system" in prompt else "The TOML has no system text.")
+
+
 def given(key, name):
     return "%s %s" % (name, prompt[key]) if key in prompt else "%s not set in the TOML" % name
 
@@ -165,9 +179,8 @@ sidecar = {
         "max_tokens_requested_initial": None,
         "reasoning_effort": None,
         "note": "Sampling settings from the TOML (%s) could not be applied in-session; session defaults applied. "
-        "The Claude Code system context was present alongside the TOML system text. "
-        "finish_reason and usage are not observable in-session." % (
-            given("temperature", "temperature") + "; " + given("max_tokens", "max_tokens")),
+        "%s finish_reason and usage are not observable in-session." % (
+            given("temperature", "temperature") + "; " + given("max_tokens", "max_tokens"), ctx),
     },
     "finish_reason": None,
     "truncated": False,
