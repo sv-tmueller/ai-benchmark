@@ -20,3 +20,6 @@ venv/
 # Claude Code local state
 .claude/settings.local.json
 .claude/worktrees/
+
+# bench-run issue and PR bodies written by harness/bench_run.py
+.bench-run/

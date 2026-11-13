@@ -535,6 +535,12 @@ class MergeGateAcceptsRenderedNamesTest(unittest.TestCase):
         self.assertTrue([r for r in reasons if "branch" in r])
 
 
+class GitignoreTest(unittest.TestCase):
+    def test_bench_run_work_folder_is_ignored_so_git_status_stays_clean(self):
+        lines = (REPO / ".gitignore").read_text().splitlines()
+        self.assertIn(br.WORK_DIR + "/", lines)
+
+
 class ScriptEntryTest(unittest.TestCase):
     def test_runs_as_a_script_from_the_repo_root_without_a_pythonpath(self):
         env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
