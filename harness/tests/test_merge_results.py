@@ -6,6 +6,7 @@ call goes through the ``run`` seam, which the tests replace with a scripted
 """
 
 import base64
+import hashlib
 import io
 import json
 import subprocess
@@ -490,9 +491,20 @@ def listing(prs, extra=()):
     return ok(json.dumps(items + list(extra)))
 
 
+def blob_sha(data):
+    """Git blob id of ``data``; computed here so tests do not lean on the code under test."""
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
 def build_fake(prs=(), main_before=MAIN_PATHS, main_after=None, readme=README,
-               views=None, checks=None, extra_list=(), merge=None):
-    """Script a world: ``prs`` are open; ``views``/``checks``/``merge`` override per PR."""
+               views=None, checks=None, extra_list=(), merge=None, strict_api=False):
+    """Script a world: ``prs`` are open; ``views``/``checks``/``merge`` override per PR.
+
+    ``strict_api`` scripts the write endpoints by full path instead of the
+    catch-all ``gh api --method POST|PUT`` rules, so an unscripted endpoint
+    (a status post to the wrong sha, say) raises, and answers the README blob
+    with the fixture's real blob id.
+    """
     fake = FakeRunner()
     views, checks, merge = views or {}, checks or {}, merge or {}
     fake.on("gh", "auth", "status", responses=[ok()])
@@ -501,7 +513,8 @@ def build_fake(prs=(), main_before=MAIN_PATHS, main_after=None, readme=README,
     after = main_before if main_after is None else main_after
     fake.on(*LS_TREE, responses=[tree(main_before), tree(after)])
     fake.on("git", "show", "origin/main:README.md", responses=[ok(readme)])
-    fake.on("git", "rev-parse", "origin/main:README.md", responses=[ok(README_BLOB + "\n")])
+    blob = blob_sha(readme.encode("utf-8")) if strict_api else README_BLOB
+    fake.on("git", "rev-parse", "origin/main:README.md", responses=[ok(blob + "\n")])
     fake.on("git", "rev-parse", "origin/main", responses=[ok(MAIN_SHA + "\n")])
     for pr in prs:
         n = str(pr["number"])
@@ -511,10 +524,46 @@ def build_fake(prs=(), main_before=MAIN_PATHS, main_after=None, readme=README,
                 responses=checks.get(pr["number"], [ok(json.dumps(GREEN))]))
         fake.on("gh", "pr", "merge", n, responses=merge.get(pr["number"], [ok()]))
         fake.on("gh", "pr", "update-branch", n, responses=[ok()])
-    fake.on("gh", "api", "--method", "POST", responses=[ok("{}")])
-    fake.on("gh", "api", "--method", "PUT", responses=[ok("{}")])
+    if strict_api:
+        fake.on("gh", "api", "--method", "POST", "repos/{owner}/{repo}/git/refs",
+                responses=[ok("{}")])
+        fake.on("gh", "api", "--method", "PUT", "repos/{owner}/{repo}/contents/README.md",
+                responses=[ok("{}")])
+    else:
+        fake.on("gh", "api", "--method", "POST", responses=[ok("{}")])
+        fake.on("gh", "api", "--method", "PUT", responses=[ok("{}")])
     fake.on("gh", "pr", "create", responses=[ok("https://github.com/o/r/pull/99\n")])
     return fake
+
+
+STATUS_ENDPOINT = "repos/{owner}/{repo}/statuses/"
+CONTEXTS = ("orchestrai/test", "orchestrai/review")
+
+
+def status_fields(argv):
+    """Return ``{sha, state, context, description}`` of a status post argv, else ``None``."""
+    if argv[:4] != ("gh", "api", "--method", "POST") or STATUS_ENDPOINT not in argv[4]:
+        return None
+    fields = {"sha": argv[4].rsplit("/", 1)[1]}
+    for flag, pair in zip(argv[5::2], argv[6::2]):
+        assert flag == "-f", argv
+        key, _, value = pair.partition("=")
+        fields[key] = value
+    return fields
+
+
+def status_posts(fake):
+    """Return ``[(sha, context, description)]`` for every status post the fake saw."""
+    return [(f["sha"], f["context"], f["description"])
+            for f in map(status_fields, fake.argvs()) if f]
+
+
+def script_status(fake, sha, test=None, review=None):
+    """Allow status posts on ``sha`` only, by full path and context."""
+    for context, responses in zip(CONTEXTS, (test, review)):
+        fake.on("gh", "api", "--method", "POST", STATUS_ENDPOINT + sha,
+                "-f", "state=success", "-f", "context=" + context,
+                responses=responses or [ok("{}")])
 
 
 def run_main(fake, *args, model=MODEL_ID):
@@ -530,6 +579,7 @@ def run_main(fake, *args, model=MODEL_ID):
 
 class OrchestrationBase(unittest.TestCase):
     fake = None
+    vouched = frozenset()  # shas that passed the gate; a status goes nowhere else
 
     def tearDown(self):
         if self.fake is not None:
@@ -537,6 +587,13 @@ class OrchestrationBase(unittest.TestCase):
                 self.assertNotIn("--admin", argv)
                 self.assertNotIn("--auto", argv)
                 self.assertNotIn("--delete-branch", argv)
+                fields = status_fields(argv)
+                if fields:
+                    self.assertIn(fields["sha"], self.vouched, argv)
+                    self.assertIn(fields["context"], CONTEXTS)
+                    self.assertEqual(fields["state"], "success")
+                    self.assertTrue(fields["description"].startswith(mr.STATUS_MARKER))
+                    self.assertLessEqual(len(fields["description"]), 140)
 
 
 ALPHA_FILES = ["results/alpha/alpha_%s.html" % TAG, "results/alpha/alpha_%s.meta.json" % TAG]
@@ -745,6 +802,230 @@ class BehindTests(OrchestrationBase):
         self.assertEqual(self.fake.find("gh", "pr", "merge"), [])
 
 
+DONE_README = README.replace(
+    "alpha_claude_fable_5_2.html` | not run",
+    "alpha_claude_fable_5_2.html` | generated, browser check pending")
+A, B = "a" * 40, "b" * 40
+
+
+class StatusPinTests(unittest.TestCase):
+    def test_description_constants(self):
+        self.assertEqual(mr.STATUS_MARKER, "one-shot result exception: ")
+        self.assertEqual(
+            mr.RESULT_STATUS_DESC,
+            "one-shot result exception: merge_results.py gate passed on this commit")
+        self.assertEqual(
+            mr.DOCS_STATUS_DESC,
+            "one-shot result exception: merge_results.py ledger rewrite verified on "
+            "this commit")
+        self.assertEqual(mr.STATUS_CONTEXTS, CONTEXTS)
+        for desc in (mr.RESULT_STATUS_DESC, mr.DOCS_STATUS_DESC):
+            self.assertLessEqual(len(desc), 140)
+
+
+class ResultStatusTests(OrchestrationBase):
+    """``--post-statuses`` on result PRs: statuses only on the gated head."""
+
+    def world(self, pr=None, views=None, checks=None, merge=None):
+        pr = pr or make_pr(number=7)
+        self.fake = build_fake(
+            prs=[pr], views=views, checks=checks, merge=merge, readme=DONE_README,
+            main_after=MAIN_PATHS | set(ALPHA_FILES), strict_api=True)
+        return self.fake
+
+    def positions(self, *prefix):
+        return [i for i, argv in enumerate(self.fake.argvs()) if argv[:len(prefix)] == prefix]
+
+    def post_positions(self):
+        return [i for i, argv in enumerate(self.fake.argvs()) if status_fields(argv)]
+
+    def behind_world(self, new_checks=None):
+        pr = make_pr(number=7)
+        behind = ok(json.dumps(dict(pr, mergeStateStatus="BEHIND")))
+        updated = ok(json.dumps(dict(pr, headRefOid=B)))
+        pending = ok(json.dumps([{"name": "validate-prompts (3.11)", "bucket": "pending"}]))
+        green = ok(json.dumps(GREEN))
+        return self.world(pr, views={7: [behind, behind, updated]},
+                          checks={7: [green, pending, new_checks or green]})
+
+    def test_clean_pass_posts_both_statuses_on_the_gated_head_then_merges(self):
+        fake = self.world()
+        script_status(fake, A)
+        self.vouched = frozenset({A})
+        code, out, _ = run_main(fake, "--post-statuses")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(status_posts(fake), [
+            (A, "orchestrai/test", mr.RESULT_STATUS_DESC),
+            (A, "orchestrai/review", mr.RESULT_STATUS_DESC)])
+        self.assertEqual(fake.find("gh", "api", "--method", "POST")[0][0], (
+            "gh", "api", "--method", "POST", "repos/{owner}/{repo}/statuses/" + A,
+            "-f", "state=success", "-f", "context=orchestrai/test",
+            "-f", "description=" + mr.RESULT_STATUS_DESC))
+        views = self.positions("gh", "pr", "view", "7")
+        posts = self.post_positions()
+        merge_at = self.positions("gh", "pr", "merge")
+        self.assertEqual(len(views), 2)
+        self.assertGreater(views[1], self.positions("gh", "pr", "checks", "7")[-1])
+        self.assertGreater(posts[0], views[1])
+        self.assertGreater(merge_at[0], posts[-1])
+        merge = fake.find("gh", "pr", "merge")[0][0]
+        self.assertEqual(merge[merge.index("--match-head-commit") + 1], A)
+        self.assertIn("#7 merged (aaaaaaa)", out)
+
+    def test_without_the_flag_nothing_is_posted_and_the_pr_is_read_once(self):
+        fake = self.world()
+        code, out, _ = run_main(fake)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(status_posts(fake), [])
+        self.assertEqual(len(fake.find("gh", "pr", "view", "7")), 1)
+        self.assertEqual(len(fake.find("gh", "pr", "merge")), 1)
+
+    def test_draft_pr_gets_no_status_and_no_merge(self):
+        fake = self.world(make_pr(number=7, isDraft=True))
+        code, out, _ = run_main(fake, "--post-statuses")
+        self.assertEqual(code, 1)
+        self.assertIn("#7 left open: fails gate:", out)
+        self.assertEqual(status_posts(fake), [])
+        self.assertEqual(fake.find("gh", "pr", "merge"), [])
+
+    def test_red_checks_get_no_status_and_no_merge(self):
+        red = ok(json.dumps([{"name": "validate-prompts (3.11)", "bucket": "fail"}]))
+        fake = self.world(checks={7: [red]})
+        code, out, _ = run_main(fake, "--post-statuses")
+        self.assertEqual(code, 1)
+        self.assertIn("checks red", out)
+        self.assertEqual(status_posts(fake), [])
+        self.assertEqual(fake.find("gh", "pr", "merge"), [])
+
+    def test_extra_file_gets_no_status_and_no_merge(self):
+        pr = make_pr(number=7, files=pr_files(*ALPHA_FILES, "results/alpha/notes.txt"))
+        fake = self.world(pr)
+        code, out, _ = run_main(fake, "--post-statuses")
+        self.assertEqual(code, 1)
+        self.assertIn("extra file", out)
+        self.assertEqual(status_posts(fake), [])
+        self.assertEqual(fake.find("gh", "pr", "merge"), [])
+
+    def test_behind_pr_is_vouched_only_on_the_new_head(self):
+        fake = self.behind_world()
+        script_status(fake, B)  # no rule for A: a post there raises
+        self.vouched = frozenset({B})
+        code, out, _ = run_main(fake, "--post-statuses")
+        self.assertEqual(code, 0, out)
+        self.assertEqual([sha for sha, _, _ in status_posts(fake)], [B, B])
+        self.assertGreater(self.post_positions()[0],
+                           self.positions("gh", "pr", "update-branch", "7")[0])
+        merge = fake.find("gh", "pr", "merge")[0][0]
+        self.assertEqual(merge[merge.index("--match-head-commit") + 1], B)
+
+    def test_behind_pr_that_fails_regate_gets_no_status(self):
+        red = ok(json.dumps([{"name": "validate-prompts (3.11)", "bucket": "fail"}]))
+        fake = self.behind_world(new_checks=red)
+        code, out, _ = run_main(fake, "--post-statuses")
+        self.assertEqual(code, 1)
+        self.assertIn("#7 left open: fails gate: checks red", out)
+        self.assertEqual(status_posts(fake), [])
+        self.assertEqual(fake.find("gh", "pr", "merge"), [])
+
+    def test_head_moved_after_the_gate_read_gets_no_status(self):
+        pr = make_pr(number=7)
+        moved = ok(json.dumps(dict(pr, headRefOid="9" * 40)))
+        fake = self.world(pr, views={7: [ok(json.dumps(pr)), moved]})
+        code, out, _ = run_main(fake, "--post-statuses")
+        self.assertEqual(code, 1)
+        self.assertIn("#7 left open: head moved after the gate read "
+                      "(aaaaaaa -> 9999999); no status posted", out)
+        self.assertEqual(status_posts(fake), [])
+        self.assertEqual(fake.find("gh", "pr", "merge"), [])
+
+    def test_unreadable_confirm_read_gets_no_status(self):
+        pr = make_pr(number=7)
+        fake = self.world(pr, views={7: [ok(json.dumps(pr)), (1, "", "boom\n")]})
+        code, out, _ = run_main(fake, "--post-statuses")
+        self.assertEqual(code, 1)
+        self.assertIn("#7 left open: could not read the PR to confirm its head; "
+                      "no status posted", out)
+        self.assertEqual(status_posts(fake), [])
+        self.assertEqual(fake.find("gh", "pr", "merge"), [])
+
+    def test_failed_test_status_stops_before_review_and_merge(self):
+        fake = self.world()
+        script_status(fake, A, test=[(1, "", "HTTP 422: Validation Failed\n")])
+        self.vouched = frozenset({A})
+        code, out, _ = run_main(fake, "--post-statuses")
+        self.assertEqual(code, 1)
+        self.assertIn("#7 left open: status post failed: orchestrai/test on aaaaaaa: "
+                      "HTTP 422: Validation Failed", out)
+        self.assertEqual([c for _, c, _ in status_posts(fake)], ["orchestrai/test"])
+        self.assertEqual(fake.find("gh", "pr", "merge"), [])
+
+    def test_failed_review_status_is_reported_without_retry_or_merge(self):
+        fake = self.world()
+        script_status(fake, A, review=[(1, "", "HTTP 500\n")])
+        self.vouched = frozenset({A})
+        code, out, _ = run_main(fake, "--post-statuses")
+        self.assertEqual(code, 1)
+        self.assertIn("#7 left open: status post failed: orchestrai/review on aaaaaaa: "
+                      "HTTP 500 (orchestrai/test already posted)", out)
+        self.assertEqual([c for _, c, _ in status_posts(fake)],
+                         ["orchestrai/test", "orchestrai/review"])
+        self.assertEqual(fake.find("gh", "pr", "merge"), [])
+
+    def test_a_failed_pr_does_not_stop_the_next_one(self):
+        first = make_pr(number=7, isDraft=True)
+        second = make_pr("beta", number=8, ext="md", headRefOid=B)
+        readme = DONE_README.replace(
+            "beta_claude_fable_5_2.md` | not run",
+            "beta_claude_fable_5_2.md` | generated, browser check pending")
+        self.fake = build_fake(prs=[first, second], readme=readme,
+                               main_after=MAIN_PATHS | set(BETA_FILES), strict_api=True)
+        script_status(self.fake, B)
+        self.vouched = frozenset({B})
+        code, out, _ = run_main(self.fake, "--post-statuses")
+        self.assertEqual(code, 1)
+        self.assertEqual([sha for sha, _, _ in status_posts(self.fake)], [B, B])
+        self.assertEqual(len(self.fake.find("gh", "pr", "merge", "8")), 1)
+
+
+class ResultStatusDryRunTests(OrchestrationBase):
+    def dry(self, *prs):
+        self.fake = build_fake(prs=list(prs), strict_api=True)
+        code, out, _ = run_main(self.fake, "--post-statuses", "--dry-run")
+        self.assertEqual(self.fake.writes(), [])
+        self.assertEqual(status_posts(self.fake), [])
+        return code, out
+
+    def test_clean_pr_would_be_vouched_then_merged(self):
+        code, out = self.dry(make_pr(number=7))
+        self.assertEqual(code, 0, out)
+        self.assertIn("#7 would post orchestrai/test and orchestrai/review on aaaaaaa, "
+                      "then merge (mergeStateStatus=CLEAN)\n", out)
+
+    def test_blocked_pr_is_planned_instead_of_the_refusal_note(self):
+        code, out = self.dry(make_pr(number=7, mergeStateStatus="BLOCKED"))
+        self.assertIn("#7 would post orchestrai/test and orchestrai/review on aaaaaaa, "
+                      "then merge (mergeStateStatus=BLOCKED)\n", out)
+        self.assertNotIn("would likely be refused", out)
+
+    def test_behind_pr_would_be_updated_and_regated_first(self):
+        code, out = self.dry(make_pr(number=7, mergeStateStatus="BEHIND"))
+        self.assertIn("#7 would update branch, re-gate the new head, post orchestrai/test "
+                      "and orchestrai/review on it, then merge (mergeStateStatus=BEHIND)\n",
+                      out)
+
+    def test_failing_pr_would_get_no_statuses(self):
+        code, out = self.dry(make_pr(number=7, isDraft=True))
+        self.assertEqual(code, 1)
+        self.assertRegex(out, r"(?m)^#7 fails gate: .*draft.*; no statuses would be posted$")
+
+    def test_without_the_flag_dry_run_lines_are_unchanged(self):
+        self.fake = build_fake(prs=[make_pr(number=7, mergeStateStatus="BLOCKED")])
+        code, out, _ = run_main(self.fake, "--dry-run")
+        self.assertIn("#7 would merge (mergeStateStatus=BLOCKED: merge would likely be "
+                      "refused)\n", out)
+        self.assertNotIn("statuses", out)
+
+
 class DryRunTests(OrchestrationBase):
     def test_dry_run_makes_no_writes(self):
         pr = make_pr(number=7)
@@ -829,6 +1110,320 @@ class DocsPrTests(OrchestrationBase):
         code, _, _ = run_main(self.fake)
         self.assertEqual(code, 0)
         self.assertEqual(self.fake.find("gh", "pr", "merge"), [])
+
+
+class GitBlobShaTests(unittest.TestCase):
+    def test_pins_match_git_hash_object(self):
+        self.assertEqual(mr.git_blob_sha(b""), "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391")
+        self.assertEqual(mr.git_blob_sha(b"hello\n"),
+                         "ce013625030ba8dba906f756967f9e9ca394464a")
+
+    def test_agrees_with_the_independent_test_helper(self):
+        data = README.encode("utf-8")
+        self.assertEqual(mr.git_blob_sha(data), blob_sha(data))
+
+
+DOCS_MAIN = MAIN_PATHS | set(ALPHA_FILES)
+DOCS_NEW = rewrite(main_paths=DOCS_MAIN)[0]
+DOCS_BRANCH = "docs/ledger-claude-fable-5-2-" + MAIN_SHA[:7]
+DOCS_TITLE = "docs(readme): mark 1 claude-fable-5-2 ledger rows generated"
+D = "e" * 40
+
+
+def make_docs_pr(number=99, **overrides):
+    pr = {"number": number, "title": DOCS_TITLE, "headRefName": DOCS_BRANCH,
+          "headRefOid": D, "isDraft": False, "isCrossRepository": False,
+          "mergeStateStatus": "CLEAN", "files": []}
+    pr.update(overrides)
+    return pr
+
+
+def docs_commit(parents=(MAIN_SHA,), files=None):
+    if files is None:
+        files = [{"filename": "README.md", "status": "modified",
+                  "sha": blob_sha(DOCS_NEW.encode("utf-8"))}]
+    return {"sha": D, "parents": [{"sha": p} for p in parents], "files": files}
+
+
+def docs_listing(*numbers, branch=DOCS_BRANCH):
+    return [{"number": n, "title": DOCS_TITLE, "headRefName": branch, "isDraft": False,
+             "isCrossRepository": False} for n in numbers]
+
+
+class DocsStatusTests(OrchestrationBase):
+    """``--post-statuses`` on the ledger docs PR: merged only when verified."""
+
+    vouched = frozenset({A, D})
+
+    def script_docs(self, fake, pr=None, commit=None, checks=None, merge=None, statuses=True):
+        pr = pr or make_docs_pr()
+        n = str(pr["number"])
+        fake.on("gh", "pr", "view", n, "--json", VIEW_FIELDS, responses=[ok(json.dumps(pr))])
+        fake.on("gh", "pr", "checks", n, "--json", "name,bucket",
+                responses=checks or [ok(json.dumps(GREEN))])
+        fake.on("gh", "api", "repos/{owner}/{repo}/commits/" + pr["headRefOid"],
+                responses=[ok(json.dumps(commit or docs_commit()))])
+        fake.on("gh", "pr", "merge", n, responses=merge or [ok()])
+        if statuses:
+            script_status(fake, pr["headRefOid"])
+
+    def fresh(self, **kw):
+        """A result PR merges, then this run opens docs PR #99 (create prints its URL)."""
+        self.fake = build_fake(prs=[make_pr(number=7)], main_after=DOCS_MAIN, strict_api=True)
+        script_status(self.fake, A)
+        self.script_docs(self.fake, **kw)
+        return self.fake
+
+    def rerun(self, listed=(99,), **kw):
+        """No result PRs open; docs PR(s) from an earlier run are still open."""
+        self.fake = build_fake(main_before=DOCS_MAIN, strict_api=True,
+                               extra_list=docs_listing(*listed))
+        self.script_docs(self.fake, **kw)
+        return self.fake
+
+    def docs_merge(self, fake):
+        return [argv for argv in fake.argvs() if argv[:4] == ("gh", "pr", "merge", "99")]
+
+    def docs_posts(self, fake):
+        return [p for p in status_posts(fake) if p[0] == D]
+
+    def assert_left_open(self, fake, code, out, fragment):
+        self.assertEqual(code, 1, out)
+        self.assertRegex(out, r"(?m)^ledger PR #99 left open: .*%s" % fragment)
+        self.assertEqual(self.docs_posts(fake), [])
+        self.assertEqual(self.docs_merge(fake), [])
+        self.assertEqual(fake.find("gh", "pr", "update-branch", "99"), [])
+
+    def test_new_docs_pr_is_verified_vouched_and_merged(self):
+        fake = self.fresh()
+        code, out, _ = run_main(fake, "--post-statuses")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.docs_posts(fake), [
+            (D, "orchestrai/test", mr.DOCS_STATUS_DESC),
+            (D, "orchestrai/review", mr.DOCS_STATUS_DESC)])
+        self.assertEqual(self.docs_merge(fake), [(
+            "gh", "pr", "merge", "99", "--squash", "--match-head-commit", D,
+            "--subject", "docs(readme): mark 1 claude-fable-5-2 ledger rows generated (#99)")])
+        self.assertIn("docs PR opened: https://github.com/o/r/pull/99", out)
+        self.assertIn("docs PR #99 merged (eeeeeee)", out)
+        self.assertEqual(fake.find("gh", "pr", "update-branch", "99"), [])
+        argvs = fake.argvs()
+        merge_at = argvs.index(self.docs_merge(fake)[0])
+        posts = [i for i, a in enumerate(argvs) if status_fields(a) and
+                 status_fields(a)["sha"] == D]
+        views = [i for i, a in enumerate(argvs) if a[:4] == ("gh", "pr", "view", "99")]
+        commit_at = argvs.index(("gh", "api", "repos/{owner}/{repo}/commits/" + D))
+        checks = [i for i, a in enumerate(argvs) if a[:4] == ("gh", "pr", "checks", "99")]
+        create_at = argvs.index(fake.find("gh", "pr", "create")[0][0])
+        self.assertLess(create_at, views[0])
+        self.assertLess(views[0], commit_at)
+        self.assertLess(commit_at, checks[0])
+        self.assertLess(checks[-1], views[-1])
+        self.assertLess(views[-1], posts[0])
+        self.assertLess(posts[-1], merge_at)
+
+    def test_checks_still_pending_are_polled_before_the_merge(self):
+        pending = ok(json.dumps([{"name": "validate-prompts (3.11)", "bucket": "pending"}]))
+        fake = self.fresh(checks=[ok("[]"), pending, ok(json.dumps(GREEN))])
+        code, out, sleeps = run_main(fake, "--post-statuses")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(sleeps, [10, 10])
+        self.assertEqual(len(self.docs_merge(fake)), 1)
+
+    def test_docs_pr_from_an_earlier_run_is_verified_vouched_and_merged(self):
+        fake = self.rerun()
+        code, out, _ = run_main(fake, "--post-statuses")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(self.docs_posts(fake)), 2)
+        self.assertEqual(len(self.docs_merge(fake)), 1)
+        self.assertEqual(fake.find("gh", "pr", "create"), [])
+        self.assertEqual(fake.find("gh", "api", "--method", "POST", "repos/{owner}/{repo}/git/refs"), [])
+        self.assertIn("docs PR #99 merged (eeeeeee)", out)
+
+    def test_extra_file_keeps_the_docs_pr_open(self):
+        files = docs_commit()["files"] + [
+            {"filename": "results/x.md", "status": "added", "sha": "1" * 40}]
+        fake = self.fresh(commit=docs_commit(files=files), statuses=False)
+        code, out, _ = run_main(fake, "--post-statuses")
+        self.assert_left_open(fake, code, out, "fails docs gate: .*one file")
+
+    def test_wrong_readme_blob_keeps_the_docs_pr_open(self):
+        files = [{"filename": "README.md", "status": "modified", "sha": "1" * 40}]
+        fake = self.fresh(commit=docs_commit(files=files), statuses=False)
+        code, out, _ = run_main(fake, "--post-statuses")
+        self.assert_left_open(fake, code, out, "fails docs gate: .*not this rewrite")
+
+    def test_stale_parent_keeps_the_docs_pr_open(self):
+        fake = self.rerun(commit=docs_commit(parents=("f" * 40,)), statuses=False)
+        code, out, _ = run_main(fake, "--post-statuses")
+        self.assert_left_open(fake, code, out, "fails docs gate: .*; close it and re-run$")
+
+    def test_merge_commit_head_keeps_the_docs_pr_open(self):
+        fake = self.rerun(commit=docs_commit(parents=(MAIN_SHA, "f" * 40)), statuses=False)
+        code, out, _ = run_main(fake, "--post-statuses")
+        self.assert_left_open(fake, code, out, "fails docs gate: .*parent")
+
+    def test_base_readme_that_differs_from_main_keeps_the_docs_pr_open(self):
+        fake = self.fresh(statuses=False)
+        fake.on("git", "rev-parse", "origin/main:README.md", responses=[ok("1" * 40 + "\n")])
+        code, out, _ = run_main(fake, "--post-statuses")
+        self.assert_left_open(fake, code, out, "fails docs gate: .*base README")
+
+    def test_wrong_branch_name_keeps_the_docs_pr_open(self):
+        fake = self.fresh(pr=make_docs_pr(headRefName="docs/ledger-claude-fable-5-2-zzzzzzz"),
+                          statuses=False)
+        code, out, _ = run_main(fake, "--post-statuses")
+        self.assert_left_open(fake, code, out, "fails docs gate: .*branch")
+
+    def test_red_checks_keep_the_docs_pr_open(self):
+        red = ok(json.dumps([{"name": "validate-prompts (3.11)", "bucket": "fail"}]))
+        fake = self.fresh(checks=[red], statuses=False)
+        code, out, _ = run_main(fake, "--post-statuses")
+        self.assert_left_open(fake, code, out, "checks red")
+
+    def test_checks_that_never_finish_keep_the_docs_pr_open(self):
+        pending = ok(json.dumps([{"name": "validate-prompts (3.11)", "bucket": "pending"}]))
+        fake = self.fresh(checks=[pending], statuses=False)
+        code, out, sleeps = run_main(fake, "--post-statuses")
+        self.assert_left_open(fake, code, out, "timed out waiting for checks")
+        self.assertEqual(len(sleeps), mr.POLL_LIMIT - 1)
+
+    def test_head_that_moves_before_the_posts_keeps_the_docs_pr_open(self):
+        fake = self.fresh(statuses=False)
+        moved = ok(json.dumps(make_docs_pr(headRefOid="9" * 40)))
+        fake.on("gh", "pr", "view", "99", "--json", VIEW_FIELDS,
+                responses=[ok(json.dumps(make_docs_pr())), moved])
+        code, out, _ = run_main(fake, "--post-statuses")
+        self.assert_left_open(fake, code, out, "head moved after the gate read")
+
+    def test_two_open_docs_prs_stay_open_without_statuses(self):
+        self.fake = build_fake(main_before=DOCS_MAIN, strict_api=True,
+                               extra_list=docs_listing(98, 99))
+        code, out, _ = run_main(self.fake, "--post-statuses")
+        self.assertEqual(code, 1, out)
+        self.assertIn("ledger PRs #98, #99 are open; no statuses posted; "
+                      "close all but one and re-run", out)
+        self.assertEqual(status_posts(self.fake), [])
+        self.assertEqual(self.fake.find("gh", "pr", "merge"), [])
+        self.assertEqual(self.fake.find("gh", "pr", "view"), [])
+
+    def test_unreadable_pr_number_leaves_the_new_docs_pr_open(self):
+        self.fake = build_fake(prs=[make_pr(number=7)], main_after=DOCS_MAIN, strict_api=True)
+        script_status(self.fake, A)
+        self.fake.on("gh", "pr", "create", responses=[ok("created it\n")])
+        code, out, _ = run_main(self.fake, "--post-statuses")
+        self.assertEqual(code, 1)
+        self.assertIn("ledger PR left open: could not read its number from: created it", out)
+        self.assertEqual([p for p in status_posts(self.fake) if p[0] != A], [])
+
+    def test_failed_docs_status_post_means_no_merge(self):
+        fake = self.fresh(statuses=False)
+        script_status(fake, D, test=[(1, "", "HTTP 403\n")])
+        code, out, _ = run_main(fake, "--post-statuses")
+        self.assertEqual(code, 1)
+        self.assertIn("ledger PR #99 left open: status post failed: orchestrai/test on "
+                      "eeeeeee: HTTP 403", out)
+        self.assertEqual(len(self.docs_posts(fake)), 1)
+        self.assertEqual(self.docs_merge(fake), [])
+
+    def test_refused_docs_merge_exits_1(self):
+        fake = self.fresh(merge=[(1, "", "X Pull request is not mergeable\n")])
+        code, out, _ = run_main(fake, "--post-statuses")
+        self.assertEqual(code, 1)
+        self.assertIn("ledger PR #99 left open: refused by GitHub: "
+                      "X Pull request is not mergeable", out)
+        self.assertEqual(len(self.docs_merge(fake)), 1)
+        self.assertEqual(len(self.docs_posts(fake)), 2)
+
+    def test_without_the_flag_the_docs_pr_is_still_never_touched(self):
+        self.vouched = frozenset({A})
+        self.fake = build_fake(prs=[make_pr(number=7)], main_after=DOCS_MAIN, strict_api=True)
+        code, out, _ = run_main(self.fake)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(status_posts(self.fake), [])
+        self.assertEqual(len(self.fake.find("gh", "pr", "merge")), 1)
+        self.assertEqual(self.fake.find("gh", "pr", "view", "99"), [])
+
+    def test_without_the_flag_an_open_docs_pr_still_exits_0(self):
+        self.fake = build_fake(main_before=DOCS_MAIN, extra_list=docs_listing(31))
+        code, out, _ = run_main(self.fake)
+        self.assertEqual(code, 0, out)
+        self.assertIn("ledger PR #31 already open; merge it, then re-run", out)
+
+
+class DocsGateTests(unittest.TestCase):
+    def gate(self, pr=None, commit=None, main_sha=MAIN_SHA, main_blob=None, text=README,
+             new_text=DOCS_NEW):
+        return mr.docs_gate(pr or make_docs_pr(), commit or docs_commit(), main_sha,
+                            main_blob or blob_sha(text.encode("utf-8")), text, new_text, TAG)
+
+    def assertReason(self, reasons, fragment):
+        self.assertTrue(any(fragment in r for r in reasons), (fragment, reasons))
+
+    def test_exact_rewrite_on_main_passes(self):
+        self.assertEqual(self.gate(), [])
+
+    def test_draft_and_fork_are_refused(self):
+        reasons = self.gate(pr=make_docs_pr(isDraft=True, isCrossRepository=True))
+        self.assertReason(reasons, "draft")
+        self.assertReason(reasons, "fork")
+
+    def test_other_file_set_is_refused(self):
+        self.assertReason(self.gate(commit=docs_commit(files=[])), "one file")
+        self.assertReason(self.gate(commit=docs_commit(files=[
+            {"filename": "notes.md", "status": "modified",
+             "sha": blob_sha(DOCS_NEW.encode())}])), "README.md")
+        self.assertReason(self.gate(commit=docs_commit(files=[
+            {"filename": "README.md", "status": "added",
+             "sha": blob_sha(DOCS_NEW.encode())}])), "modified")
+
+    def test_text_that_is_not_main_s_readme_is_refused(self):
+        self.assertReason(self.gate(main_blob="1" * 40), "base README")
+
+    def test_branch_must_name_this_model_and_a_short_sha(self):
+        for name in ("docs/ledger-claude-fable-5-2-abc123", "docs/ledger-other-abcdef1",
+                     "docs/ledger-claude-fable-5-2-abcdef12", "feat/1-x"):
+            with self.subTest(name=name):
+                self.assertReason(self.gate(pr=make_docs_pr(headRefName=name)), "branch")
+
+
+class DocsStatusDryRunTests(OrchestrationBase):
+    def dry(self, **kw):
+        self.fake = build_fake(main_before=DOCS_MAIN, strict_api=True, **kw)
+        code, out, _ = run_main(self.fake, "--post-statuses", "--dry-run")
+        self.assertEqual(self.fake.writes(), [])
+        self.assertEqual(status_posts(self.fake), [])
+        return code, out
+
+    def test_new_docs_pr_would_be_vouched_and_merged_once_verified(self):
+        code, out = self.dry()
+        self.assertEqual(code, 0, out)
+        self.assertIn(
+            "would open a docs PR marking 1 row(s) generated, then post orchestrai/test and "
+            "orchestrai/review on it and merge it once its diff is verified and its checks "
+            "are green\n", out)
+
+    def test_open_docs_pr_would_be_vouched_only_if_it_is_exactly_the_rewrite(self):
+        code, out = self.dry(extra_list=docs_listing(99))
+        self.assertEqual(code, 0, out)
+        self.assertIn(
+            "ledger PR #99 already open; would post orchestrai/test and orchestrai/review on "
+            "it and merge it only if it is exactly this rewrite on origin/main and its checks "
+            "are green\n", out)
+
+    def test_two_open_docs_prs_are_reported_as_a_problem(self):
+        code, out = self.dry(extra_list=docs_listing(98, 99))
+        self.assertEqual(code, 1)
+        self.assertIn("ledger PRs #98, #99 are open; no statuses would be posted; "
+                      "close all but one and re-run", out)
+
+    def test_without_the_flag_the_ledger_lines_are_unchanged(self):
+        self.fake = build_fake(main_before=DOCS_MAIN, extra_list=docs_listing(99))
+        code, out, _ = run_main(self.fake, "--dry-run")
+        self.assertIn("ledger PR #99 already open; merge it, then re-run\n", out)
+        self.fake = build_fake(main_before=DOCS_MAIN)
+        code, out, _ = run_main(self.fake, "--dry-run")
+        self.assertIn("would open a docs PR marking 1 row(s) generated\n", out)
 
 
 if __name__ == "__main__":

@@ -649,11 +649,29 @@ exists and is not parametrized, the branch and folder match, the PR adds
 exactly the deliverable and its `.meta.json` (plus `_grading.json` only for
 graded prompts) as new files, and the checks are green. A PR that fails the
 gate, or that GitHub refuses to merge, stays open with the reason printed;
-the command never uses `--admin` or `--auto` and never posts commit statuses.
-Afterwards it opens one docs PR that moves the model's `not run` rows whose
-files are now on `main` to `generated, browser check pending`; that PR is
-left for you to merge. Exit codes: 0 done, 1 something stayed open, 2 bad
-model id or failed preflight.
+the command never uses `--admin` or `--auto`. Afterwards it opens one docs PR
+that moves the model's `not run` rows whose files are now on `main` to
+`generated, browser check pending`; that PR is left for you to merge unless the opt-in below is used. Exit
+codes: 0 done, 1 something stayed open, 2 bad model id or failed preflight.
+
+*Status exception (opt-in).* `main` requires the status contexts
+`orchestrai/test` and `orchestrai/review`, and one-shot result PRs have no
+orchestrator to post them, so GitHub refuses their merge. With
+`--post-statuses` the command posts both as `success` on a result PR that has
+passed the full gate, then merges it. Each status has the description prefix
+`one-shot result exception:` and vouches for exactly one thing: that
+`merge_results.py` gated that commit (file set, new files only, checks green).
+Statuses go only on the gated head commit, read once more right before posting;
+a PR that has to be brought up to date first is gated again and only its new
+head gets them. The ledger docs PR gets the same two statuses and is merged
+too, but only after its diff is proven to be exactly the README status cells the
+command rewrote (one commit on top of `origin/main`, only `README.md`, checks
+green); otherwise it stays open and is reported. A failed post leaves the PR
+open with the reason printed, and nothing is retried; `--admin` and `--auto` are
+never used. Without the flag the command posts no status, never merges the docs
+PR and behaves as before. Branch protection is unchanged.
+`/bench-run` batch mode passes the flag in its final merge step, and `--dry-run`
+shows what it would post.
 
 ## CI
 

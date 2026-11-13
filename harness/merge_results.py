@@ -3,26 +3,45 @@
 
 Usage::
 
-    python3 harness/merge_results.py --model <model-id> [--dry-run]
+    python3 harness/merge_results.py --model <model-id> [--post-statuses] [--dry-run]
 
 Open PRs titled ``<prefix> (<model-id>, one-shot): result`` are checked
 against a gate (right prompt, right folder, exactly the result files, only new
 files, green checks). PRs that pass are squash-merged one at a time. GitHub
 has the last word: if it refuses a merge, the PR stays open and the refusal is
-reported. The command never uses ``--admin`` or ``--auto`` and never posts
-commit statuses.
+reported. The command never uses ``--admin`` or ``--auto``.
+
+Without ``--post-statuses`` it posts no commit status. ``main`` requires the
+contexts ``orchestrai/test`` and ``orchestrai/review``, which one-shot result PRs
+never receive, so with ``--post-statuses`` (owner-approved exception, #253) a PR
+that passed the full gate gets both as ``success`` on its gated head commit,
+each described as a one-shot result exception, and is then merged on that same
+commit. Statuses go only on a commit that passed the gate: after a BEHIND update
+the gate runs again and only the new head is vouched for, and a last read of the
+PR must still show the gated head before anything is posted. A failed post
+leaves the PR open; nothing is retried.
 
 Afterwards the README ledger rows for the model whose files are on ``main``
 are moved from ``not run`` to ``generated, browser check pending`` through a
-docs PR, opened with the GitHub API so the working tree is untouched. That PR
-is never merged here.
+docs PR, opened with the GitHub API so the working tree is untouched. Without
+``--post-statuses`` that PR is never merged here. With it, the docs PR (the one
+just opened, or exactly one left by an earlier run) is merged only after proof
+that its diff is the rewrite this run computed: one commit on top of
+``origin/main`` that changes only ``README.md`` to exactly the new text, whose
+base text is main's README byte for byte (compared as git blob ids), with a
+``docs/ledger-<tag>-<sha7>`` branch and green checks. It then gets the same two
+statuses and a squash merge pinned to that commit. A docs PR is never brought up
+to date, closed or deleted; one that fails the proof, or a second open docs PR,
+stays open and is reported.
 
 Exit codes: 0 all merged (or nothing to do); 1 a PR was left open or the docs
-PR step failed; 2 bad model id or failed preflight.
+PR step failed (with ``--post-statuses`` a docs PR left open counts); 2 bad
+model id or failed preflight.
 """
 
 import argparse
 import base64
+import hashlib
 import json
 import re
 import subprocess
@@ -252,6 +271,50 @@ def rewrite_ledger(text, tag, prompts, main_paths):
     return text, updated, skipped
 
 
+def git_blob_sha(data):
+    """Return the git blob id of ``data`` (bytes), as ``git hash-object`` prints it."""
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def docs_gate(pr, commit, main_sha, main_blob, text, new_text, tag):
+    """Return every reason the ledger docs PR may not be vouched for; empty means pass.
+
+    ``pr`` is the ``gh pr view`` payload, ``commit`` the commits API payload of
+    its head, ``main_sha`` and ``main_blob`` the ids of ``origin/main`` and of
+    its ``README.md``, ``text`` the README the rewrite read and ``new_text`` its
+    result. A head with the single parent ``main_sha`` that changes only
+    ``README.md`` to exactly ``new_text``, where ``text`` is main's README byte
+    for byte, has the diff ``text -> new_text`` and nothing else. No I/O here.
+    """
+    reasons = []
+    if git_blob_sha(text.encode("utf-8")) != main_blob:
+        reasons.append("base README is not the README on origin/main")
+    parents = [p.get("sha") for p in commit.get("parents") or []]
+    if parents != [main_sha]:
+        reasons.append("commit parents %s are not exactly [origin/main %s]" % (
+            [str(p)[:7] for p in parents], main_sha[:7]))
+    files = commit.get("files") or []
+    if len(files) != 1:
+        reasons.append("commit must change exactly one file (README.md), found %d" % len(files))
+    else:
+        entry = files[0]
+        if entry.get("filename") != "README.md":
+            reasons.append("changed file is %r, not README.md" % entry.get("filename"))
+        elif entry.get("status") != "modified":
+            reasons.append("README.md status is %r, not modified" % entry.get("status"))
+        if entry.get("sha") != git_blob_sha(new_text.encode("utf-8")):
+            reasons.append("README.md blob is not this rewrite")
+    branch_re = r"docs/ledger-%s-[0-9a-f]{7}" % re.escape(tag.replace("_", "-"))
+    if not re.fullmatch(branch_re, pr.get("headRefName", "")):
+        reasons.append("branch %r does not match docs/ledger-%s-<7 hex>" % (
+            pr.get("headRefName"), tag.replace("_", "-")))
+    if pr.get("isDraft"):
+        reasons.append("PR is a draft")
+    if pr.get("isCrossRepository"):
+        reasons.append("PR comes from a fork")
+    return reasons
+
+
 # --- gh / git access --------------------------------------------------------
 
 LIST_ARGV = ("gh", "pr", "list", "--state", "open", "--base", "main", "--limit", "200",
@@ -260,6 +323,10 @@ VIEW_FIELDS = ("number,title,headRefName,headRefOid,isDraft,isCrossRepository,"
                "files,mergeStateStatus")
 FETCH_ARGV = ("git", "fetch", "origin", "main")
 LS_TREE_ARGV = ("git", "ls-tree", "-r", "--name-only", "origin/main", "--", "results")
+STATUS_CONTEXTS = ("orchestrai/test", "orchestrai/review")
+STATUS_MARKER = "one-shot result exception: "
+RESULT_STATUS_DESC = STATUS_MARKER + "merge_results.py gate passed on this commit"
+DOCS_STATUS_DESC = STATUS_MARKER + "merge_results.py ledger rewrite verified on this commit"
 POLL_SECONDS = 10
 POLL_LIMIT = 60  # 10 minutes
 UNKNOWN_RETRIES = 3
@@ -285,8 +352,10 @@ def first_line(text):
 class Merger:
     """One command run: reads, gate, merges, ledger. All I/O goes through ``run``."""
 
-    def __init__(self, model_id, tag, prompts, run, sleep, out, dry_run):
+    def __init__(self, model_id, tag, prompts, run, sleep, out, dry_run,
+                 post_statuses=False):
         self.model_id, self.tag = model_id, tag
+        self.post_statuses = post_statuses
         self.prompts = prompts
         self.by_id = prompts_by_id(prompts)
         self.run, self.sleep, self.out, self.dry_run = run, sleep, out, dry_run
@@ -394,15 +463,54 @@ class Merger:
                 return
             view = updated
             status = view.get("mergeStateStatus")
+        if self.post_statuses:
+            reason = self.vouch(number, view["headRefOid"], RESULT_STATUS_DESC)
+            if reason:
+                return self.left_open(number, reason)
         self.merge(number, view, status)
+
+    def vouch(self, number, sha, desc):
+        """Post both statuses on ``sha`` once it is confirmed; return a failure reason or ``None``.
+
+        Opt-in only. ``gh pr checks`` names no commit, so a last read of the PR
+        must still show ``sha`` as its head before anything is posted. Nothing is
+        retried or undone: statuses cannot be deleted, and the merge that follows
+        is pinned to ``sha``.
+        """
+        fresh = self.read_view(number)
+        if fresh is None:
+            return "could not read the PR to confirm its head; no status posted"
+        if fresh.get("headRefOid") != sha:
+            return "head moved after the gate read (%s -> %s); no status posted" % (
+                sha[:7], str(fresh.get("headRefOid"))[:7])
+        for done, context in enumerate(STATUS_CONTEXTS):
+            proc = self.run((
+                "gh", "api", "--method", "POST", "repos/{owner}/{repo}/statuses/" + sha,
+                "-f", "state=success", "-f", "context=" + context,
+                "-f", "description=" + desc))
+            if proc.returncode:
+                note = " (%s already posted)" % STATUS_CONTEXTS[0] if done else ""
+                return "status post failed: %s on %s: %s%s" % (
+                    context, sha[:7], first_line(proc.stderr), note)
+        return None
 
     def dry_report(self, number, view, reasons, status):
         if reasons:
             self.failed = True
-            return self.say("#%d fails gate: %s" % (number, "; ".join(reasons)))
+            return self.say("#%d fails gate: %s%s" % (
+                number, "; ".join(reasons),
+                "; no statuses would be posted" if self.post_statuses else ""))
         self.planned.append(number)
         self.planned_files.update(entry["path"] for entry in view["files"])
-        if status == "BEHIND":
+        if self.post_statuses:
+            both = "post orchestrai/test and orchestrai/review"
+            if status == "BEHIND":
+                self.say("#%d would update branch, re-gate the new head, %s on it, then "
+                         "merge (mergeStateStatus=BEHIND)" % (number, both))
+            else:
+                self.say("#%d would %s on %s, then merge (mergeStateStatus=%s)" % (
+                    number, both, view["headRefOid"][:7], status))
+        elif status == "BEHIND":
             self.say("#%d would update branch, then merge (mergeStateStatus=BEHIND)" % number)
         elif status == "BLOCKED":
             self.say("#%d would merge (mergeStateStatus=BLOCKED: merge would likely be "
@@ -469,24 +577,101 @@ class Merger:
                      else "nothing to merge; ledger up to date")
             return 1 if self.failed else 0
         prefix = "docs/ledger-%s-" % self.tag.replace("_", "-")
-        for pr in open_prs:
-            if pr.get("headRefName", "").startswith(prefix):
-                self.say("ledger PR #%d already open; merge it, then re-run" % pr["number"])
-                return 1 if self.failed else 0
-        if self.dry_run:
-            self.say("would open a docs PR marking %d row(s) generated" % len(rows))
+        open_docs = [pr for pr in open_prs if pr.get("headRefName", "").startswith(prefix)]
+        if open_docs and not self.post_statuses:
+            self.say("ledger PR #%d already open; merge it, then re-run" % open_docs[0]["number"])
             return 1 if self.failed else 0
-        return 0 if self.docs_pr(prefix, new_text, rows) and not self.failed else 1
+        if len(open_docs) > 1:
+            self.failed = True
+            self.say("ledger PRs %s are open; no statuses %s; close all but one and re-run" % (
+                ", ".join("#%d" % pr["number"] for pr in open_docs),
+                "would be posted" if self.dry_run else "posted"))
+            return 1
+        if open_docs:
+            return self.vouch_open_docs(open_docs[0]["number"], text, new_text, rows)
+        if self.dry_run:
+            self.say("would open a docs PR marking %d row(s) generated%s" % (
+                len(rows), ", then post orchestrai/test and orchestrai/review on it and "
+                "merge it once its diff is verified and its checks are green"
+                if self.post_statuses else ""))
+            return 1 if self.failed else 0
+        return 0 if self.docs_pr(prefix, text, new_text, rows) and not self.failed else 1
 
-    def docs_pr(self, prefix, new_text, rows):
-        """Open the ledger docs PR through the API; report the failing step."""
-        steps = {}
+    def vouch_open_docs(self, number, text, new_text, rows):
+        """Opt-in: an earlier run's docs PR is merged only if it is exactly this rewrite."""
+        if self.dry_run:
+            self.say("ledger PR #%d already open; would post orchestrai/test and "
+                     "orchestrai/review on it and merge it only if it is exactly this "
+                     "rewrite on origin/main and its checks are green" % number)
+            return 1 if self.failed else 0
+        refs = self.main_refs()
+        if refs is not None:
+            self.docs_sequence(number, refs, text, new_text, rows)
+        return 1 if self.failed else 0
+
+    def main_refs(self):
+        """Return ``{"main sha", "README blob"}`` of ``origin/main``, or ``None`` after a report."""
+        refs = {}
         for key, argv in (("main sha", ("git", "rev-parse", "origin/main")),
                           ("README blob", ("git", "rev-parse", "origin/main:README.md"))):
             proc = self.run(argv)
             if proc.returncode or not proc.stdout.strip():
-                return self.docs_failed(key, proc, None)
-            steps[key] = proc.stdout.strip()
+                self.docs_failed(key, proc, None)
+                return None
+            refs[key] = proc.stdout.strip()
+        return refs
+
+    def ledger_open(self, number, reason):
+        self.failed = True
+        self.say("ledger PR #%d left open: %s" % (number, reason))
+
+    def wait_checks(self, number):
+        """Poll until the PR's checks have finished; return the reasons they are not green."""
+        for attempt in range(POLL_LIMIT):
+            checks = self.read_checks(number)
+            if checks and not any(c["bucket"] == "pending" for c in checks):
+                return _checks_reasons(checks)
+            if attempt < POLL_LIMIT - 1:
+                self.sleep(POLL_SECONDS)
+        return ["timed out waiting for checks"]
+
+    def docs_sequence(self, number, refs, text, new_text, rows):
+        """Opt-in: prove the docs PR is exactly the rewrite, wait for checks, vouch, merge.
+
+        Never ``update-branch``: a merge commit would break the single-parent proof,
+        so a docs PR that falls behind ``main`` stays open (``strict`` refuses it).
+        """
+        view = self.read_view(number)
+        if view is None:
+            return self.ledger_open(number, "could not read the PR")
+        sha = view["headRefOid"]
+        commit = self.json_call(("gh", "api", "repos/{owner}/{repo}/commits/" + sha), dict)
+        if commit is None:
+            return self.ledger_open(number, "could not read its head commit")
+        reasons = docs_gate(view, commit, refs["main sha"], refs["README blob"], text,
+                            new_text, self.tag)
+        if reasons:
+            return self.ledger_open(
+                number, "fails docs gate: %s; close it and re-run" % "; ".join(reasons))
+        reasons = self.wait_checks(number)
+        if reasons:
+            return self.ledger_open(number, "; ".join(reasons))
+        reason = self.vouch(number, sha, DOCS_STATUS_DESC)
+        if reason:
+            return self.ledger_open(number, reason)
+        proc = self.run((
+            "gh", "pr", "merge", str(number), "--squash", "--match-head-commit", sha,
+            "--subject", "docs(readme): mark %d %s ledger rows generated (#%d)" % (
+                len(rows), self.model_id, number)))
+        if proc.returncode:
+            return self.ledger_open(number, "refused by GitHub: " + first_line(proc.stderr))
+        self.say("docs PR #%d merged (%s)" % (number, sha[:7]))
+
+    def docs_pr(self, prefix, text, new_text, rows):
+        """Open the ledger docs PR through the API; report the failing step."""
+        steps = self.main_refs()
+        if steps is None:
+            return False
         branch = prefix + steps["main sha"][:7]
         proc = self.run(
             ("gh", "api", "--method", "POST", "repos/{owner}/{repo}/git/refs", "--input", "-"),
@@ -514,7 +699,15 @@ class Merger:
                          "--title", title, "--body", "\n".join(body)))
         if proc.returncode:
             return self.docs_failed("open PR", proc, branch)
-        self.say("docs PR opened: " + first_line(proc.stdout))
+        url = first_line(proc.stdout)
+        self.say("docs PR opened: " + url)
+        if self.post_statuses:
+            match = re.search(r"/pull/(\d+)$", url)
+            if match is None:
+                self.failed = True
+                self.say("ledger PR left open: could not read its number from: " + url)
+            else:
+                self.docs_sequence(int(match.group(1)), steps, text, new_text, rows)
         return True
 
     def docs_failed(self, step, proc, leftover):
@@ -538,6 +731,9 @@ def parse_args(argv):
                         help="session model id, e.g. claude-fable-5-2")
     parser.add_argument("--dry-run", action="store_true",
                         help="read-only: report what would be merged and updated")
+    parser.add_argument("--post-statuses", action="store_true",
+                        help="one-shot result exception: post orchestrai/test and "
+                             "orchestrai/review on a PR that passed the gate, then merge it")
     return parser.parse_args(argv)
 
 
@@ -553,7 +749,7 @@ def main(argv=None, run=None, sleep=None, prompts_dir=None, out=None):
         return 2
     prompts = load_prompt_files(PROMPTS_DIR if prompts_dir is None else prompts_dir)
     merger = Merger(model_id, tag, prompts, run or default_run, sleep or time.sleep,
-                    out, args.dry_run)
+                    out, args.dry_run, args.post_statuses)
     return merger.execute()
 
 
