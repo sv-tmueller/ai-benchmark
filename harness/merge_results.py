@@ -27,6 +27,7 @@ import json
 import re
 import subprocess
 import sys
+import time
 import tomllib
 from pathlib import Path
 
@@ -246,3 +247,312 @@ def rewrite_ledger(text, tag, prompts, main_paths):
     for start, end in reversed(edits):
         text = text[:start] + GENERATED + text[end:]
     return text, updated, skipped
+
+
+# --- gh / git access --------------------------------------------------------
+
+LIST_ARGV = ("gh", "pr", "list", "--state", "open", "--base", "main", "--limit", "200",
+             "--json", "number,title,headRefName,isDraft,isCrossRepository")
+VIEW_FIELDS = ("number,title,headRefName,headRefOid,isDraft,isCrossRepository,"
+               "files,mergeStateStatus")
+FETCH_ARGV = ("git", "fetch", "origin", "main")
+LS_TREE_ARGV = ("git", "ls-tree", "-r", "--name-only", "origin/main", "--", "results")
+POLL_SECONDS = 10
+POLL_LIMIT = 60  # 10 minutes
+UNKNOWN_RETRIES = 3
+UNKNOWN_SECONDS = 2
+
+
+def default_run(argv, input=None):
+    """Run ``argv`` in the repo root; the one place that touches the system."""
+    try:
+        return subprocess.run(argv, cwd=REPO_ROOT, capture_output=True, text=True, input=input)
+    except FileNotFoundError as exc:
+        return subprocess.CompletedProcess(argv, 127, "", str(exc))
+
+
+def first_line(text):
+    """Return the first non-blank line of ``text`` (stripped), or ``""``."""
+    for line in (text or "").splitlines():
+        if line.strip():
+            return line.strip()
+    return ""
+
+
+class Merger:
+    """One command run: reads, gate, merges, ledger. All I/O goes through ``run``."""
+
+    def __init__(self, model_id, tag, prompts, run, sleep, out, dry_run):
+        self.model_id, self.tag = model_id, tag
+        self.prompts = prompts
+        self.by_id = prompts_by_id(prompts)
+        self.run, self.sleep, self.out, self.dry_run = run, sleep, out, dry_run
+        self.main_paths = set()
+        self.failed = False
+        self.merged = []
+        self.planned = []
+        self.planned_files = set()
+
+    def say(self, message):
+        print(message, file=self.out)
+
+    def json_call(self, argv, want):
+        """Run ``argv`` and return its parsed stdout if it is a ``want``, else ``None``."""
+        proc = self.run(argv)
+        try:
+            data = json.loads(proc.stdout)
+        except ValueError:
+            return None
+        return data if isinstance(data, want) else None
+
+    # -- orchestration -------------------------------------------------------
+
+    def execute(self):
+        for argv, label in ((("gh", "auth", "status"), "gh auth status"),
+                            (FETCH_ARGV, "git fetch origin main")):
+            proc = self.run(argv)
+            if proc.returncode:
+                self.say("preflight failed: %s: %s" % (label, first_line(proc.stderr)))
+                return 2
+        open_prs = self.json_call(LIST_ARGV, list)
+        if open_prs is None:
+            self.say("could not list open PRs")
+            return 2
+        if not self.read_main_paths():
+            self.say("could not list results on origin/main")
+            return 2
+
+        candidates = sorted(
+            (pr for pr in open_prs
+             if (parsed := parse_title(pr.get("title", ""))) and parsed[1] == self.model_id),
+            key=lambda pr: pr["number"])
+        for pr in candidates:
+            self.handle(pr["number"])
+        if self.merged and not self.refresh_main():
+            return 1
+        return self.ledger(open_prs, had_candidates=bool(candidates))
+
+    def read_main_paths(self):
+        proc = self.run(LS_TREE_ARGV)
+        if proc.returncode:
+            return False
+        self.main_paths = {line for line in proc.stdout.splitlines() if line}
+        return True
+
+    def refresh_main(self):
+        proc = self.run(FETCH_ARGV)
+        if proc.returncode:
+            self.say("git fetch origin main failed after merging: %s" % first_line(proc.stderr))
+            self.failed = True
+            return False
+        if not self.read_main_paths():
+            self.say("could not list results on origin/main after merging")
+            self.failed = True
+            return False
+        return True
+
+    # -- one PR --------------------------------------------------------------
+
+    def read_view(self, number):
+        return self.json_call(("gh", "pr", "view", str(number), "--json", VIEW_FIELDS), dict)
+
+    def read_checks(self, number):
+        return self.json_call(("gh", "pr", "checks", str(number), "--json", "name,bucket"),
+                              list) or []
+
+    def settle_state(self, number, view):
+        """Re-read a PR whose mergeStateStatus GitHub has not computed yet."""
+        for _ in range(UNKNOWN_RETRIES):
+            if view.get("mergeStateStatus") != "UNKNOWN":
+                break
+            self.sleep(UNKNOWN_SECONDS)
+            view = self.read_view(number) or view
+        return view
+
+    def left_open(self, number, reason):
+        self.failed = True
+        self.say("#%d left open: %s" % (number, reason))
+
+    def handle(self, number):
+        view = self.read_view(number)
+        if view is None:
+            return self.left_open(number, "could not read the PR")
+        view = self.settle_state(number, view)
+        checks = self.read_checks(number)
+        reasons = gate(view, checks, self.main_paths, self.prompts, self.model_id, self.tag)
+        status = view.get("mergeStateStatus")
+        if self.dry_run:
+            return self.dry_report(number, view, reasons, status)
+        if reasons:
+            return self.left_open(number, "fails gate: " + "; ".join(reasons))
+        if status == "BEHIND":
+            updated = self.update_branch(number, view)
+            if updated is None:
+                return
+            view = updated
+            status = view.get("mergeStateStatus")
+        self.merge(number, view, status)
+
+    def dry_report(self, number, view, reasons, status):
+        if reasons:
+            self.failed = True
+            return self.say("#%d fails gate: %s" % (number, "; ".join(reasons)))
+        self.planned.append(number)
+        self.planned_files.update(entry["path"] for entry in view["files"])
+        if status == "BEHIND":
+            self.say("#%d would update branch, then merge (mergeStateStatus=BEHIND)" % number)
+        elif status == "BLOCKED":
+            self.say("#%d would merge (mergeStateStatus=BLOCKED: merge would likely be "
+                     "refused)" % number)
+        else:
+            self.say("#%d would merge (mergeStateStatus=%s)" % (number, status))
+
+    def update_branch(self, number, view):
+        """Merge main into the PR branch and return its re-gated view, or ``None``."""
+        proc = self.run(("gh", "pr", "update-branch", str(number)))
+        if proc.returncode:
+            self.left_open(number, "update-branch failed: " + first_line(proc.stderr))
+            return None
+        old_oid = view["headRefOid"]
+        for _ in range(POLL_LIMIT):
+            self.sleep(POLL_SECONDS)
+            fresh = self.read_view(number)
+            if not fresh or fresh.get("headRefOid") == old_oid:
+                continue
+            checks = self.read_checks(number)
+            if checks and not any(c["bucket"] == "pending" for c in checks):
+                break
+        else:
+            self.left_open(number, "timed out waiting for update-branch to finish its checks")
+            return None
+        reasons = gate(fresh, checks, self.main_paths, self.prompts, self.model_id, self.tag)
+        if reasons:
+            self.left_open(number, "fails gate: " + "; ".join(reasons))
+            return None
+        return fresh
+
+    def merge(self, number, view, status):
+        prefix = parse_title(view["title"])[0]
+        sha = view["headRefOid"]
+        proc = self.run((
+            "gh", "pr", "merge", str(number), "--squash", "--match-head-commit", sha,
+            "--subject", "feat(results): add %s %s one-shot result (#%d)" % (
+                prefix, self.model_id, number)))
+        if proc.returncode:
+            return self.left_open(number, "refused by GitHub: %s (mergeStateStatus=%s)" % (
+                first_line(proc.stderr), status))
+        self.merged.append(number)
+        self.say("#%d merged (%s)" % (number, sha[:7]))
+
+    # -- ledger --------------------------------------------------------------
+
+    def ledger(self, open_prs, had_candidates):
+        readme = self.run(("git", "show", "origin/main:README.md"))
+        if readme.returncode:
+            self.say("could not read README.md from origin/main: " + first_line(readme.stderr))
+            return 1
+        text = readme.stdout
+        new_text, rows, skipped = rewrite_ledger(text, self.tag, self.by_id, self.main_paths)
+        for message in skipped:
+            self.say(message)
+        if self.dry_run:
+            self.say("ledger rows eligible now: " + describe_rows(rows))
+            _, rows, _ = rewrite_ledger(
+                text, self.tag, self.by_id, self.main_paths | self.planned_files)
+            self.say("ledger rows eligible after planned merges: " + describe_rows(rows))
+            new_text = None
+        if not rows:
+            self.say("ledger up to date" if had_candidates
+                     else "nothing to merge; ledger up to date")
+            return 1 if self.failed else 0
+        prefix = "docs/ledger-%s-" % self.tag.replace("_", "-")
+        for pr in open_prs:
+            if pr.get("headRefName", "").startswith(prefix):
+                self.say("ledger PR #%d already open; merge it, then re-run" % pr["number"])
+                return 1 if self.failed else 0
+        if self.dry_run:
+            self.say("would open a docs PR marking %d row(s) generated" % len(rows))
+            return 1 if self.failed else 0
+        return 0 if self.docs_pr(prefix, new_text, rows) and not self.failed else 1
+
+    def docs_pr(self, prefix, new_text, rows):
+        """Open the ledger docs PR through the API; report the failing step."""
+        steps = {}
+        for key, argv in (("main sha", ("git", "rev-parse", "origin/main")),
+                          ("README blob", ("git", "rev-parse", "origin/main:README.md"))):
+            proc = self.run(argv)
+            if proc.returncode or not proc.stdout.strip():
+                return self.docs_failed(key, proc, None)
+            steps[key] = proc.stdout.strip()
+        branch = prefix + steps["main sha"][:7]
+        proc = self.run(
+            ("gh", "api", "--method", "POST", "repos/{owner}/{repo}/git/refs", "--input", "-"),
+            input=json.dumps({"ref": "refs/heads/" + branch, "sha": steps["main sha"]}))
+        if proc.returncode:
+            return self.docs_failed("create branch", proc, None)
+        title = "docs(readme): mark %d %s ledger rows generated" % (len(rows), self.model_id)
+        proc = self.run(
+            ("gh", "api", "--method", "PUT", "repos/{owner}/{repo}/contents/README.md",
+             "--input", "-"),
+            input=json.dumps({
+                "message": title,
+                "content": base64.b64encode(new_text.encode("utf-8")).decode("ascii"),
+                "sha": steps["README blob"],
+                "branch": branch,
+            }))
+        if proc.returncode:
+            return self.docs_failed("update README", proc, branch)
+        body = ["Marks the %s ledger rows generated now that their result PRs are merged."
+                % self.model_id, "", "Rows:"]
+        body += ["- `%s`: `%s`" % (row["pid"], row["path"]) for row in rows]
+        if self.merged:
+            body += ["", "Merged result PRs: " + ", ".join("#%d" % n for n in self.merged)]
+        proc = self.run(("gh", "pr", "create", "--base", "main", "--head", branch,
+                         "--title", title, "--body", "\n".join(body)))
+        if proc.returncode:
+            return self.docs_failed("open PR", proc, branch)
+        self.say("docs PR opened: " + first_line(proc.stdout))
+        return True
+
+    def docs_failed(self, step, proc, leftover):
+        self.failed = True
+        self.say("docs PR step failed: %s: %s" % (step, first_line(proc.stderr)))
+        if leftover:
+            self.say("leftover branch: " + leftover)
+        return False
+
+
+def describe_rows(rows):
+    return ", ".join("%s (%s)" % (row["pid"], row["path"]) for row in rows) or "none"
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(
+        prog="merge_results.py",
+        description="Merge gated result PRs for one model, then update the README ledger.",
+    )
+    parser.add_argument("--model", required=True, metavar="ID",
+                        help="session model id, e.g. claude-fable-5-2")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="read-only: report what would be merged and updated")
+    return parser.parse_args(argv)
+
+
+def main(argv=None, run=None, sleep=None, prompts_dir=None, out=None):
+    """CLI entry point; returns the process exit code."""
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    out = sys.stdout if out is None else out
+    try:
+        model_id = normalize_model_id(args.model)
+        tag = model_tag(model_id)
+    except ValueError as exc:
+        print("bad model id: %s" % exc, file=out)
+        return 2
+    prompts = load_prompt_files(PROMPTS_DIR if prompts_dir is None else prompts_dir)
+    merger = Merger(model_id, tag, prompts, run or default_run, sleep or time.sleep,
+                    out, args.dry_run)
+    return merger.execute()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

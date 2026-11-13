@@ -629,6 +629,19 @@ generation alone does not earn one.
 | `app-stillwater` | blueprint (md) | `results/stillwater/stillwater_claude_fable_5_2.md` | not run |
 | `game-weichensteller` | HTML | `results/weichensteller/weichensteller_claude_fable_5_2.html` | not run |
 
+**Merging results.** `python3 harness/merge_results.py --model <model-id>`
+(add `--dry-run` to only read and report) squash-merges the open
+`<prefix> (<model-id>, one-shot): result` PRs that pass a gate: the prompt
+exists and is not parametrized, the branch and folder match, the PR adds
+exactly the deliverable and its `.meta.json` (plus `_grading.json` only for
+graded prompts) as new files, and the checks are green. A PR that fails the
+gate, or that GitHub refuses to merge, stays open with the reason printed;
+the command never uses `--admin` or `--auto` and never posts commit statuses.
+Afterwards it opens one docs PR that moves the model's `not run` rows whose
+files are now on `main` to `generated, browser check pending`; that PR is
+left for you to merge. Exit codes: 0 done, 1 something stayed open, 2 bad
+model id or failed preflight.
+
 ## CI
 
 Lightweight validation only: every TOML must parse and every prompt TOML

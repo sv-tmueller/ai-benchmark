@@ -5,10 +5,9 @@ call goes through the ``run`` seam, which the tests replace with a scripted
 ``FakeRunner``. Prompt TOMLs and PR payloads are inline fixtures.
 """
 
-import contextlib
+import base64
 import io
 import json
-import re
 import subprocess
 import tempfile
 import tomllib
@@ -412,6 +411,412 @@ class LedgerTests(unittest.TestCase):
         prompts = mr.prompts_by_id(mr.load_prompt_files(mr.PROMPTS_DIR))
         rows = mr.ledger_rows(text, "claude_fable_5_2", prompts)
         self.assertEqual(len(rows), 11)
+
+
+# --- orchestration ----------------------------------------------------------
+
+LIST_ARGV = ("gh", "pr", "list", "--state", "open", "--base", "main", "--limit", "200",
+             "--json", "number,title,headRefName,isDraft,isCrossRepository")
+VIEW_FIELDS = ("number,title,headRefName,headRefOid,isDraft,isCrossRepository,"
+               "files,mergeStateStatus")
+WRITE_PREFIXES = (
+    ("gh", "pr", "merge"),
+    ("gh", "pr", "update-branch"),
+    ("gh", "pr", "create"),
+    ("gh", "api"),
+)
+FETCH = ("git", "fetch", "origin", "main")
+LS_TREE = ("git", "ls-tree", "-r", "--name-only", "origin/main", "--", "results")
+MAIN_SHA = "c" * 40
+README_BLOB = "d" * 40
+
+
+def ok(stdout=""):
+    return (0, stdout, "")
+
+
+class FakeRunner:
+    """Scripted ``run`` seam: longest argv-prefix match (latest rule wins ties)."""
+
+    def __init__(self):
+        self.rules = []
+        self.calls = []
+
+    def on(self, *prefix, responses):
+        self.rules.append((prefix, list(responses)))
+
+    def __call__(self, argv, input=None):
+        argv = tuple(argv)
+        self.calls.append((argv, input))
+        best = None
+        for prefix, queue in self.rules:
+            if argv[:len(prefix)] == prefix and (best is None or len(prefix) >= len(best[0])):
+                best = (prefix, queue)
+        if best is None:
+            raise AssertionError("unscripted call: %r" % (argv,))
+        queue = best[1]
+        rc, stdout, stderr = queue.pop(0) if len(queue) > 1 else queue[0]
+        return subprocess.CompletedProcess(argv, rc, stdout, stderr)
+
+    def argvs(self):
+        return [argv for argv, _ in self.calls]
+
+    def writes(self):
+        return [a for a in self.argvs() if any(a[:len(p)] == p for p in WRITE_PREFIXES)]
+
+    def find(self, *prefix):
+        return [(a, i) for a, i in self.calls if a[:len(prefix)] == prefix]
+
+
+def tree(paths):
+    return ok("\n".join(sorted(paths)) + "\n")
+
+
+def listing(prs, extra=()):
+    items = [{k: pr[k] for k in ("number", "title", "headRefName", "isDraft",
+                                 "isCrossRepository")} for pr in prs]
+    return ok(json.dumps(items + list(extra)))
+
+
+def build_fake(prs=(), main_before=MAIN_PATHS, main_after=None, readme=README,
+               views=None, checks=None, extra_list=(), merge=None):
+    """Script a world: ``prs`` are open; ``views``/``checks``/``merge`` override per PR."""
+    fake = FakeRunner()
+    views, checks, merge = views or {}, checks or {}, merge or {}
+    fake.on("gh", "auth", "status", responses=[ok()])
+    fake.on(*FETCH, responses=[ok()])
+    fake.on(*LIST_ARGV, responses=[listing(prs, extra_list)])
+    after = main_before if main_after is None else main_after
+    fake.on(*LS_TREE, responses=[tree(main_before), tree(after)])
+    fake.on("git", "show", "origin/main:README.md", responses=[ok(readme)])
+    fake.on("git", "rev-parse", "origin/main:README.md", responses=[ok(README_BLOB + "\n")])
+    fake.on("git", "rev-parse", "origin/main", responses=[ok(MAIN_SHA + "\n")])
+    for pr in prs:
+        n = str(pr["number"])
+        fake.on("gh", "pr", "view", n, "--json", VIEW_FIELDS,
+                responses=views.get(pr["number"], [ok(json.dumps(pr))]))
+        fake.on("gh", "pr", "checks", n, "--json", "name,bucket",
+                responses=checks.get(pr["number"], [ok(json.dumps(GREEN))]))
+        fake.on("gh", "pr", "merge", n, responses=merge.get(pr["number"], [ok()]))
+        fake.on("gh", "pr", "update-branch", n, responses=[ok()])
+    fake.on("gh", "api", "--method", "POST", responses=[ok("{}")])
+    fake.on("gh", "api", "--method", "PUT", responses=[ok("{}")])
+    fake.on("gh", "pr", "create", responses=[ok("https://github.com/o/r/pull/99\n")])
+    return fake
+
+
+def run_main(fake, *args, model=MODEL_ID):
+    sleeps = []
+    out = io.StringIO()
+    with tempfile.TemporaryDirectory() as tmp:
+        for name, text in (("game-alpha.toml", ALPHA_TOML), ("app-beta.toml", BETA_TOML)):
+            Path(tmp, name).write_text(text, encoding="utf-8")
+        code = mr.main(["--model=" + model, *args], run=fake, sleep=sleeps.append,
+                       prompts_dir=tmp, out=out)
+    return code, out.getvalue(), sleeps
+
+
+class OrchestrationBase(unittest.TestCase):
+    fake = None
+
+    def tearDown(self):
+        if self.fake is not None:
+            for argv in self.fake.argvs():
+                self.assertNotIn("--admin", argv)
+                self.assertNotIn("--auto", argv)
+                self.assertNotIn("--delete-branch", argv)
+
+
+ALPHA_FILES = ["results/alpha/alpha_%s.html" % TAG, "results/alpha/alpha_%s.meta.json" % TAG]
+BETA_FILES = ["results/beta/beta_%s.md" % TAG, "results/beta/beta_%s.meta.json" % TAG]
+
+
+class NoOpTests(OrchestrationBase):
+    def test_no_candidates_and_ledger_current(self):
+        self.fake = build_fake()
+        code, out, _ = run_main(self.fake)
+        self.assertEqual(code, 0)
+        self.assertIn("nothing to merge; ledger up to date", out)
+        self.assertEqual(self.fake.writes(), [])
+        self.assertEqual(
+            set(self.fake.argvs()),
+            {("gh", "auth", "status"), FETCH, LIST_ARGV, LS_TREE,
+             ("git", "show", "origin/main:README.md")})
+
+    def test_pr_for_another_model_is_never_touched(self):
+        other = make_pr(number=5, model_id="other-model", tag="other_model")
+        self.fake = build_fake(prs=[other])
+        code, out, _ = run_main(self.fake)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.fake.find("gh", "pr", "view"), [])
+        self.assertEqual(self.fake.find("gh", "pr", "checks"), [])
+
+    def test_non_result_pr_is_ignored(self):
+        chore = make_pr(number=5, title="chore: bump things")
+        self.fake = build_fake(prs=[chore])
+        code, _, _ = run_main(self.fake)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.fake.find("gh", "pr", "view"), [])
+
+    def test_bad_model_id_exits_2_without_calls(self):
+        self.fake = build_fake()
+        code, out, _ = run_main(self.fake, model="---")
+        self.assertEqual(code, 2)
+        self.assertEqual(self.fake.calls, [])
+
+    def test_auth_failure_exits_2(self):
+        self.fake = build_fake()
+        self.fake.rules[0] = (("gh", "auth", "status"), [(1, "", "not logged in")])
+        code, out, _ = run_main(self.fake)
+        self.assertEqual(code, 2)
+        self.assertIn("not logged in", out)
+        self.assertEqual(self.fake.argvs(), [("gh", "auth", "status")])
+
+    def test_fetch_failure_exits_2(self):
+        self.fake = build_fake()
+        self.fake.rules[1] = (FETCH, [(128, "", "network down")])
+        code, out, _ = run_main(self.fake)
+        self.assertEqual(code, 2)
+        self.assertEqual(self.fake.writes(), [])
+
+
+class MergeTests(OrchestrationBase):
+    def test_gated_pr_is_squash_merged_then_docs_pr_opened(self):
+        pr = make_pr(number=7)
+        self.fake = build_fake(prs=[pr], main_after=MAIN_PATHS | set(ALPHA_FILES))
+        code, out, _ = run_main(self.fake)
+        self.assertEqual(code, 0, out)
+        merge_call = self.fake.find("gh", "pr", "merge")
+        self.assertEqual(len(merge_call), 1)
+        self.assertEqual(merge_call[0][0], (
+            "gh", "pr", "merge", "7", "--squash", "--match-head-commit", "a" * 40,
+            "--subject", "feat(results): add alpha %s one-shot result (#7)" % MODEL_ID))
+        branch = "docs/ledger-claude-fable-5-2-" + MAIN_SHA[:7]
+        ref_call = self.fake.find("gh", "api", "--method", "POST")
+        self.assertIn("repos/{owner}/{repo}/git/refs", ref_call[0][0])
+        self.assertEqual(json.loads(ref_call[0][1]),
+                         {"ref": "refs/heads/" + branch, "sha": MAIN_SHA})
+        put_call = self.fake.find("gh", "api", "--method", "PUT")
+        self.assertIn("repos/{owner}/{repo}/contents/README.md", put_call[0][0])
+        body = json.loads(put_call[0][1])
+        self.assertEqual(body["branch"], branch)
+        self.assertEqual(body["sha"], README_BLOB)
+        new_readme = base64.b64decode(body["content"]).decode("utf-8")
+        self.assertEqual(
+            status_cell(new_readme, "results/alpha/alpha_claude_fable_5_2.html"),
+            "generated, browser check pending")
+        self.assertEqual(
+            status_cell(new_readme, "results/beta/beta_claude_fable_5_2.md"), "not run")
+        create = self.fake.find("gh", "pr", "create")[0][0]
+        self.assertEqual(create[create.index("--head") + 1], branch)
+        self.assertEqual(create[create.index("--base") + 1], "main")
+        self.assertEqual(create[create.index("--title") + 1],
+                         "docs(readme): mark 1 claude-fable-5-2 ledger rows generated")
+        self.assertIn("#7", create[create.index("--body") + 1])
+        self.assertIn("https://github.com/o/r/pull/99", out)
+
+    def test_ledger_reads_main_again_after_merging(self):
+        self.fake = build_fake(prs=[make_pr(number=7)],
+                               main_after=MAIN_PATHS | set(ALPHA_FILES))
+        run_main(self.fake)
+        argvs = self.fake.argvs()
+        merge_at = argvs.index(self.fake.find("gh", "pr", "merge")[0][0])
+        self.assertIn(FETCH, argvs[merge_at:])
+        self.assertIn(LS_TREE, argvs[merge_at:])
+
+    def test_gate_failure_leaves_pr_open_with_reasons(self):
+        pr = make_pr(number=7, isDraft=True)
+        self.fake = build_fake(prs=[pr])
+        code, out, _ = run_main(self.fake)
+        self.assertEqual(code, 1)
+        self.assertIn("#7 left open: fails gate:", out)
+        self.assertIn("draft", out)
+        self.assertEqual(self.fake.writes(), [])
+
+    def test_refused_merge_is_reported_and_later_prs_still_processed(self):
+        first = make_pr(number=7)
+        second = make_pr("beta", number=8, ext="md")
+        blocked = (1, "", "X Pull request is not mergeable: the base branch policy "
+                          "prohibits the merge.\nUse --admin to bypass.\n")
+        views = {7: [ok(json.dumps(dict(first, mergeStateStatus="BLOCKED")))]}
+        self.fake = build_fake(
+            prs=[second, first], views=views, merge={7: [blocked]},
+            main_after=MAIN_PATHS | set(BETA_FILES))
+        code, out, _ = run_main(self.fake)
+        self.assertEqual(code, 1)
+        self.assertIn("#7 left open: refused by GitHub: X Pull request is not mergeable: "
+                      "the base branch policy prohibits the merge. "
+                      "(mergeStateStatus=BLOCKED)", out)
+        merged = [a[3] for a in self.fake.argvs() if a[:3] == ("gh", "pr", "merge")]
+        self.assertEqual(merged, ["7", "8"])
+        self.assertEqual(len(self.fake.find("gh", "pr", "merge", "7")), 1)
+        self.assertEqual(len(self.fake.find("gh", "pr", "create")), 1)
+
+    def test_prs_are_processed_in_ascending_order(self):
+        a, b = make_pr(number=9), make_pr("beta", number=8, ext="md")
+        self.fake = build_fake(prs=[a, b], main_after=MAIN_PATHS | set(ALPHA_FILES + BETA_FILES))
+        run_main(self.fake)
+        merged = [x[3] for x in self.fake.argvs() if x[:3] == ("gh", "pr", "merge")]
+        self.assertEqual(merged, ["8", "9"])
+
+    def test_unknown_state_is_reread_then_merged(self):
+        pr = make_pr(number=7)
+        unknown = ok(json.dumps(dict(pr, mergeStateStatus="UNKNOWN")))
+        self.fake = build_fake(prs=[pr], views={7: [unknown, unknown, ok(json.dumps(pr))]},
+                               main_after=MAIN_PATHS | set(ALPHA_FILES))
+        code, out, sleeps = run_main(self.fake)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(sleeps, [2, 2])
+        self.assertEqual(len(self.fake.find("gh", "pr", "merge")), 1)
+
+    def test_state_still_unknown_after_three_reads_tries_the_merge(self):
+        pr = make_pr(number=7)
+        unknown = ok(json.dumps(dict(pr, mergeStateStatus="UNKNOWN")))
+        self.fake = build_fake(prs=[pr], views={7: [unknown]},
+                               main_after=MAIN_PATHS | set(ALPHA_FILES))
+        code, _, _ = run_main(self.fake)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(self.fake.find("gh", "pr", "merge")), 1)
+
+
+class BehindTests(OrchestrationBase):
+    def behind_world(self, new_view_status="CLEAN", new_checks=None, new_oid="b" * 40,
+                     main_after=None):
+        pr = make_pr(number=7)
+        behind = ok(json.dumps(dict(pr, mergeStateStatus="BEHIND")))
+        updated = ok(json.dumps(dict(pr, headRefOid=new_oid, mergeStateStatus=new_view_status)))
+        pending = ok(json.dumps([{"name": "validate-prompts (3.11)", "bucket": "pending"}]))
+        green = ok(json.dumps(GREEN))
+        # gate read, then first poll (old head), then polls on the new head
+        views = {7: [behind, behind, updated]}
+        checks = {7: [green, pending, new_checks or green]}
+        return build_fake(prs=[pr], views=views, checks=checks,
+                          main_after=main_after or MAIN_PATHS | set(ALPHA_FILES))
+
+    def test_behind_updates_branch_regates_and_merges_new_sha(self):
+        self.fake = self.behind_world()
+        code, out, sleeps = run_main(self.fake)
+        self.assertEqual(code, 0, out)
+        argvs = self.fake.argvs()
+        update_at = argvs.index(("gh", "pr", "update-branch", "7"))
+        merge = self.fake.find("gh", "pr", "merge")[0][0]
+        self.assertGreater(argvs.index(merge), update_at)
+        self.assertEqual(merge[merge.index("--match-head-commit") + 1], "b" * 40)
+        self.assertTrue(sleeps and set(sleeps) == {10})
+
+    def test_behind_pr_fails_regate_on_new_head(self):
+        red = [{"name": "validate-prompts (3.11)", "bucket": "fail"}]
+        self.fake = self.behind_world(new_checks=ok(json.dumps(red)))
+        code, out, _ = run_main(self.fake)
+        self.assertEqual(code, 1)
+        self.assertIn("#7 left open: fails gate: checks red", out)
+        self.assertEqual(self.fake.find("gh", "pr", "merge"), [])
+
+    def test_behind_pr_that_never_gets_a_new_head_times_out(self):
+        pr = make_pr(number=7)
+        behind = ok(json.dumps(dict(pr, mergeStateStatus="BEHIND")))
+        self.fake = build_fake(prs=[pr], views={7: [behind]})
+        code, out, sleeps = run_main(self.fake)
+        self.assertEqual(code, 1)
+        self.assertIn("#7 left open: timed out waiting for update-branch", out)
+        self.assertEqual(len(sleeps), 60)
+        self.assertEqual(self.fake.find("gh", "pr", "merge"), [])
+
+    def test_update_branch_failure_leaves_pr_open(self):
+        pr = make_pr(number=7)
+        behind = ok(json.dumps(dict(pr, mergeStateStatus="BEHIND")))
+        self.fake = build_fake(prs=[pr], views={7: [behind]})
+        self.fake.on("gh", "pr", "update-branch", "7", responses=[(1, "", "conflict\n")])
+        code, out, _ = run_main(self.fake)
+        self.assertEqual(code, 1)
+        self.assertIn("#7 left open: update-branch failed: conflict", out)
+        self.assertEqual(self.fake.find("gh", "pr", "merge"), [])
+
+
+class DryRunTests(OrchestrationBase):
+    def test_dry_run_makes_no_writes(self):
+        pr = make_pr(number=7)
+        self.fake = build_fake(prs=[pr])
+        code, out, _ = run_main(self.fake, "--dry-run")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.fake.writes(), [])
+        self.assertIn("#7 would merge (mergeStateStatus=CLEAN)", out)
+        self.assertIn("would open a docs PR", out)
+        self.assertIn("game-alpha", out)
+
+    def test_dry_run_reports_behind_and_blocked(self):
+        behind = make_pr(number=7, mergeStateStatus="BEHIND")
+        blocked = make_pr("beta", number=8, ext="md", mergeStateStatus="BLOCKED")
+        self.fake = build_fake(prs=[behind, blocked])
+        code, out, _ = run_main(self.fake, "--dry-run")
+        self.assertEqual(code, 0, out)
+        self.assertIn("#7 would update branch, then merge", out)
+        self.assertIn("#8 would merge (mergeStateStatus=BLOCKED: merge would likely be refused)", out)
+        self.assertEqual(self.fake.writes(), [])
+
+    def test_dry_run_lists_gate_failures(self):
+        self.fake = build_fake(prs=[make_pr(number=7, isDraft=True)])
+        code, out, _ = run_main(self.fake, "--dry-run")
+        self.assertEqual(code, 1)
+        self.assertIn("#7 fails gate:", out)
+        self.assertEqual(self.fake.writes(), [])
+
+    def test_dry_run_nothing_to_do(self):
+        self.fake = build_fake()
+        code, out, _ = run_main(self.fake, "--dry-run")
+        self.assertEqual(code, 0)
+        self.assertIn("nothing to merge; ledger up to date", out)
+
+
+class DocsPrTests(OrchestrationBase):
+    def test_existing_ledger_pr_for_model_blocks_a_second_one(self):
+        existing = [{"number": 31, "title": "docs", "isDraft": False,
+                     "isCrossRepository": False,
+                     "headRefName": "docs/ledger-claude-fable-5-2-abc1234"}]
+        self.fake = build_fake(main_before=MAIN_PATHS | set(ALPHA_FILES), extra_list=existing)
+        code, out, _ = run_main(self.fake)
+        self.assertEqual(code, 0, out)
+        self.assertIn("ledger PR #31 already open; merge it, then re-run", out)
+        self.assertEqual(self.fake.writes(), [])
+
+    def test_rows_already_updated_need_no_docs_pr(self):
+        done = README.replace("alpha_claude_fable_5_2.html` | not run",
+                              "alpha_claude_fable_5_2.html` | generated, browser check pending")
+        self.fake = build_fake(main_before=MAIN_PATHS | set(ALPHA_FILES), readme=done)
+        code, out, _ = run_main(self.fake)
+        self.assertEqual(code, 0)
+        self.assertIn("nothing to merge; ledger up to date", out)
+        self.assertEqual(self.fake.writes(), [])
+
+    def test_sidecar_missing_is_reported_and_no_pr_opened(self):
+        self.fake = build_fake(main_before=MAIN_PATHS | {ALPHA_FILES[0]})
+        code, out, _ = run_main(self.fake)
+        self.assertEqual(code, 0)
+        self.assertIn("left as not run: sidecar missing", out)
+        self.assertEqual(self.fake.writes(), [])
+
+    def test_ref_creation_failure_exits_1_naming_the_step(self):
+        self.fake = build_fake(main_before=MAIN_PATHS | set(ALPHA_FILES))
+        self.fake.on("gh", "api", "--method", "POST", responses=[(1, "", "HTTP 422\n")])
+        code, out, _ = run_main(self.fake)
+        self.assertEqual(code, 1)
+        self.assertIn("docs PR step failed: create branch: HTTP 422", out)
+        self.assertEqual(self.fake.find("gh", "pr", "create"), [])
+
+    def test_commit_failure_names_the_leftover_branch(self):
+        self.fake = build_fake(main_before=MAIN_PATHS | set(ALPHA_FILES))
+        self.fake.on("gh", "api", "--method", "PUT", responses=[(1, "", "HTTP 409\n")])
+        code, out, _ = run_main(self.fake)
+        self.assertEqual(code, 1)
+        self.assertIn("docs PR step failed: update README: HTTP 409", out)
+        self.assertIn("leftover branch: docs/ledger-claude-fable-5-2-" + MAIN_SHA[:7], out)
+        self.assertEqual(self.fake.find("gh", "pr", "create"), [])
+
+    def test_docs_pr_is_never_merged(self):
+        self.fake = build_fake(main_before=MAIN_PATHS | set(ALPHA_FILES))
+        code, _, _ = run_main(self.fake)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.fake.find("gh", "pr", "merge"), [])
 
 
 if __name__ == "__main__":
