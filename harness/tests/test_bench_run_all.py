@@ -835,5 +835,122 @@ class DryRunTest(BatchCase):
         self.assertRegex(out, r"(?m)^STOP: .*CLAUDE_EFFORT")
 
 
+BENCH_RUN_MODES = ("plan", "meta", "prompt", "issue-body", "pr-body")
+
+
+def rule_matches(rule, command):
+    """Whether a ``Bash(...)`` allow rule's literal prefix admits ``command``.
+
+    A trailing ``*`` is a plain string-prefix match (the space before it forces
+    a word boundary); a rule without one matches the exact command only.
+    """
+    inner = rule[len("Bash("):-1]
+    if inner.endswith("*"):
+        return command.startswith(inner[:-1])
+    return command == inner
+
+
+def skill_steps():
+    text = (REPO / ".claude" / "skills" / "bench-run" / "SKILL.md").read_text(encoding="utf-8")
+    return text.split("\n## Steps\n", 1)[1].split("\n## Naming\n", 1)[0]
+
+
+# Documented interactive-only commands: a batch child never needs them.
+INTERACTIVE_ONLY = ("python3 harness/bench_run.py grade ", "git restore ")
+
+
+def step_commands():
+    """Every inline-code span in the Steps that is a shell command."""
+    spans = re.findall(r"`([^`\n]+)`", skill_steps())
+    return [c for c in spans if re.match(r"(git|gh|python3?) ", c)]
+
+
+class AllowlistTest(unittest.TestCase):
+    def test_no_inline_python_rule_remains(self):
+        self.assertEqual([r for r in bra.ALLOWED_TOOLS
+                          if r.startswith(("Bash(python3 -", "Bash(python -"))], [])
+
+    def test_exactly_the_five_bench_run_modes_are_allowed_as_script_rules(self):
+        scripts = [r for r in bra.ALLOWED_TOOLS if "python" in r]
+        self.assertEqual(scripts, ["Bash(python3 harness/bench_run.py %s *)" % m
+                                   for m in BENCH_RUN_MODES])
+
+    def test_a_child_cannot_start_the_batch_helper_or_grade(self):
+        for banned in ("python3 harness/bench_run_all.py --model x",
+                       "python3 harness/bench_run.py grade game-melon-jelly claude-fable-5-2",
+                       "python3 harness/merge_results.py --model x",
+                       "python3 -c print(1)", "python3 - game-melon-jelly"):
+            with self.subTest(command=banned):
+                self.assertFalse([r for r in bra.ALLOWED_TOOLS
+                                  if r.startswith("Bash(") and rule_matches(r, banned)])
+
+    def test_the_rule_for_a_mode_does_not_admit_a_longer_mode_name(self):
+        self.assertFalse(rule_matches("Bash(python3 harness/bench_run.py plan *)",
+                                      "python3 harness/bench_run.py planx a b"))
+
+
+class SkillStepCommandsTest(unittest.TestCase):
+    def test_commands_are_found(self):
+        cmds = step_commands()
+        self.assertGreaterEqual(len(cmds), 12, cmds)
+        self.assertIn("git fetch origin main", cmds)
+
+    def test_every_batch_child_command_is_one_line_with_no_chaining_or_substitution(self):
+        for cmd in step_commands():
+            if cmd.startswith(INTERACTIVE_ONLY):
+                continue
+            with self.subTest(command=cmd):
+                bare = re.sub(r"<[^<>]+>", "", cmd)  # `<placeholder>` is not a redirect
+                for banned in ("<", ">", "$(", "&&", ";", "|", "`", "\n", "cd "):
+                    self.assertNotIn(banned, bare)
+
+    def test_every_batch_child_command_starts_with_an_allowlist_rule_prefix(self):
+        bash_rules = [r for r in bra.ALLOWED_TOOLS if r.startswith("Bash(")]
+        for cmd in step_commands():
+            if cmd.startswith(INTERACTIVE_ONLY):
+                continue
+            with self.subTest(command=cmd):
+                self.assertTrue([r for r in bash_rules if rule_matches(r, cmd)],
+                                "no allow rule admits %r" % cmd)
+
+    def test_the_interactive_only_commands_are_the_only_exemptions_and_exist(self):
+        exempt = [c for c in step_commands() if c.startswith(INTERACTIVE_ONLY)]
+        self.assertTrue([c for c in exempt if c.startswith("python3 harness/bench_run.py grade ")])
+        self.assertTrue([c for c in exempt if c.startswith("git restore ")])
+
+    def test_steps_open_with_the_one_line_command_instruction(self):
+        head = skill_steps().strip().split("\n", 1)[0]
+        for phrase in ("one Bash call", "one line", "&&", ";", "pipes", "redirects", "2>&1",
+                       "$(...)", "backticks", "heredocs", "cd"):
+            self.assertIn(phrase, head)
+
+    def test_steps_never_ask_for_inline_python_or_a_heredoc(self):
+        steps = skill_steps()
+        self.assertNotIn("<<", steps)
+        self.assertNotRegex(steps, r"python3? -c")
+        self.assertNotRegex(steps, r"python3? - ")
+
+    def test_the_skill_names_the_bench_run_script_modes_it_runs(self):
+        used = {c.split()[2] for c in step_commands() if c.startswith("python3 harness/bench_run.py ")}
+        self.assertEqual(used, set(BENCH_RUN_MODES) | {"grade"})
+
+    def test_the_skill_has_no_resolver_code_block_any_more(self):
+        text = (REPO / ".claude" / "skills" / "bench-run" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertNotIn("<<'PY'", text)
+        self.assertNotIn("```python", text)
+        self.assertIn("harness/bench_run.py", text.split("## Resolver", 1)[1])
+
+    def test_one_shot_rules_and_the_never_line_are_unchanged(self):
+        text = (REPO / ".claude" / "skills" / "bench-run" / "SKILL.md").read_text(encoding="utf-8")
+        rules = text.split("## One-shot rules\n", 1)[1].split("\n## Steps\n", 1)[0]
+        for fragment in (
+            "1. The only inputs are the TOML's `[system]` text (if any), its `[user]` text and any listed `[images]`, exactly as printed in step 5. Treat `[system]` as the governing instruction for this answer.",
+            "The resolver below is the only thing that touches `results/`, and it prints only paths.",
+            "5. After that Write the deliverable is frozen: no Edit, no second Write, no reformatting, no fixes even for an obvious bug, no opening or running it.",
+            "**Never:** launch a browser or Playwright, start a dev server or `http.server`, use `open`/`xdg-open`, run the generated code, touch `prompts/`, merge a PR, or enable auto-merge. The only code that runs a result is `harness/grade.py`'s own execution modes. This skill never writes a playability verdict.",
+        ):
+            self.assertIn(fragment, rules)
+
+
 if __name__ == "__main__":
     unittest.main()

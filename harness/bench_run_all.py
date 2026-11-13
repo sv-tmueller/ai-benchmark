@@ -75,12 +75,14 @@ ALLOWED_TOOLS = (
     "Bash(gh auth status)",
     "Bash(gh issue create *)",
     "Bash(gh pr create *)",
-    # Known, accepted gap: these allow any inline Python. They exist because
-    # the resolver and the prompt printer live inline in SKILL.md.
-    "Bash(python3 - *)",
-    "Bash(python3 -c *)",
-    "Bash(python - *)",
-    "Bash(python -c *)",
+    # The resolver is a script, one rule per mode. `grade` is deliberately
+    # absent (no arm prompt has [grading]; ArmDataTest asserts it) and so is
+    # bench_run_all.py itself, so a child cannot start another batch.
+    "Bash(python3 harness/bench_run.py plan *)",
+    "Bash(python3 harness/bench_run.py meta *)",
+    "Bash(python3 harness/bench_run.py prompt *)",
+    "Bash(python3 harness/bench_run.py issue-body *)",
+    "Bash(python3 harness/bench_run.py pr-body *)",
     "Edit(results/**)",
 )
 
