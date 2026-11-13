@@ -53,6 +53,15 @@ save_as = "html"
 text = "Build a game."
 """
 
+GAME_EPS_TOML = """\
+id      = "game-eps"
+title   = "Stem differs from id, no file_prefix"
+save_as = "html"
+
+[user]
+text = "Build a game."
+"""
+
 PARAM_TOML = """\
 id          = "param-delta"
 title       = "Parametrized"
@@ -262,10 +271,28 @@ class GateTests(unittest.TestCase):
         self.assertTrue(reasons)
         self.assertReason(reasons, "branch")
 
-    def test_v2_files_with_matching_branch_fail_tag_cross_check(self):
+    def test_v2_files_with_matching_branch_are_extra_and_missing(self):
         base = "results/alpha/alpha_%s-v2" % TAG
         pr = make_pr(files=pr_files(base + ".html", base + ".meta.json"))
-        self.assertTrue(run_gate(pr))
+        want = "results/alpha/alpha_%s" % TAG
+        self.assertEqual(run_gate(pr), [
+            "extra file: " + base + ".html",
+            "extra file: " + base + ".meta.json",
+            "missing: " + want + ".html",
+            "missing: " + want + ".meta.json",
+        ])
+
+    def test_derive_model_disagreement_is_its_own_reason(self):
+        # No file_prefix, an "_" in the stem, and an id that differs from the
+        # stem: derive_model cannot recover the prefix, so only (g) objects.
+        eps = prompt_entry("game_eps", GAME_EPS_TOML)
+        pr = make_pr("game_eps", family="eps")
+        main = MAIN_PATHS | {"results/eps/game_eps_other_model.meta.json"}
+        self.assertEqual(
+            run_gate(pr, main_paths=main, prompts=PROMPTS + [eps]),
+            ["derive_model disagrees with tag %s for results/eps/game_eps_%s.html"
+             % (TAG, TAG)],
+        )
 
     def test_branch_mismatch(self):
         pr = make_pr(headRefName="feat/7-alpha-someone-else-result")
