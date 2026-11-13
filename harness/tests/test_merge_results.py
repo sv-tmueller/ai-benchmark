@@ -290,6 +290,129 @@ class GateTests(unittest.TestCase):
         reasons = run_gate(pr, checks=[])
         self.assertGreaterEqual(len(reasons), 3)
 
+README = """\
+# Title
+
+Some prose with | pipes | in it.
+
+| Prompt | Deliverable | Target path | Status |
+|---|---|---|---|
+| `game-alpha` | HTML | `results/alpha/alpha_claude_fable_5_2.html` | not run |
+| `app-beta` | blueprint (md) | `results/beta/beta_claude_fable_5_2.md` | not run |
+| `game-gamma` | HTML | `results/gamma/game-gamma_claude_fable_5_2.html` | PLAYABLE_VERIFIED |
+| `game-alpha` | HTML | `results/alpha/alpha_fable_5_2.html` | not run |
+| `game-alpha` | HTML | `results/alpha/alpha_claude_opus_5_5.html` | not run |
+| `unknown-prompt` | HTML | `results/zzz/zzz_claude_fable_5_2.html` | not run |
+
+## CI
+"""
+
+ALPHA_DONE = {
+    "results/alpha/alpha_claude_fable_5_2.html",
+    "results/alpha/alpha_claude_fable_5_2.meta.json",
+}
+BETA_DONE = {
+    "results/beta/beta_claude_fable_5_2.md",
+    "results/beta/beta_claude_fable_5_2.meta.json",
+}
+GAMMA_DONE = {
+    "results/gamma/game-gamma_claude_fable_5_2.html",
+    "results/gamma/game-gamma_claude_fable_5_2.meta.json",
+}
+BY_ID = mr.prompts_by_id(PROMPTS)
+
+
+def rewrite(text=README, tag=TAG, main_paths=MAIN_PATHS | ALPHA_DONE | BETA_DONE | GAMMA_DONE):
+    return mr.rewrite_ledger(text, tag, BY_ID, main_paths)
+
+
+def status_cell(text, path):
+    for line in text.splitlines():
+        if "`%s`" % path in line:
+            return line.split("|")[4].strip()
+    raise AssertionError("no row for " + path)
+
+
+class LedgerTests(unittest.TestCase):
+    def test_row_updated_when_both_files_on_main(self):
+        new, updated, _ = rewrite()
+        self.assertEqual(status_cell(new, "results/alpha/alpha_claude_fable_5_2.html"),
+                         "generated, browser check pending")
+        self.assertEqual(status_cell(new, "results/beta/beta_claude_fable_5_2.md"),
+                         "generated, browser check pending")
+        self.assertEqual([row["pid"] for row in updated], ["game-alpha", "app-beta"])
+
+    def test_row_untouched_when_deliverable_not_on_main(self):
+        new, updated, _ = rewrite(main_paths=MAIN_PATHS | BETA_DONE)
+        self.assertEqual(status_cell(new, "results/alpha/alpha_claude_fable_5_2.html"), "not run")
+        self.assertEqual([row["pid"] for row in updated], ["app-beta"])
+
+    def test_row_with_missing_sidecar_is_untouched_and_reported(self):
+        paths = MAIN_PATHS | {"results/alpha/alpha_claude_fable_5_2.html"}
+        new, updated, skipped = rewrite(main_paths=paths)
+        self.assertEqual(new, README)
+        self.assertEqual(updated, [])
+        self.assertEqual(len(skipped), 1)
+        self.assertIn("left as not run: sidecar missing", skipped[0])
+        self.assertIn("game-alpha", skipped[0])
+
+    def test_grading_sidecar_is_not_required(self):
+        new, updated, _ = rewrite(main_paths=MAIN_PATHS | BETA_DONE)
+        self.assertEqual([row["pid"] for row in updated], ["app-beta"])
+
+    def test_row_with_a_verdict_is_never_overwritten(self):
+        new, updated, _ = rewrite()
+        self.assertEqual(
+            status_cell(new, "results/gamma/game-gamma_claude_fable_5_2.html"),
+            "PLAYABLE_VERIFIED")
+        self.assertNotIn("game-gamma", [row["pid"] for row in updated])
+
+    def test_other_models_tag_changes_nothing(self):
+        paths = MAIN_PATHS | {"results/alpha/alpha_claude_opus_5_5.html",
+                              "results/alpha/alpha_claude_opus_5_5.meta.json"}
+        new, updated, _ = rewrite(tag="claude_opus_5_5", main_paths=paths)
+        self.assertEqual([row["path"] for row in updated],
+                         ["results/alpha/alpha_claude_opus_5_5.html"])
+        self.assertEqual(status_cell(new, "results/alpha/alpha_claude_fable_5_2.html"), "not run")
+
+    def test_suffix_match_is_not_enough(self):
+        # `alpha_fable_5_2` ends with `_fable_5_2` but belongs to another tag.
+        paths = MAIN_PATHS | {"results/alpha/alpha_fable_5_2.html",
+                              "results/alpha/alpha_fable_5_2.meta.json"}
+        new, updated, _ = rewrite(tag="claude_fable_5_2", main_paths=paths)
+        self.assertEqual(status_cell(new, "results/alpha/alpha_fable_5_2.html"), "not run")
+
+    def test_rewrite_is_idempotent(self):
+        once, _, _ = rewrite()
+        twice, updated, _ = rewrite(text=once)
+        self.assertEqual(twice, once)
+        self.assertEqual(updated, [])
+
+    def test_only_status_cells_differ(self):
+        new, _, _ = rewrite()
+        old_lines, new_lines = README.splitlines(), new.splitlines()
+        self.assertEqual(len(old_lines), len(new_lines))
+        changed = 0
+        for old, now in zip(old_lines, new_lines):
+            if old == now:
+                continue
+            changed += 1
+            self.assertEqual(old.rsplit("|", 2)[0], now.rsplit("|", 2)[0])
+            self.assertEqual(old.rsplit("|", 2)[1].strip(), "not run")
+        self.assertEqual(changed, 2)
+
+    def test_unknown_prompt_row_is_skipped(self):
+        paths = MAIN_PATHS | {"results/zzz/zzz_claude_fable_5_2.html",
+                              "results/zzz/zzz_claude_fable_5_2.meta.json"}
+        new, updated, _ = rewrite(main_paths=paths)
+        self.assertEqual(status_cell(new, "results/zzz/zzz_claude_fable_5_2.html"), "not run")
+
+    def test_real_readme_has_eleven_rows_for_fable(self):
+        text = (mr.REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        prompts = mr.prompts_by_id(mr.load_prompt_files(mr.PROMPTS_DIR))
+        rows = mr.ledger_rows(text, "claude_fable_5_2", prompts)
+        self.assertEqual(len(rows), 11)
+
 
 if __name__ == "__main__":
     unittest.main()

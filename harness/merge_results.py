@@ -189,3 +189,60 @@ def load_prompt_files(prompts_dir):
         fixtures = path.with_name(path.stem + ".fixtures.toml").exists()
         entries.append({"stem": path.stem, "data": data, "fixtures": fixtures})
     return entries
+
+
+def prompts_by_id(prompts):
+    """Return ``{prompt_id: parsed TOML}`` for :func:`load_prompt_files` entries."""
+    return {p["data"]["id"]: p["data"] for p in prompts if "id" in p["data"]}
+
+
+# --- ledger -----------------------------------------------------------------
+
+LEDGER_ROW_RE = re.compile(
+    r"^\| `(?P<pid>[^`]+)` \| (?P<kind>[^|]+?) \| `(?P<path>results/[^`]+)` "
+    r"\| (?P<status>[^|]+?) \|$",
+    re.MULTILINE,
+)
+NOT_RUN = "not run"
+GENERATED = "generated, browser check pending"
+
+
+def ledger_rows(text, tag, prompts):
+    """Return the ledger rows of ``text`` that belong to model ``tag``.
+
+    A row belongs to the tag only when ``derive_model`` on its path, using the
+    row's prompt, gives exactly ``tag``; a plain suffix match would confuse
+    ``fable_5_2`` with ``claude_fable_5_2``.
+    """
+    rows = []
+    for match in LEDGER_ROW_RE.finditer(text):
+        prompt = prompts.get(match.group("pid"))
+        if prompt is None:
+            continue
+        path = match.group("path")
+        if derive_model(Path(path), prompt) == tag:
+            rows.append({"pid": match.group("pid"), "path": path,
+                         "status": match.group("status"), "span": match.span("status")})
+    return rows
+
+
+def rewrite_ledger(text, tag, prompts, main_paths):
+    """Return ``(new_text, updated_rows, skipped_messages)`` for model ``tag``.
+
+    Only ``not run`` cells whose deliverable and ``.meta.json`` sidecar are both
+    in ``main_paths`` change, to :data:`GENERATED`. Everything else, including
+    any later verdict label, is left alone, so a second pass is a no-op.
+    """
+    updated, skipped, edits = [], [], []
+    for row in ledger_rows(text, tag, prompts):
+        if row["status"] != NOT_RUN or row["path"] not in main_paths:
+            continue
+        meta = str(Path(row["path"]).with_suffix("")) + META_SUFFIX
+        if meta not in main_paths:
+            skipped.append("%s: left as not run: sidecar missing (%s)" % (row["pid"], meta))
+            continue
+        updated.append({"pid": row["pid"], "path": row["path"]})
+        edits.append(row["span"])
+    for start, end in reversed(edits):
+        text = text[:start] + GENERATED + text[end:]
+    return text, updated, skipped
