@@ -630,10 +630,10 @@ generation alone does not earn one.
 
 | Prompt | Deliverable | Target path | Status |
 |---|---|---|---|
-| `game-melon-jelly` | HTML | `results/melon-jelly/melon-jelly_claude_fable_5_2.html` | not run |
-| `game-lava-lamp` | HTML | `results/lava-lamp/lava-lamp_claude_fable_5_2.html` | not run |
+| `game-melon-jelly` | HTML | `results/melon-jelly/melon-jelly_claude_fable_5_2.html` | generated, browser check pending |
+| `game-lava-lamp` | HTML | `results/lava-lamp/lava-lamp_claude_fable_5_2.html` | generated, browser check pending |
 | `game-minecraft` | HTML | `results/minecraft/minecraft_claude_fable_5_2.html` | not run |
-| `game-meridian-launch` | HTML | `results/meridian-launch/meridian-launch_claude_fable_5_2.html` | not run |
+| `game-meridian-launch` | HTML | `results/meridian-launch/meridian-launch_claude_fable_5_2.html` | generated, browser check pending |
 | `game-sunset-ocean` | HTML | `results/sunset-ocean/sunset-ocean_claude_fable_5_2.html` | not run |
 | `game-horror-house` | blueprint (md) | `results/horror-house/horror-house_claude_fable_5_2.md` | not run |
 | `game-last-flight` | blueprint (md) | `results/last-flight/last-flight_claude_fable_5_2.md` | not run |
