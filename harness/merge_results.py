@@ -3,14 +3,23 @@
 
 Usage::
 
-    python3 harness/merge_results.py --model <model-id> [--dry-run]
+    python3 harness/merge_results.py --model <model-id> [--post-statuses] [--dry-run]
 
 Open PRs titled ``<prefix> (<model-id>, one-shot): result`` are checked
 against a gate (right prompt, right folder, exactly the result files, only new
 files, green checks). PRs that pass are squash-merged one at a time. GitHub
 has the last word: if it refuses a merge, the PR stays open and the refusal is
-reported. The command never uses ``--admin`` or ``--auto`` and never posts
-commit statuses.
+reported. The command never uses ``--admin`` or ``--auto``.
+
+Without ``--post-statuses`` it posts no commit status. ``main`` requires the
+contexts ``orchestrai/test`` and ``orchestrai/review``, which one-shot result PRs
+never receive, so with ``--post-statuses`` (owner-approved exception, #253) a PR
+that passed the full gate gets both as ``success`` on its gated head commit,
+each described as a one-shot result exception, and is then merged on that same
+commit. Statuses go only on a commit that passed the gate: after a BEHIND update
+the gate runs again and only the new head is vouched for, and a last read of the
+PR must still show the gated head before anything is posted. A failed post
+leaves the PR open; nothing is retried.
 
 Afterwards the README ledger rows for the model whose files are on ``main``
 are moved from ``not run`` to ``generated, browser check pending`` through a
@@ -260,6 +269,10 @@ VIEW_FIELDS = ("number,title,headRefName,headRefOid,isDraft,isCrossRepository,"
                "files,mergeStateStatus")
 FETCH_ARGV = ("git", "fetch", "origin", "main")
 LS_TREE_ARGV = ("git", "ls-tree", "-r", "--name-only", "origin/main", "--", "results")
+STATUS_CONTEXTS = ("orchestrai/test", "orchestrai/review")
+STATUS_MARKER = "one-shot result exception: "
+RESULT_STATUS_DESC = STATUS_MARKER + "merge_results.py gate passed on this commit"
+DOCS_STATUS_DESC = STATUS_MARKER + "merge_results.py ledger rewrite verified on this commit"
 POLL_SECONDS = 10
 POLL_LIMIT = 60  # 10 minutes
 UNKNOWN_RETRIES = 3
@@ -285,8 +298,10 @@ def first_line(text):
 class Merger:
     """One command run: reads, gate, merges, ledger. All I/O goes through ``run``."""
 
-    def __init__(self, model_id, tag, prompts, run, sleep, out, dry_run):
+    def __init__(self, model_id, tag, prompts, run, sleep, out, dry_run,
+                 post_statuses=False):
         self.model_id, self.tag = model_id, tag
+        self.post_statuses = post_statuses
         self.prompts = prompts
         self.by_id = prompts_by_id(prompts)
         self.run, self.sleep, self.out, self.dry_run = run, sleep, out, dry_run
@@ -394,15 +409,54 @@ class Merger:
                 return
             view = updated
             status = view.get("mergeStateStatus")
+        if self.post_statuses:
+            reason = self.vouch(number, view["headRefOid"], RESULT_STATUS_DESC)
+            if reason:
+                return self.left_open(number, reason)
         self.merge(number, view, status)
+
+    def vouch(self, number, sha, desc):
+        """Post both statuses on ``sha`` once it is confirmed; return a failure reason or ``None``.
+
+        Opt-in only. ``gh pr checks`` names no commit, so a last read of the PR
+        must still show ``sha`` as its head before anything is posted. Nothing is
+        retried or undone: statuses cannot be deleted, and the merge that follows
+        is pinned to ``sha``.
+        """
+        fresh = self.read_view(number)
+        if fresh is None:
+            return "could not read the PR to confirm its head; no status posted"
+        if fresh.get("headRefOid") != sha:
+            return "head moved after the gate read (%s -> %s); no status posted" % (
+                sha[:7], str(fresh.get("headRefOid"))[:7])
+        for done, context in enumerate(STATUS_CONTEXTS):
+            proc = self.run((
+                "gh", "api", "--method", "POST", "repos/{owner}/{repo}/statuses/" + sha,
+                "-f", "state=success", "-f", "context=" + context,
+                "-f", "description=" + desc))
+            if proc.returncode:
+                note = " (%s already posted)" % STATUS_CONTEXTS[0] if done else ""
+                return "status post failed: %s on %s: %s%s" % (
+                    context, sha[:7], first_line(proc.stderr), note)
+        return None
 
     def dry_report(self, number, view, reasons, status):
         if reasons:
             self.failed = True
-            return self.say("#%d fails gate: %s" % (number, "; ".join(reasons)))
+            return self.say("#%d fails gate: %s%s" % (
+                number, "; ".join(reasons),
+                "; no statuses would be posted" if self.post_statuses else ""))
         self.planned.append(number)
         self.planned_files.update(entry["path"] for entry in view["files"])
-        if status == "BEHIND":
+        if self.post_statuses:
+            both = "post orchestrai/test and orchestrai/review"
+            if status == "BEHIND":
+                self.say("#%d would update branch, re-gate the new head, %s on it, then "
+                         "merge (mergeStateStatus=BEHIND)" % (number, both))
+            else:
+                self.say("#%d would %s on %s, then merge (mergeStateStatus=%s)" % (
+                    number, both, view["headRefOid"][:7], status))
+        elif status == "BEHIND":
             self.say("#%d would update branch, then merge (mergeStateStatus=BEHIND)" % number)
         elif status == "BLOCKED":
             self.say("#%d would merge (mergeStateStatus=BLOCKED: merge would likely be "
@@ -538,6 +592,9 @@ def parse_args(argv):
                         help="session model id, e.g. claude-fable-5-2")
     parser.add_argument("--dry-run", action="store_true",
                         help="read-only: report what would be merged and updated")
+    parser.add_argument("--post-statuses", action="store_true",
+                        help="one-shot result exception: post orchestrai/test and "
+                             "orchestrai/review on a PR that passed the gate, then merge it")
     return parser.parse_args(argv)
 
 
@@ -553,7 +610,7 @@ def main(argv=None, run=None, sleep=None, prompts_dir=None, out=None):
         return 2
     prompts = load_prompt_files(PROMPTS_DIR if prompts_dir is None else prompts_dir)
     merger = Merger(model_id, tag, prompts, run or default_run, sleep or time.sleep,
-                    out, args.dry_run)
+                    out, args.dry_run, args.post_statuses)
     return merger.execute()
 
 

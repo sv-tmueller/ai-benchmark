@@ -732,7 +732,7 @@ class MergeStepTest(BatchCase):
         self.add_merge_script(
             "import sys\nprint('merge args:', ' '.join(sys.argv[1:]))\nsys.exit(0)\n")
         code, out = self.batch()
-        self.assertIn("merge args: --model claude-fable-5-2", out)
+        self.assertRegex(out, r"(?m)^merge args: --model claude-fable-5-2 --post-statuses$")
         self.assertRegex(out, r"(?m)^merge step: ran harness/merge_results.py, exit 0$")
         self.assertEqual(code, 0)
 
@@ -817,7 +817,8 @@ class DryRunTest(BatchCase):
         (self.repo / "harness").mkdir(exist_ok=True)
         (self.repo / "harness" / "merge_results.py").write_text("")
         _, out = self.batch("--dry-run")
-        self.assertIn("merge step: would run python3 harness/merge_results.py --model claude-fable-5-2", out)
+        self.assertRegex(out, r"(?m)^merge step: would run python3 harness/merge_results.py "
+                              r"--model claude-fable-5-2 --post-statuses$")
 
     def test_dry_run_shows_checks_as_ok_or_fail_and_exits_nonzero_on_failure(self):
         code, out = self.batch("--dry-run")

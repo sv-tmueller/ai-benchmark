@@ -328,6 +328,7 @@ def run_smoke(args, environ, repo_root):
 
 MERGE_SCRIPT = "harness/merge_results.py"
 MERGE_TIMEOUT = 1800
+MERGE_OPT_IN = "--post-statuses"  # one-shot result status exception (#253)
 
 
 def _prompt_data(repo_root, pid):
@@ -587,8 +588,8 @@ def merge_step(args, repo_root, halt):
             _say("merge step: skipped (tree not clean on main)")
             return False
         try:
-            done = _run([sys.executable, MERGE_SCRIPT, "--model", args.model], cwd=repo_root,
-                        timeout=MERGE_TIMEOUT)
+            done = _run([sys.executable, MERGE_SCRIPT, "--model", args.model, MERGE_OPT_IN],
+                        cwd=repo_root, timeout=MERGE_TIMEOUT)
         except subprocess.TimeoutExpired:
             _say("merge step: ran %s, timed out after %d s" % (MERGE_SCRIPT, MERGE_TIMEOUT))
             return False
@@ -651,7 +652,8 @@ def run_dry(args, environ, repo_root, checks):
     effort = environ.get("CLAUDE_EFFORT") or "<CLAUDE_EFFORT>"
     _say("child command: " + shlex.join(build_command(args.claude, "/bench-run <prompt-id>", args.model, effort)))
     if Path(repo_root, MERGE_SCRIPT).is_file():
-        _say("merge step: would run python3 %s --model %s" % (MERGE_SCRIPT, args.model))
+        _say("merge step: would run python3 %s --model %s %s" % (
+            MERGE_SCRIPT, args.model, MERGE_OPT_IN))
     else:
         _say("merge step: would list open PRs (%s not present)" % MERGE_SCRIPT)
     return 0 if all(c.ok for c in checks) else 1
