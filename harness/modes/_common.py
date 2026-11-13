@@ -5,6 +5,7 @@ underscore, and :func:`harness.grade.discover_modes` skips such modules, so
 adding it does not change the mode registry.
 """
 
+import re
 from pathlib import Path
 
 META_SUFFIX = ".meta.json"
@@ -60,3 +61,20 @@ def _model_prefix_candidates(prompt):
         if value and value not in candidates:
             candidates.append(value)
     return candidates
+
+
+def model_tag(model_id):
+    """Return the results-file model tag for a session model id.
+
+    ``claude-fable-5-2`` -> ``claude_fable_5_2``. A trailing ``[...]`` suffix
+    (such as ``[1m]``) and a trailing ``-YYYYMMDD`` stamp are dropped, the rest
+    is lowercased and every run of non-alphanumerics becomes ``_``. Raises
+    ``ValueError`` when the result is not a usable tag. The ``/bench-run``
+    resolver and ``harness/bench_run_all.py`` both call this, so the two
+    cannot disagree.
+    """
+    model_id = re.sub(r"\[[^\]]*\]$", "", model_id.strip()).strip()
+    tag = re.sub(r"[^a-z0-9]+", "_", re.sub(r"-\d{8}$", "", model_id.lower()))
+    if not re.fullmatch(r"[a-z][a-z0-9_]*[a-z0-9]", tag):
+        raise ValueError("model tag %r from %r is not usable" % (tag, model_id))
+    return tag

@@ -64,7 +64,7 @@ Run from the repo root (not with `-I`, so the `harness` import works). Replace `
 
 ```bash
 python - "<prompt-id>" "<model-id>" plan <<'PY'
-import json, re, subprocess, sys, tomllib
+import json, os, re, subprocess, sys, tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -77,7 +77,7 @@ if len(sys.argv) != 4 or sys.argv[3] not in ("plan", "meta"):
     stop("usage: <prompt-id> <model-id> plan|meta (3 arguments)")
 arg, model, mode = sys.argv[1:4]
 sys.path.insert(0, ".")
-from harness.modes._common import derive_model
+from harness.modes._common import derive_model, model_tag
 
 
 def sh(*cmd):
@@ -128,9 +128,10 @@ else:
 
 # 6. model tag from the session model id, 7. harness agreement
 model_id = re.sub(r"\[[^\]]*\]$", "", model.strip()).strip()
-tag = re.sub(r"[^a-z0-9]+", "_", re.sub(r"-\d{8}$", "", model_id).lower())
-if not re.fullmatch(r"[a-z][a-z0-9_]*[a-z0-9]", tag):
-    stop("model tag %r from %r is not usable" % (tag, model))
+try:
+    tag = model_tag(model_id)
+except ValueError:
+    stop("model tag from %r is not usable" % model)
 base = "results/%s/%s_%s" % (folder, prefix, tag)
 target, meta_path, grade_path = "%s.%s" % (base, ext), base + ".meta.json", base + "_grading.json"
 if derive_model(Path(target), prompt) != tag:
@@ -178,8 +179,9 @@ sidecar = {
     "params": {
         "temperature": None,
         "max_tokens_requested_initial": None,
-        "reasoning_effort": None,
+        "reasoning_effort": os.environ.get("CLAUDE_EFFORT") or None,
         "note": "Sampling settings from the TOML (%s) could not be applied in-session; session defaults applied. "
+        "reasoning_effort is the CLAUDE_EFFORT level in effect when the run started (null if unset). "
         "%s finish_reason and usage are not observable in-session." % (
             given("temperature", "temperature") + "; " + given("max_tokens", "max_tokens"), ctx),
     },
