@@ -91,7 +91,8 @@ class FakeClaudeCase(unittest.TestCase):
         self.repo = self.dir / "repo"
         self.repo.mkdir()
         self.env = {
-            "PATH": os.environ["PATH"], "HOME": str(self.dir),
+            # The fake has an absolute shebang, so a bare `claude` must find only the fake.
+            "PATH": str(self.dir), "HOME": str(self.dir),
             "FAKE_CLAUDE_DIR": str(self.dir), "CLAUDE_EFFORT": "high",
         }
         self.scenario({"help": EFFORT_HELP})
@@ -296,6 +297,16 @@ class LaunchTest(FakeClaudeCase):
                          "CLAUDE_CODE_MESSAGING_X"}.isdisjoint(names))
         self.assertIn("FAKE_CLAUDE_DIR", names)
         self.assertIsNone(call["effort"])
+
+    def test_a_bare_claude_resolves_to_the_fake(self):
+        # Guard first: if this fails, nothing is launched.
+        self.assertEqual(os.get_exec_path(bra.build_env(self.env)), [str(self.dir)])
+        self.scenario({"help": EFFORT_HELP, "default": {"json": result_json("fake-was-called")}})
+        run = self.launch(claude_bin="claude")
+        self.assertEqual(run.exit_code, 0, run.stderr)
+        (call,) = self.calls()
+        self.assertEqual(call["argv"][:2], ["-p", "/bench-run game-melon-jelly"])
+        self.assertEqual(json.loads(run.stdout)["result"], "fake-was-called")
 
     def test_nonzero_exit_is_reported(self):
         self.scenario({"help": EFFORT_HELP, "default": {"exit": 3}})
