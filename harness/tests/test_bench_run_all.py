@@ -43,6 +43,24 @@ with open(os.path.join(d, "calls.jsonl"), "a") as f:
         "stdin_is_devnull": os.path.samestat(os.fstat(0), os.stat(os.devnull)),
         "sid": os.getpgrp() == os.getpid(),
     }) + "\n")
+eff = beh.get("effects", {})
+if eff:
+    sp = os.path.join(d, "state.json")
+    st = json.load(open(sp))
+    if eff.get("open_pr"):
+        n = st["next_pr"]
+        st["next_pr"] = n + 1
+        st["prs"].append({"number": n, "url": "https://example.test/pull/%d" % n,
+                          "files": [{"path": sc["files"][pid]}]})
+    for rel in eff.get("write", []):
+        path = sc["files"][pid] if rel == "{target}" else rel
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        open(path, "w").write("SECRET-DELIVERABLE")
+    if "branch" in eff:
+        st["branch"] = eff["branch"]
+    if "dirty_tracked" in eff:
+        st["dirty_tracked"] = eff["dirty_tracked"]
+    json.dump(st, open(sp, "w"))
 if beh.get("sleep"):
     time.sleep(beh["sleep"])
 if "stdout_raw" in beh:
@@ -359,6 +377,462 @@ class SmokeTest(FakeClaudeCase):
         self.run_main(self.argv("--smoke", "game-melon-jelly"))
         logs = list((self.dir / "logs").glob("game-melon-jelly*"))
         self.assertTrue(logs)
+
+
+class FakeGit:
+    """Stands in for ``git`` and ``gh`` behind the helper's ``_run`` seam.
+
+    The working-tree state is the real temp repo directory (untracked = any
+    file outside ``prompts/`` and ``harness/``); branch, PRs and so on live in
+    ``state.json``, which the fake claude can change too.
+    """
+
+    def __init__(self, case):
+        self.case = case
+        self.calls = []
+
+    def state(self):
+        return json.loads((self.case.dir / "state.json").read_text())
+
+    def save(self, st):
+        (self.case.dir / "state.json").write_text(json.dumps(st))
+
+    @staticmethod
+    def done(out="", rc=0, err=""):
+        return subprocess.CompletedProcess([], rc, out, err)
+
+    def untracked(self):
+        repo = self.case.repo
+        found = []
+        for p in sorted(repo.rglob("*")):
+            rel = p.relative_to(repo).as_posix()
+            if p.is_file() and not rel.startswith(("prompts/", "harness/")):
+                found.append(rel)
+        return found
+
+    def __call__(self, cmd, cwd=None, timeout=None):
+        self.calls.append(list(cmd))
+        st = self.state()
+        if cmd[0] not in ("git", "gh"):
+            return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+        if cmd[:3] == ["git", "fetch", "origin"]:
+            return self.done()
+        if cmd == ["git", "branch", "--show-current"]:
+            return self.done(st["branch"] + "\n")
+        if cmd == ["git", "rev-parse", "HEAD"]:
+            return self.done(st["head"] + "\n")
+        if cmd == ["git", "rev-parse", "origin/main"]:
+            return self.done(st["origin_main"] + "\n")
+        if cmd[:2] == ["git", "status"]:
+            lines = [" M " + p for p in st["dirty_tracked"]] + ["?? " + p for p in self.untracked()]
+            return self.done("".join(line + "\n" for line in lines))
+        if cmd[:4] == ["git", "ls-tree", "-r", "--name-only"]:
+            return self.done("".join(p + "\n" for p in st["main_files"]))
+        if cmd == ["git", "switch", "main"]:
+            st["branch"] = "main"
+            self.save(st)
+            return self.done()
+        if cmd == ["gh", "auth", "status"]:
+            return self.done(rc=0 if st["gh_ok"] else 1, err="" if st["gh_ok"] else "not logged in")
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return self.done(json.dumps(st["prs"]))
+        raise AssertionError("unexpected command %r" % (cmd,))
+
+
+def readme_ledger():
+    """(prompt id, target path) rows of the README Fable 5.2 ledger table."""
+    text = (REPO / "README.md").read_text(encoding="utf-8")
+    return re.findall(r"^\| `([a-z0-9-]+)` \|[^\n]*\| `(results/[^`]+)` \|", text, re.M)
+
+
+class BatchCase(FakeClaudeCase):
+    def setUp(self):
+        super().setUp()
+        (self.repo / "prompts").mkdir()
+        for p in (REPO / "prompts").glob("*.toml"):
+            if not p.name.endswith(".fixtures.toml"):
+                (self.repo / "prompts" / p.name).write_text(p.read_text(encoding="utf-8"))
+        self.targets = dict(readme_ledger())
+        self.git = FakeGit(self)
+        self.git.save({"branch": "main", "head": "abc", "origin_main": "abc", "gh_ok": True,
+                       "main_files": [], "prs": [], "dirty_tracked": [], "next_pr": 1})
+        self.set_children()
+
+    def set_children(self, by_prompt=None, default=None, help_text=EFFORT_HELP):
+        base = {"json": result_json("done"), "effects": {"open_pr": True}}
+        base.update(default or {})
+        self.scenario({"help": help_text, "files": self.targets,
+                       "default": base, "by_prompt": by_prompt or {}})
+
+    def batch(self, *extra, model="claude-fable-5-2", timeout="60", env=None):
+        argv = ["--model", model, "--claude", str(self.bin), "--timeout", timeout,
+                "--log-dir", str(self.dir / "logs"), *extra]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), mock.patch.object(bra, "_run", self.git):
+            code = bra.main(argv, environ=env or self.env, repo_root=self.repo)
+        return code, out.getvalue()
+
+    def report_lines(self, out):
+        return {m.group(1): (m.group(2), m.group(3)) for m in
+                re.finditer(r"(?m)^((?:game|app)-[a-z-]+)  (.+?)  (\S+)$", out)}
+
+    def called_ids(self):
+        return [c["argv"][c["argv"].index("-p") + 1].split()[1] for c in self.calls()]
+
+
+class ArmDataTest(unittest.TestCase):
+    def test_arm_prompts_match_the_readme_ledger_in_order(self):
+        self.assertEqual(list(bra.ARM_PROMPTS), [pid for pid, _ in readme_ledger()])
+        self.assertEqual(len(bra.ARM_PROMPTS), 11)
+
+    def test_each_arm_prompt_has_one_toml_with_prefix_and_save_as_and_no_images_or_grading(self):
+        import tomllib
+        tomls = [p for p in sorted((REPO / "prompts").glob("*.toml"))
+                 if not p.name.endswith(".fixtures.toml")]
+        data = [tomllib.loads(p.read_text(encoding="utf-8")) for p in tomls]
+        for pid in bra.ARM_PROMPTS:
+            with self.subTest(pid=pid):
+                hits = [d for d in data if d.get("id") == pid]
+                self.assertEqual(len(hits), 1)
+                self.assertTrue(hits[0].get("file_prefix"))
+                self.assertTrue(hits[0].get("save_as"))
+                self.assertNotIn("images", hits[0])
+                self.assertNotIn("grading", hits[0])
+
+    def test_ledger_target_names_match_prefix_tag_and_extension(self):
+        for pid, target in readme_ledger():
+            with self.subTest(pid=pid):
+                name = bra.expected_name(REPO, pid, "claude-fable-5-2")
+                self.assertEqual(Path(target).name, name)
+
+
+class BatchPreflightTest(BatchCase):
+    def assert_no_child(self, code, out):
+        self.assertEqual(code, 2)
+        self.assertRegex(out, r"(?m)^STOP: ")
+        self.assertEqual(self.calls(), [])
+
+    def test_unset_effort_stops_before_any_child(self):
+        env = {k: v for k, v in self.env.items() if k != "CLAUDE_EFFORT"}
+        code, out = self.batch(env=env)
+        self.assert_no_child(code, out)
+        self.assertIn("CLAUDE_EFFORT", out)
+
+    def test_empty_effort_stops_before_any_child(self):
+        code, out = self.batch(env=dict(self.env, CLAUDE_EFFORT=""))
+        self.assert_no_child(code, out)
+
+    def test_unknown_effort_stops_before_any_child(self):
+        code, out = self.batch(env=dict(self.env, CLAUDE_EFFORT="ultra"))
+        self.assert_no_child(code, out)
+
+    def test_binary_without_effort_flag_stops_before_any_child(self):
+        self.set_children(help_text="Usage: claude\n  --model <m>\n")
+        code, out = self.batch()
+        self.assert_no_child(code, out)
+
+    def test_alias_model_stops_before_any_child(self):
+        code, out = self.batch(model="opus")
+        self.assert_no_child(code, out)
+        self.assertIn("alias", out)
+
+    def test_not_on_main_stops_before_any_child(self):
+        st = self.git.state()
+        st["branch"] = "feat/x"
+        self.git.save(st)
+        self.assert_no_child(*self.batch())
+
+    def test_head_behind_origin_main_stops_before_any_child(self):
+        st = self.git.state()
+        st["origin_main"] = "def"
+        self.git.save(st)
+        self.assert_no_child(*self.batch())
+
+    def test_untracked_file_stops_before_any_child(self):
+        (self.repo / "scratch.txt").write_text("x")
+        self.assert_no_child(*self.batch())
+
+    def test_modified_tracked_file_stops_before_any_child(self):
+        st = self.git.state()
+        st["dirty_tracked"] = ["README.md"]
+        self.git.save(st)
+        self.assert_no_child(*self.batch())
+
+    def test_gh_auth_failure_stops_before_any_child(self):
+        st = self.git.state()
+        st["gh_ok"] = False
+        self.git.save(st)
+        self.assert_no_child(*self.batch())
+
+
+class BatchLoopTest(BatchCase):
+    def test_a_clean_run_attempts_all_eleven_in_order_and_reports_each_pr(self):
+        code, out = self.batch()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.called_ids(), list(bra.ARM_PROMPTS))
+        rep = self.report_lines(out)
+        self.assertEqual(list(rep), list(bra.ARM_PROMPTS))
+        self.assertEqual(rep["game-melon-jelly"], ("pr-opened #1", "https://example.test/pull/1"))
+        self.assertEqual(rep["game-weichensteller"], ("pr-opened #11", "https://example.test/pull/11"))
+
+    def test_every_child_gets_the_model_and_the_effort_level(self):
+        self.batch()
+        for call in self.calls():
+            argv = call["argv"]
+            self.assertEqual(argv[argv.index("--model") + 1], "claude-fable-5-2")
+            self.assertEqual(argv[argv.index("--effort") + 1], "high")
+
+    def test_progress_lines_come_before_the_report(self):
+        _, out = self.batch()
+        first_progress = out.index("[1/11] game-melon-jelly")
+        self.assertLess(first_progress, out.index("game-melon-jelly  pr-opened"))
+
+    def test_prompt_on_origin_main_is_skipped(self):
+        st = self.git.state()
+        st["main_files"] = ["results/melon-jelly/melon-jelly_claude_fable_5_2.html"]
+        self.git.save(st)
+        code, out = self.batch()
+        self.assertNotIn("game-melon-jelly", self.called_ids())
+        self.assertEqual(len(self.calls()), 10)
+        self.assertEqual(self.report_lines(out)["game-melon-jelly"][0], "skipped: on origin/main")
+
+    def test_prompt_in_an_open_pr_is_skipped_with_its_url(self):
+        st = self.git.state()
+        st["prs"] = [{"number": 42, "url": "https://example.test/pull/42", "files": [
+            {"path": "results/lava-lamp/lava-lamp_claude_fable_5_2.html"}]}]
+        st["next_pr"] = 43
+        self.git.save(st)
+        _, out = self.batch()
+        self.assertNotIn("game-lava-lamp", self.called_ids())
+        self.assertEqual(self.report_lines(out)["game-lava-lamp"],
+                         ("skipped: open PR #42", "https://example.test/pull/42"))
+
+    def test_a_result_for_another_model_does_not_skip(self):
+        st = self.git.state()
+        st["main_files"] = ["results/melon-jelly/melon-jelly_claude_opus_4_8.html"]
+        self.git.save(st)
+        self.batch()
+        self.assertIn("game-melon-jelly", self.called_ids())
+
+    def test_second_run_resumes_by_skipping_every_pr_the_first_opened(self):
+        self.batch()
+        before = len(self.calls())
+        code, out = self.batch()
+        self.assertEqual(len(self.calls()), before)
+        rep = self.report_lines(out)
+        self.assertTrue(all(o.startswith("skipped: open PR #") for o, _ in rep.values()), rep)
+        self.assertEqual(code, 0)
+
+    def test_failures_do_not_stop_the_batch(self):
+        self.set_children(by_prompt={
+            "game-melon-jelly": {"exit": 1, "effects": {}},
+            "game-lava-lamp": {"sleep": 60, "effects": {}},
+            "game-minecraft": {"json": result_json("STOP: results/x already exists on disk"), "effects": {}},
+            "game-meridian-launch": {"json": result_json("x\nrun void, re-run in a fresh session"),
+                                     "effects": {}},
+            "game-sunset-ocean": {"json": result_json("x", is_error=True, subtype="error_during_execution"),
+                                  "effects": {}},
+        })
+        # the 2 s timeout applies to every child; only lava-lamp is slow
+        code, out = self.batch(timeout="2")
+        self.assertEqual(self.called_ids(), list(bra.ARM_PROMPTS))
+        rep = self.report_lines(out)
+        self.assertEqual(rep["game-melon-jelly"][0], "failed: exit 1")
+        self.assertEqual(rep["game-lava-lamp"][0], "timed-out")
+        self.assertTrue(rep["game-minecraft"][0].startswith("ended without PR"))
+        self.assertIn("STOP: results/x already exists on disk", rep["game-minecraft"][0])
+        self.assertIn("run void", rep["game-meridian-launch"][0])
+        self.assertEqual(rep["game-sunset-ocean"][0], "failed: error_during_execution")
+        self.assertTrue(rep["game-horror-house"][0].startswith("pr-opened"))
+        self.assertEqual(len(rep), 11)
+        self.assertNotEqual(code, 0)
+
+    def test_denied_tool_names_and_a_model_mismatch_are_reported_without_content(self):
+        denial = [{"tool_name": "Read", "tool_input": {"file": "SECRET-DELIVERABLE"}}]
+        self.set_children(by_prompt={"game-melon-jelly": {
+            "json": result_json("SECRET-DELIVERABLE", permission_denials=denial,
+                                modelUsage={"claude-opus-4-8": {}}),
+            "effects": {"open_pr": True}}})
+        _, out = self.batch()
+        line = self.report_lines(out)["game-melon-jelly"][0]
+        self.assertIn("denied: Read", line)
+        self.assertIn("claude-opus-4-8", line)
+        self.assertNotIn("SECRET", out)
+
+    def test_counts_and_log_folder_are_reported(self):
+        _, out = self.batch()
+        self.assertRegex(out, r"(?m)^pr-opened: 11$")
+        self.assertIn("log folder: %s" % (self.dir / "logs"), out)
+        self.assertTrue((self.dir / "logs" / "game-melon-jelly.json").exists())
+
+    def test_default_log_folder_is_outside_the_repo(self):
+        with mock.patch.dict(os.environ, {"XDG_CACHE_HOME": str(self.dir / "cache")}):
+            folder = bra.make_log_dir(None)
+        self.assertTrue(str(folder).startswith(str(self.dir / "cache" / "bench-run")))
+        self.assertNotIn(self.repo, folder.parents)
+
+    def test_child_that_ends_without_a_pr_is_reported_as_such(self):
+        self.set_children(by_prompt={"game-melon-jelly": {"effects": {}}})
+        _, out = self.batch()
+        self.assertEqual(self.report_lines(out)["game-melon-jelly"][0], "ended without PR")
+
+
+class BatchCleanupTest(BatchCase):
+    def test_own_untracked_leftovers_are_moved_to_the_log_folder_and_the_batch_continues(self):
+        self.set_children(by_prompt={"game-melon-jelly": {
+            "json": result_json("run void, re-run in a fresh session"),
+            "effects": {"write": ["{target}"]}}})
+        code, out = self.batch()
+        self.assertEqual(len(self.calls()), 11)
+        self.assertFalse((self.repo / self.targets["game-melon-jelly"]).exists())
+        name = Path(self.targets["game-melon-jelly"]).name
+        moved = self.dir / "logs" / "leftovers" / "game-melon-jelly" / name
+        self.assertTrue(moved.is_file())
+        self.assertEqual(moved.read_text(), "SECRET-DELIVERABLE")
+        self.assertNotIn("SECRET", out)
+
+    def test_a_clean_tree_on_another_branch_is_switched_back_to_main(self):
+        self.set_children(by_prompt={"game-melon-jelly": {"effects": {"branch": "feat/9-x"}}})
+        self.batch()
+        self.assertIn(["git", "switch", "main"], self.git.calls)
+        self.assertEqual(len(self.calls()), 11)
+
+    def test_a_foreign_untracked_file_halts_the_batch_and_skips_the_merge_step(self):
+        self.set_children(by_prompt={"game-lava-lamp": {
+            "effects": {"write": ["results/lava-lamp/stray.txt"]}}})
+        code, out = self.batch()
+        self.assertEqual(self.called_ids(), ["game-melon-jelly", "game-lava-lamp"])
+        rep = self.report_lines(out)
+        self.assertEqual(rep["game-minecraft"][0], "not-started: tree dirty after game-lava-lamp")
+        self.assertEqual(rep["game-weichensteller"][0], "not-started: tree dirty after game-lava-lamp")
+        self.assertTrue((self.repo / "results/lava-lamp/stray.txt").exists())  # never touched
+        self.assertIn("merge step: skipped", out)
+        self.assertNotEqual(code, 0)
+
+    def test_a_modified_tracked_file_halts_the_batch(self):
+        self.set_children(by_prompt={"game-melon-jelly": {"effects": {"dirty_tracked": ["README.md"]}}})
+        _, out = self.batch()
+        self.assertEqual(self.called_ids(), ["game-melon-jelly"])
+        self.assertIn("not-started: tree dirty after game-melon-jelly", out)
+
+    def test_a_dirty_tree_on_another_branch_halts_instead_of_switching(self):
+        self.set_children(by_prompt={"game-melon-jelly": {
+            "effects": {"branch": "feat/9-x", "write": ["results/melon-jelly/stray.txt"]}}})
+        self.batch()
+        self.assertNotIn(["git", "switch", "main"], self.git.calls)
+        self.assertEqual(self.called_ids(), ["game-melon-jelly"])
+
+
+class MergeStepTest(BatchCase):
+    def add_merge_script(self, body):
+        (self.repo / "harness").mkdir(exist_ok=True)
+        (self.repo / "harness" / "merge_results.py").write_text(body)
+
+    def test_existing_merge_script_runs_with_the_model_and_its_output_is_passed_through(self):
+        self.add_merge_script(
+            "import sys\nprint('merge args:', ' '.join(sys.argv[1:]))\nsys.exit(0)\n")
+        code, out = self.batch()
+        self.assertIn("merge args: --model claude-fable-5-2", out)
+        self.assertRegex(out, r"(?m)^merge step: ran harness/merge_results.py, exit 0$")
+        self.assertEqual(code, 0)
+
+    def test_merge_script_exit_code_is_recorded_and_fails_the_run(self):
+        self.add_merge_script("import sys\nprint('refusing')\nsys.exit(3)\n")
+        code, out = self.batch()
+        self.assertRegex(out, r"(?m)^merge step: ran harness/merge_results.py, exit 3$")
+        self.assertNotEqual(code, 0)
+
+    def test_without_the_script_open_prs_touching_the_arm_files_are_listed(self):
+        st = self.git.state()
+        st["prs"] = [{"number": 5, "url": "https://example.test/pull/5", "files": [
+            {"path": "results/other/other_claude_opus_4_8.html"}]}]
+        st["next_pr"] = 6
+        self.git.save(st)
+        code, out = self.batch()
+        self.assertIn("merge step: harness/merge_results.py not present; open PRs for this arm:", out)
+        self.assertIn("https://example.test/pull/6", out)
+        self.assertNotIn("https://example.test/pull/5", out)
+        self.assertEqual(code, 0)
+
+    def test_merge_script_runs_after_cleanup_returned_to_main(self):
+        self.add_merge_script("print('MERGE-RAN')\n")
+        self.set_children(by_prompt={"game-weichensteller": {
+            "effects": {"open_pr": True, "branch": "feat/z"}}})
+        _, out = self.batch()
+        self.assertIn("MERGE-RAN", out)
+
+    def test_merge_script_is_not_run_when_the_tree_is_dirty(self):
+        self.add_merge_script("print('MERGE-RAN')\n")
+        self.set_children(by_prompt={"game-weichensteller": {
+            "effects": {"open_pr": True, "write": ["results/x/stray.txt"]}}})
+        _, out = self.batch()
+        self.assertNotIn("MERGE-RAN", out)
+        self.assertIn("merge step: skipped", out)
+
+    def test_skip_everything_still_reaches_the_merge_step(self):
+        self.batch()
+        self.add_merge_script("print('MERGED')\n")
+        before = len(self.calls())
+        _, out = self.batch()
+        self.assertEqual(len(self.calls()), before)
+        self.assertIn("MERGED", out)
+
+
+class DryRunTest(BatchCase):
+    def test_dry_run_starts_no_child_and_names_every_prompt_and_file(self):
+        code, out = self.batch("--dry-run")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.calls(), [])  # the fake logs real children only, not --help
+        for pid in bra.ARM_PROMPTS:
+            self.assertIn(pid, out)
+            self.assertIn(Path(self.targets[pid]).name, out)
+
+    def test_dry_run_issues_only_read_only_git_and_gh_commands(self):
+        self.batch("--dry-run")
+        for cmd in self.git.calls:
+            self.assertIn(cmd[:2], (["git", "fetch"], ["git", "branch"], ["git", "rev-parse"],
+                                    ["git", "status"], ["git", "ls-tree"], ["gh", "auth"],
+                                    ["gh", "pr"]), cmd)
+        self.assertNotIn(["git", "switch", "main"], self.git.calls)
+
+    def test_dry_run_shows_run_and_skip_per_prompt(self):
+        st = self.git.state()
+        st["main_files"] = ["results/melon-jelly/melon-jelly_claude_fable_5_2.html"]
+        self.git.save(st)
+        _, out = self.batch("--dry-run")
+        self.assertRegex(out, r"(?m)^prompt game-melon-jelly: skip \(on origin/main\)")
+        self.assertRegex(out, r"(?m)^prompt game-lava-lamp: run")
+
+    def test_dry_run_shows_the_exact_child_command_once(self):
+        _, out = self.batch("--dry-run")
+        self.assertEqual(out.count("child command:"), 1)
+        line = [ln for ln in out.splitlines() if ln.startswith("child command:")][0]
+        self.assertIn("--model claude-fable-5-2", line)
+        self.assertIn("--effort high", line)
+        self.assertIn("--permission-mode dontAsk", line)
+
+    def test_dry_run_names_the_final_branch(self):
+        _, out = self.batch("--dry-run")
+        self.assertIn("merge step: would list open PRs", out)
+        (self.repo / "harness").mkdir(exist_ok=True)
+        (self.repo / "harness" / "merge_results.py").write_text("")
+        _, out = self.batch("--dry-run")
+        self.assertIn("merge step: would run python3 harness/merge_results.py --model claude-fable-5-2", out)
+
+    def test_dry_run_shows_checks_as_ok_or_fail_and_exits_nonzero_on_failure(self):
+        code, out = self.batch("--dry-run")
+        self.assertRegex(out, r"(?m)^check ok: effort")
+        (self.repo / "scratch.txt").write_text("x")
+        code, out = self.batch("--dry-run")
+        self.assertNotEqual(code, 0)
+        self.assertRegex(out, r"(?m)^check FAIL: clean tree")
+        self.assertEqual(self.calls(), [])
+
+    def test_dry_run_prints_the_stop_line_for_a_missing_effort(self):
+        env = {k: v for k, v in self.env.items() if k != "CLAUDE_EFFORT"}
+        code, out = self.batch("--dry-run", env=env)
+        self.assertNotEqual(code, 0)
+        self.assertRegex(out, r"(?m)^STOP: .*CLAUDE_EFFORT")
 
 
 if __name__ == "__main__":
