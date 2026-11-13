@@ -1,15 +1,25 @@
 ---
 name: bench-run
-description: One-shot a single benchmark prompt in this session and file the result: deliverable plus meta sidecar under results/, a grading sidecar where the prompt has a [grading] rule, one issue, one branch, one PR that closes it. No orchestrator, no agents, never merges, never launches a browser. User-invocable only.
+description: One-shot a single benchmark prompt in this session and file the result: deliverable plus meta sidecar under results/, a grading sidecar where the prompt has a [grading] rule, one issue, one branch, one PR that closes it. With no arguments it runs the whole Fable 5.2 arm instead, one fresh headless session per prompt, through harness/bench_run_all.py. No orchestrator, no agents, never launches a browser. User-invocable only.
 disable-model-invocation: true
-argument-hint: <prompt-id> [--dry-run]
+argument-hint: [<prompt-id>] [--dry-run]
 ---
 
-You are reading this because the user typed `/bench-run <prompt-id>`. The arguments are in `$ARGUMENTS`: a prompt id (or a TOML file stem) and an optional `--dry-run`. Do exactly what follows, in order. This is a plain in-session one-shot: no orchestrator, no agent team, no repair round.
+You are reading this because the user typed `/bench-run`. The arguments are in `$ARGUMENTS`. If `$ARGUMENTS` is empty or exactly `--dry-run`, this is **batch mode**: follow "Batch mode" below and nothing else. Otherwise `$ARGUMENTS` is a prompt id (or a TOML file stem) and an optional `--dry-run`: do exactly what follows, in order. A single prompt is a plain in-session one-shot: no orchestrator, no agent team, no repair round.
 
 Every `python` command below (the resolver, the prompt print, `grade.py`) must be run as `python3` where `python` is not on PATH, as on the dev box.
 
 The model under test is **you**. The model id is the exact one stated in your system prompt (for example `claude-fable-5-2`). If you do not know it with certainty, stop and ask the user; never guess.
+
+## Batch mode
+
+Applies only when `$ARGUMENTS` is empty or exactly `--dry-run`. The one-shot rules and the Steps below govern `/bench-run <prompt-id>` and each child session the helper starts, not this batch session. This session generates nothing: `harness/bench_run_all.py` starts one fresh headless `claude -p "/bench-run <prompt-id>"` child per prompt of the arm (same model and effort as this session, a narrow tool allowlist, no merge rights) and then runs the merge step.
+
+1. Pass the exact model id from your system prompt as `--model`. If you do not know it with certainty, stop and ask the user; the helper rejects bare aliases such as `fable` or `opus`. The effort level is read from `CLAUDE_EFFORT` by the helper; never retype it.
+2. Run `python3 harness/bench_run_all.py --model <model-id> --dry-run` in the foreground and relay its output as printed. If the arguments were `--dry-run`, end here. If any line starts with `STOP:` or any check says FAIL, relay it and end.
+3. Otherwise run `python3 harness/bench_run_all.py --model <model-id>` with the Bash tool's `run_in_background: true` (eleven generations far exceed the 10-minute limit of a foreground call) and wait for it to exit.
+4. Relay the helper's report exactly as printed: one line per prompt, the counts, the log folder and the merge-step result. Re-typing `/bench-run` later skips every prompt that already has a result on `origin/main` or in an open PR and reaches the merge step again.
+5. Never open `results/`, the log folder, PR diffs or child transcripts, and never write, generate, merge or enable auto-merge yourself. The only merge that happens is the helper's own call to `harness/merge_results.py`, when that file exists.
 
 ## One-shot rules
 
@@ -30,7 +40,7 @@ A failure after the Write (a `gh` or network error in the meta resolver, a faile
 
 ## Steps
 
-1. **Parse arguments.** First token is `<prompt-id>`; `--dry-run` may follow.
+1. **Parse arguments.** No arguments (or only `--dry-run`) means batch mode: see "Batch mode" and stop reading here. Otherwise the first token is `<prompt-id>`; `--dry-run` may follow.
 2. **Fresh-session guard.** If this session has already read, discussed or generated any result for this prompt, or any other benchmark generation, stop and ask for a fresh session. One prompt per session.
 3. **Preflight** (skipped by `--dry-run` except `git fetch origin main`):
    - `git fetch origin main`, and `HEAD` must equal `origin/main`; otherwise tell the user to switch and pull.
