@@ -7,7 +7,7 @@ argument-hint: [<prompt-id>] [--dry-run]
 
 You are reading this because the user typed `/bench-run`. The arguments are in `$ARGUMENTS`. If `$ARGUMENTS` is empty or exactly `--dry-run`, this is **batch mode**: follow "Batch mode" below and nothing else. Otherwise `$ARGUMENTS` is a prompt id (or a TOML file stem) and an optional `--dry-run`: do exactly what follows, in order. A single prompt is a plain in-session one-shot: no orchestrator, no agent team, no repair round.
 
-Every `python` command below (the resolver, the prompt print, `grade.py`) must be run as `python3` where `python` is not on PATH, as on the dev box.
+Commands are written `python3`; use `python` only where `python3` is missing.
 
 The model under test is **you**. The model id is the exact one stated in your system prompt (for example `claude-fable-5-2`). If you do not know it with certainty, stop and ask the user; never guess.
 
@@ -40,197 +40,43 @@ A failure after the Write (a `gh` or network error in the meta resolver, a faile
 
 ## Steps
 
+Each command below is one Bash call on one line, exactly as shown, with no `&&`, `;`, pipes, redirects (including `2>&1`), `$(...)`, backticks, heredocs or `cd`. Multi-line text goes only through the files the resolver writes; this overrides the general habit of passing multi-line text through a heredoc.
+
 1. **Parse arguments.** No arguments (or only `--dry-run`) means batch mode: see "Batch mode" and stop reading here. Otherwise the first token is `<prompt-id>`; `--dry-run` may follow.
 2. **Fresh-session guard.** If this session has already read, discussed or generated any result for this prompt, or any other benchmark generation, stop and ask for a fresh session. One prompt per session.
 3. **Preflight** (skipped by `--dry-run` except `git fetch origin main`):
-   - `git fetch origin main`, and `HEAD` must equal `origin/main`; otherwise tell the user to switch and pull.
-   - `git status --porcelain --untracked-files=no` must be empty, and there must be no untracked files under `results/` or `prompts/`.
+   - `git fetch origin main`, then `git rev-parse HEAD origin/main`: the two lines must be equal; otherwise tell the user to switch and pull.
+   - `git status --porcelain --untracked-files=no` must print nothing, and `git status --porcelain --untracked-files=all` must list no untracked file under `results/` or `prompts/`.
    - `gh auth status` must succeed.
-4. **Plan.** Run the resolver (below) in `plan` mode from the repo root. It stops with a `STOP:` line if the prompt, folder, extension or model tag cannot be resolved, or if any target already exists locally, on `origin/main` or in an open PR. Relay a stop to the user and end. With `--dry-run`, show the plan output and end here: no writes, no issue, no branch, no PR (the resolver makes only read-only `git` and `gh` calls).
-5. **Print the prompt verbatim:** `python -c "import tomllib,sys; d=tomllib.load(open(sys.argv[1],'rb')); print(d.get('system',{}).get('text','')); print('-----'); print(d['user']['text']); [print('image: prompts/'+f) for f in d.get('images',{}).get('files',[])]" prompts/<toml>` using the `toml` value from the plan. Each `image:` line is a path from `[images].files`, already prefixed with `prompts/`; Read exactly those files (read-only).
+4. **Plan.** `python3 harness/bench_run.py plan <prompt-id> <model-id>` from the repo root (the resolver, below). It stops with a `STOP:` line if the prompt, folder, extension or model tag cannot be resolved, or if any target already exists locally, on `origin/main` or in an open PR. Relay a stop to the user and end. With `--dry-run`, show the plan output and end here: no writes, no issue, no branch, no PR (the resolver makes only read-only `git` and `gh` calls).
+5. **Print the prompt verbatim:** `python3 harness/bench_run.py prompt <prompt-id> <model-id>` prints the `[system]` text, a `-----` line, the `[user]` text and one `image: prompts/<file>` line per `[images].files` entry. Read exactly those image files (read-only).
 6. **Generate** the deliverable and Write it to the planned target path (one Write, see the one-shot rules).
-7. **Meta.** Run the resolver in `meta` mode. It requires the deliverable to exist and be non-empty and writes the sidecar shown in the plan preview, with `generated_utc` stamped now.
-8. **Grade only if the plan says a grading mode** (the TOML has `[grading]`): run `python harness/grade.py --prompt <id>` and keep its output for the PR body. On a non-zero exit, keep the deliverable and meta, delete the run's own grading sidecar if `grade.py` wrote one (`rm` that single path; it is never committed), restore any other sidecar it touched as in step 9, and report the error line (for example a missing sympy). Without `[grading]`, skip this step and write nothing about playability.
-9. **Scope check.** `git status --porcelain --untracked-files=all` must show only the run's own 2 or 3 new paths (deliverable, meta, and the grading sidecar if `grade.py` exited 0 and wrote one). `grade.py --prompt` can rewrite the sidecars of other models' results for the same prompt; restore any such file with `git restore -- <path>` and mention it in the PR.
-10. **Issue.** `gh issue create` with the title and body below; note the number `N`.
+7. **Meta.** `python3 harness/bench_run.py meta <prompt-id> <model-id>`. It requires the deliverable to exist and be non-empty and writes the sidecar shown in the plan preview, with `generated_utc` stamped now.
+8. **Grade only if the plan says a grading mode** (the TOML has `[grading]`; no prompt of the batch arm has one): `python3 harness/bench_run.py grade <prompt-id> <model-id>` runs `harness/grade.py --prompt` for it, prints the output and saves it for the PR body. On a non-zero exit it has deleted only this run's own grading sidecar (it is never committed): keep the deliverable and meta, restore any other sidecar it touched as in step 9, and report the error line (for example a missing sympy). Without `[grading]`, skip this step and write nothing about playability.
+9. **Scope check.** `git status --porcelain --untracked-files=all` must show only the run's own 2 or 3 new paths (deliverable, meta, and the grading sidecar if `grade` exited 0 and wrote one). `grade.py --prompt` can rewrite the sidecars of other models' results for the same prompt; restore any such file with `git restore -- <path>` and mention it in the PR.
+10. **Issue.** `python3 harness/bench_run.py issue-body <prompt-id> <model-id>` writes the body and prints its path. Then `gh issue create --title "<issue_title>" --body-file <issue-body-path>` with the plan's `issue_title`; note the number `N`.
 11. **Branch.** `git switch -c <branch>`; the untracked new files carry over.
-12. **Commit.** `git add` each run path explicitly. `git diff --cached --name-only` must equal exactly the run's own paths, with nothing under `prompts/`. Commit with the message below. Follow the session's own commit attribution rules; this skill does not prescribe any.
-13. **Push.** `git push -u origin <branch>`.
-14. **PR.** `gh pr create` with the title and body below, containing `Closes #N`. Never run `gh pr merge` and never enable auto-merge.
-15. **Return.** Switch back to the branch you started on (normally `main`). Report the issue and PR URLs, the paths, the grading result and the next step: for game and app results, browser verification on a stronger machine, whose verdict is added later in its own commit outside this skill.
+12. **Commit.** `git add results/<folder>/<file>` once per run path, where `<folder>/<file>` is the part of the plan's `target`, `meta` or `grading_sidecar` path after `results/`. `git diff --cached --name-only` must equal exactly the run's own paths, with nothing under `prompts/`. Then `git commit -m "<commit>" --trailer "<trailer line>"` with the plan's `commit` line, and one `--trailer` for each attribution trailer your session's own rules require (none if they require none; this skill prescribes no attribution).
+13. **Push.** `git push -u origin feat/<N>-<prefix>-<tag->-result`, the branch from the Naming section.
+14. **PR.** `python3 harness/bench_run.py pr-body <prompt-id> <model-id> <N> --footer "<PR ending>"` writes the body, containing `Closes #N`, and prints its path; add `--footer` only if your session's own rules require a PR ending, with that exact line. Then `gh pr create --title "<pr_title>" --body-file <pr-body-path>` with the plan's `pr_title`. Never merge the PR and never enable auto-merge.
+15. **Return.** `git switch main`, or whatever branch you started on. Report the issue and PR URLs, the paths, the grading result and the next step: for game and app results, browser verification on a stronger machine, whose verdict is added later in its own commit outside this skill.
 
 ## Naming
 
 `<tag->` is the model tag with `_` replaced by `-`; `<prefix>`, `<tag>` and the paths come from the plan output.
 
-- **Issue title:** `<prompt-id>: <model-id> one-shot result`. Body: what runs (`prompts/<toml>`, plain one-shot through /bench-run, no orchestrator or agents), the target paths and the deliverable kind.
+- **Issue title:** `<prompt-id>: <model-id> one-shot result`. Body (rendered by `issue-body`): what runs (`prompts/<toml>`, plain one-shot through /bench-run, no orchestrator or agents), the target paths and the deliverable kind.
 - **Branch:** `feat/<N>-<prefix>-<tag->-result`.
 - **Commit:** `feat(results): add <prefix> <model-id> one-shot result (#N)`.
-- **PR title:** `<prefix> (<model-id>, one-shot): result`. Body sections: summary (with the one-shot statement), files, grading (the grade.py output, or "no [grading] rule; no playability verdict written; browser verification pending"), in-session caveats (temperature, max_tokens, usage not observable), and `Closes #N`.
+- **PR title:** `<prefix> (<model-id>, one-shot): result`. Body (rendered by `pr-body`) sections: summary (with the one-shot statement), files, grading (the grade.py output, or "no [grading] rule; no playability verdict written; browser verification pending"), in-session caveats (temperature, max_tokens, usage not observable), and `Closes #N`.
 
 ## Resolver
 
-Run from the repo root (not with `-I`, so the `harness` import works). Replace `<prompt-id>` and `<model-id>`; the mode is `plan` or `meta`. It needs Python 3.11+ (`python3` where `python` is absent) and read-only `git` and `gh`. In `plan` mode it prints only `key: value` lines and a meta preview, never any content from a result file.
+`harness/bench_run.py` is the resolver. Run it from the repo root, one mode per call, ids unquoted, one line each: `python3 harness/bench_run.py <mode> <prompt-id> <model-id>`. It needs Python 3.11+ and read-only `git` and `gh`.
 
-```bash
-python - "<prompt-id>" "<model-id>" plan <<'PY'
-import json, os, re, subprocess, sys, tomllib
-from datetime import datetime, timezone
-from pathlib import Path
+- `plan` and `meta`: resolve the prompt, results folder, extension, model tag and paths, and check that no target exists on disk, on `origin/main` or in an open PR. `plan` prints only `key: value` lines and a sidecar preview, never any content from a result file; `meta` writes the sidecar.
+- `prompt`: prints the prompt exactly as step 5 describes.
+- `issue-body` and `pr-body <N> [--footer "<line>"]`: write the issue or PR body to `.bench-run/<prefix>_<tag>.issue.md` or `.pr.md` (a git-ignored folder) and print that path. For a graded prompt `pr-body` stops with a `STOP:` line unless `grade` saved its output.
+- `grade`: runs `harness/grade.py --prompt <prompt-id>`, prints its output and saves it to `.bench-run/<prefix>_<tag>.grade.txt`; on failure it deletes only this run's own grading sidecar.
 
-def stop(msg):
-    print("STOP: " + msg)
-    sys.exit(1)
-
-
-if len(sys.argv) != 4 or sys.argv[3] not in ("plan", "meta"):
-    stop("usage: <prompt-id> <model-id> plan|meta (3 arguments)")
-arg, model, mode = sys.argv[1:4]
-sys.path.insert(0, ".")
-from harness.modes._common import derive_model, model_tag
-
-
-def sh(*cmd):
-    return subprocess.run(cmd, capture_output=True, text=True)
-
-
-# 1. prompt: id match, else TOML stem; exactly one; no parametrized prompts
-tomls = [p for p in sorted(Path("prompts").glob("*.toml")) if not p.name.endswith(".fixtures.toml")]
-data = {p: tomllib.loads(p.read_text(encoding="utf-8")) for p in tomls}
-hits = [p for p in tomls if data[p].get("id") == arg] or [p for p in tomls if p.stem == arg]
-if len(hits) != 1:
-    stop("%d prompts match %r; need exactly one" % (len(hits), arg))
-tpath = hits[0]
-prompt = data[tpath]
-pid = prompt["id"]
-if Path("prompts", tpath.stem + ".fixtures.toml").exists():
-    stop("%s is parametrized (has a fixtures file); refusing" % pid)
-
-# 2. folder from existing metas of this prompt
-metas = []
-for m in sorted(Path("results").glob("*/*.meta.json")):
-    try:
-        meta = json.loads(m.read_text(encoding="utf-8"))
-    except ValueError:
-        continue
-    if meta.get("prompt_id") == pid:
-        metas.append((m, meta))
-folders = sorted({m.parent.name for m, _ in metas})
-if len(folders) != 1:
-    stop("%d results folders for %s %s; ask the user which one" % (len(folders), pid, folders))
-folder = folders[0]
-
-# 3. prefix, 4. extension
-prefix = prompt.get("file_prefix") or tpath.stem
-exts = {Path(meta["outputs"]["deliverable"]).suffix.lstrip(".") for _, meta in metas
-        if isinstance(meta.get("outputs"), dict) and meta["outputs"].get("deliverable")}
-ext = prompt.get("save_as") or (exts.pop() if len(exts) == 1 else None)
-if not ext:
-    stop("cannot determine the extension (save_as unset, metas give %s)" % sorted(exts))
-
-# 5. deliverable kind
-if ext == "html":
-    kind = "single HTML file"
-elif ext == "md" and prompt.get("category") in ("game-generation", "app-generation"):
-    kind = "single markdown blueprint"
-else:
-    kind = "text answer"
-
-# 6. model tag from the session model id, 7. harness agreement
-model_id = re.sub(r"\[[^\]]*\]$", "", model.strip()).strip()
-try:
-    tag = model_tag(model_id)
-except ValueError:
-    stop("model tag from %r is not usable" % model)
-base = "results/%s/%s_%s" % (folder, prefix, tag)
-target, meta_path, grade_path = "%s.%s" % (base, ext), base + ".meta.json", base + "_grading.json"
-if derive_model(Path(target), prompt) != tag:
-    stop("harness derive_model disagrees with tag %s for %s" % (tag, target))
-
-# 8. no overwrite: disk, origin/main, open PRs
-for p in ((target,) if mode == "plan" else ()) + (meta_path, grade_path):
-    if Path(p).exists():
-        stop("%s already exists on disk" % p)
-for p in (target, meta_path, grade_path):
-    if sh("git", "cat-file", "-e", "origin/main:" + p).returncode == 0:
-        stop("%s already exists at origin/main" % p)
-prs = sh("gh", "pr", "list", "--state", "open", "--limit", "200", "--json", "number,files")
-if prs.returncode:
-    stop("gh pr list failed: " + prs.stderr.strip())
-try:
-    open_prs = json.loads(prs.stdout)
-except ValueError:
-    stop("gh pr list printed non-JSON output")
-for pr in open_prs:
-    if any(f["path"] == target for f in pr["files"]):
-        stop("open PR #%d already touches %s" % (pr["number"], target))
-if mode == "meta" and (not Path(target).is_file() or Path(target).stat().st_size == 0):
-    stop("%s is missing or empty; write the deliverable first" % target)
-
-# meta sidecar (Fable 5.1 shape plus the one-shot keys)
-ctx = ("The Claude Code system context was present alongside the TOML system text."
-       if "system" in prompt
-       else "The TOML has no system text; the Claude Code system context was present.")
-
-
-def given(key, name):
-    return "%s %s" % (name, prompt[key]) if key in prompt else "%s not set in the TOML" % name
-
-sidecar = {
-    "generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if mode == "meta"
-    else "<UTC timestamp stamped in meta mode>",
-    "toml": tpath.name,
-    "prompt_id": pid,
-    "title": prompt.get("title"),
-    "endpoint": "none (generated in-session by Claude Code via /bench-run, plain one-shot; no orchestrator, no agents, no repair round)",
-    "model": model_id,
-    "one_shot": True,
-    "edits_after_generation": 0,
-    "params": {
-        "temperature": None,
-        "max_tokens_requested_initial": None,
-        "reasoning_effort": os.environ.get("CLAUDE_EFFORT") or None,
-        "note": "Sampling settings from the TOML (%s) could not be applied in-session; session defaults applied. "
-        "reasoning_effort is the CLAUDE_EFFORT level in effect when the run started (null if unset). "
-        "%s finish_reason and usage are not observable in-session." % (
-            given("temperature", "temperature") + "; " + given("max_tokens", "max_tokens"), ctx),
-    },
-    "finish_reason": None,
-    "truncated": False,
-    "usage": None,
-    "retries": [],
-    "num_retry_api_calls": 0,
-    "grading": None,
-    "outputs": {"deliverable": target},
-}
-text = json.dumps(sidecar, indent=2, ensure_ascii=False) + "\n"
-
-# 9. output
-gmode = (prompt.get("grading") or {}).get("mode")
-dash = tag.replace("_", "-")
-print("prompt_id: " + pid)
-print("toml: " + tpath.name)
-print("folder: results/" + folder)
-print("prefix: " + prefix)
-print("extension: " + ext)
-print("kind: " + kind)
-print("model_tag: " + tag + " (harness derive_model agrees)")
-print("target: " + target)
-print("meta: " + meta_path)
-print("grading_sidecar: " + grade_path)
-print("grading_mode: " + (gmode or "none"))
-print("grade_command: " + ("python harness/grade.py --prompt " + pid if gmode else "none (no [grading] rule)"))
-print("issue_title: %s: %s one-shot result" % (pid, model_id))
-print("branch: feat/<N>-%s-%s-result" % (prefix, dash))
-print("commit: feat(results): add %s %s one-shot result (#<N>)" % (prefix, model_id))
-print("pr_title: %s (%s, one-shot): result" % (prefix, model_id))
-if mode == "meta":
-    Path(meta_path).write_text(text, encoding="utf-8")
-    print("written: " + meta_path)
-else:
-    print("meta_preview:")
-    print(text, end="")
-PY
-```
-
-The sidecar never contains `playability_verification` or `playability` keys; `grade.py` then skips a game result instead of failing it. A later browser check, outside this skill, adds them in its own commit.
+The sidecar's `reasoning_effort` is the `CLAUDE_EFFORT` level in effect when the run started. The sidecar never contains `playability_verification` or `playability` keys; `grade.py` then skips a game result instead of failing it. A later browser check, outside this skill, adds them in its own commit.
