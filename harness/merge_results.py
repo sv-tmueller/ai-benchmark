@@ -23,15 +23,25 @@ leaves the PR open; nothing is retried.
 
 Afterwards the README ledger rows for the model whose files are on ``main``
 are moved from ``not run`` to ``generated, browser check pending`` through a
-docs PR, opened with the GitHub API so the working tree is untouched. That PR
-is never merged here.
+docs PR, opened with the GitHub API so the working tree is untouched. Without
+``--post-statuses`` that PR is never merged here. With it, the docs PR (the one
+just opened, or exactly one left by an earlier run) is merged only after proof
+that its diff is the rewrite this run computed: one commit on top of
+``origin/main`` that changes only ``README.md`` to exactly the new text, whose
+base text is main's README byte for byte (compared as git blob ids), with a
+``docs/ledger-<tag>-<sha7>`` branch and green checks. It then gets the same two
+statuses and a squash merge pinned to that commit. A docs PR is never brought up
+to date, closed or deleted; one that fails the proof, or a second open docs PR,
+stays open and is reported.
 
 Exit codes: 0 all merged (or nothing to do); 1 a PR was left open or the docs
-PR step failed; 2 bad model id or failed preflight.
+PR step failed (with ``--post-statuses`` a docs PR left open counts); 2 bad
+model id or failed preflight.
 """
 
 import argparse
 import base64
+import hashlib
 import json
 import re
 import subprocess
@@ -259,6 +269,50 @@ def rewrite_ledger(text, tag, prompts, main_paths):
     for start, end in reversed(edits):
         text = text[:start] + GENERATED + text[end:]
     return text, updated, skipped
+
+
+def git_blob_sha(data):
+    """Return the git blob id of ``data`` (bytes), as ``git hash-object`` prints it."""
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def docs_gate(pr, commit, main_sha, main_blob, text, new_text, tag):
+    """Return every reason the ledger docs PR may not be vouched for; empty means pass.
+
+    ``pr`` is the ``gh pr view`` payload, ``commit`` the commits API payload of
+    its head, ``main_sha`` and ``main_blob`` the ids of ``origin/main`` and of
+    its ``README.md``, ``text`` the README the rewrite read and ``new_text`` its
+    result. A head with the single parent ``main_sha`` that changes only
+    ``README.md`` to exactly ``new_text``, where ``text`` is main's README byte
+    for byte, has the diff ``text -> new_text`` and nothing else. No I/O here.
+    """
+    reasons = []
+    if git_blob_sha(text.encode("utf-8")) != main_blob:
+        reasons.append("base README is not the README on origin/main")
+    parents = [p.get("sha") for p in commit.get("parents") or []]
+    if parents != [main_sha]:
+        reasons.append("commit parents %s are not exactly [origin/main %s]" % (
+            [str(p)[:7] for p in parents], main_sha[:7]))
+    files = commit.get("files") or []
+    if len(files) != 1:
+        reasons.append("commit must change exactly one file (README.md), found %d" % len(files))
+    else:
+        entry = files[0]
+        if entry.get("filename") != "README.md":
+            reasons.append("changed file is %r, not README.md" % entry.get("filename"))
+        elif entry.get("status") != "modified":
+            reasons.append("README.md status is %r, not modified" % entry.get("status"))
+        if entry.get("sha") != git_blob_sha(new_text.encode("utf-8")):
+            reasons.append("README.md blob is not this rewrite")
+    branch_re = r"docs/ledger-%s-[0-9a-f]{7}" % re.escape(tag.replace("_", "-"))
+    if not re.fullmatch(branch_re, pr.get("headRefName", "")):
+        reasons.append("branch %r does not match docs/ledger-%s-<7 hex>" % (
+            pr.get("headRefName"), tag.replace("_", "-")))
+    if pr.get("isDraft"):
+        reasons.append("PR is a draft")
+    if pr.get("isCrossRepository"):
+        reasons.append("PR comes from a fork")
+    return reasons
 
 
 # --- gh / git access --------------------------------------------------------
@@ -523,24 +577,101 @@ class Merger:
                      else "nothing to merge; ledger up to date")
             return 1 if self.failed else 0
         prefix = "docs/ledger-%s-" % self.tag.replace("_", "-")
-        for pr in open_prs:
-            if pr.get("headRefName", "").startswith(prefix):
-                self.say("ledger PR #%d already open; merge it, then re-run" % pr["number"])
-                return 1 if self.failed else 0
-        if self.dry_run:
-            self.say("would open a docs PR marking %d row(s) generated" % len(rows))
+        open_docs = [pr for pr in open_prs if pr.get("headRefName", "").startswith(prefix)]
+        if open_docs and not self.post_statuses:
+            self.say("ledger PR #%d already open; merge it, then re-run" % open_docs[0]["number"])
             return 1 if self.failed else 0
-        return 0 if self.docs_pr(prefix, new_text, rows) and not self.failed else 1
+        if len(open_docs) > 1:
+            self.failed = True
+            self.say("ledger PRs %s are open; no statuses %s; close all but one and re-run" % (
+                ", ".join("#%d" % pr["number"] for pr in open_docs),
+                "would be posted" if self.dry_run else "posted"))
+            return 1
+        if open_docs:
+            return self.vouch_open_docs(open_docs[0]["number"], text, new_text, rows)
+        if self.dry_run:
+            self.say("would open a docs PR marking %d row(s) generated%s" % (
+                len(rows), ", then post orchestrai/test and orchestrai/review on it and "
+                "merge it once its diff is verified and its checks are green"
+                if self.post_statuses else ""))
+            return 1 if self.failed else 0
+        return 0 if self.docs_pr(prefix, text, new_text, rows) and not self.failed else 1
 
-    def docs_pr(self, prefix, new_text, rows):
-        """Open the ledger docs PR through the API; report the failing step."""
-        steps = {}
+    def vouch_open_docs(self, number, text, new_text, rows):
+        """Opt-in: an earlier run's docs PR is merged only if it is exactly this rewrite."""
+        if self.dry_run:
+            self.say("ledger PR #%d already open; would post orchestrai/test and "
+                     "orchestrai/review on it and merge it only if it is exactly this "
+                     "rewrite on origin/main and its checks are green" % number)
+            return 1 if self.failed else 0
+        refs = self.main_refs()
+        if refs is not None:
+            self.docs_sequence(number, refs, text, new_text, rows)
+        return 1 if self.failed else 0
+
+    def main_refs(self):
+        """Return ``{"main sha", "README blob"}`` of ``origin/main``, or ``None`` after a report."""
+        refs = {}
         for key, argv in (("main sha", ("git", "rev-parse", "origin/main")),
                           ("README blob", ("git", "rev-parse", "origin/main:README.md"))):
             proc = self.run(argv)
             if proc.returncode or not proc.stdout.strip():
-                return self.docs_failed(key, proc, None)
-            steps[key] = proc.stdout.strip()
+                self.docs_failed(key, proc, None)
+                return None
+            refs[key] = proc.stdout.strip()
+        return refs
+
+    def ledger_open(self, number, reason):
+        self.failed = True
+        self.say("ledger PR #%d left open: %s" % (number, reason))
+
+    def wait_checks(self, number):
+        """Poll until the PR's checks have finished; return the reasons they are not green."""
+        for attempt in range(POLL_LIMIT):
+            checks = self.read_checks(number)
+            if checks and not any(c["bucket"] == "pending" for c in checks):
+                return _checks_reasons(checks)
+            if attempt < POLL_LIMIT - 1:
+                self.sleep(POLL_SECONDS)
+        return ["timed out waiting for checks"]
+
+    def docs_sequence(self, number, refs, text, new_text, rows):
+        """Opt-in: prove the docs PR is exactly the rewrite, wait for checks, vouch, merge.
+
+        Never ``update-branch``: a merge commit would break the single-parent proof,
+        so a docs PR that falls behind ``main`` stays open (``strict`` refuses it).
+        """
+        view = self.read_view(number)
+        if view is None:
+            return self.ledger_open(number, "could not read the PR")
+        sha = view["headRefOid"]
+        commit = self.json_call(("gh", "api", "repos/{owner}/{repo}/commits/" + sha), dict)
+        if commit is None:
+            return self.ledger_open(number, "could not read its head commit")
+        reasons = docs_gate(view, commit, refs["main sha"], refs["README blob"], text,
+                            new_text, self.tag)
+        if reasons:
+            return self.ledger_open(
+                number, "fails docs gate: %s; close it and re-run" % "; ".join(reasons))
+        reasons = self.wait_checks(number)
+        if reasons:
+            return self.ledger_open(number, "; ".join(reasons))
+        reason = self.vouch(number, sha, DOCS_STATUS_DESC)
+        if reason:
+            return self.ledger_open(number, reason)
+        proc = self.run((
+            "gh", "pr", "merge", str(number), "--squash", "--match-head-commit", sha,
+            "--subject", "docs(readme): mark %d %s ledger rows generated (#%d)" % (
+                len(rows), self.model_id, number)))
+        if proc.returncode:
+            return self.ledger_open(number, "refused by GitHub: " + first_line(proc.stderr))
+        self.say("docs PR #%d merged (%s)" % (number, sha[:7]))
+
+    def docs_pr(self, prefix, text, new_text, rows):
+        """Open the ledger docs PR through the API; report the failing step."""
+        steps = self.main_refs()
+        if steps is None:
+            return False
         branch = prefix + steps["main sha"][:7]
         proc = self.run(
             ("gh", "api", "--method", "POST", "repos/{owner}/{repo}/git/refs", "--input", "-"),
@@ -568,7 +699,15 @@ class Merger:
                          "--title", title, "--body", "\n".join(body)))
         if proc.returncode:
             return self.docs_failed("open PR", proc, branch)
-        self.say("docs PR opened: " + first_line(proc.stdout))
+        url = first_line(proc.stdout)
+        self.say("docs PR opened: " + url)
+        if self.post_statuses:
+            match = re.search(r"/pull/(\d+)$", url)
+            if match is None:
+                self.failed = True
+                self.say("ledger PR left open: could not read its number from: " + url)
+            else:
+                self.docs_sequence(int(match.group(1)), steps, text, new_text, rows)
         return True
 
     def docs_failed(self, step, proc, leftover):
