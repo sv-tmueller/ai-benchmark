@@ -8,7 +8,7 @@ directory names diverge from prompt ids across the corpus.
 import unittest
 from pathlib import Path
 
-from harness.modes._common import derive_model
+from harness.modes._common import derive_model, model_tag
 
 
 class DeriveModelTest(unittest.TestCase):
@@ -52,6 +52,26 @@ class DeriveModelTest(unittest.TestCase):
         result = Path("results/solo/zebra.txt")
 
         self.assertEqual(derive_model(result, prompt), "")
+
+
+class ModelTagTest(unittest.TestCase):
+    def test_fable_id_becomes_underscore_tag(self):
+        self.assertEqual(model_tag("claude-fable-5-2"), "claude_fable_5_2")
+
+    def test_trailing_date_stamp_is_dropped(self):
+        self.assertEqual(model_tag("claude-haiku-4-5-20251001"), "claude_haiku_4_5")
+
+    def test_trailing_bracket_suffix_is_dropped(self):
+        self.assertEqual(model_tag("claude-opus-4-8[1m]"), "claude_opus_4_8")
+
+    def test_case_is_folded_and_separators_collapse(self):
+        self.assertEqual(model_tag("  GLM.5//Flash "), "glm_5_flash")
+
+    def test_unusable_id_raises_value_error(self):
+        for bad in ("", "5-2", "---"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    model_tag(bad)
 
 
 if __name__ == "__main__":

@@ -578,9 +578,22 @@ self-contained HTML file for the single-file prompts, one markdown blueprint
 for the multi-file project prompts (the same shape as the GLM 5.2 and
 gpt-oss-120b arms).
 
-**How to run.** One prompt per run, started with the `/bench-run <prompt-id>`
-project skill (added separately), for example `/bench-run game-melon-jelly`.
-The prompt TOML under `prompts/` is used unmodified.
+**How to run.** Start the whole arm with `/bench-run` and no arguments from a
+clean checkout of `main`. The skill calls
+[`harness/bench_run_all.py`](harness/bench_run_all.py), which starts one fresh
+headless Claude Code session per prompt (`claude -p "/bench-run <prompt-id>"`)
+with the calling session's exact model id and effort level, a narrow tool
+allowlist and no merge rights, so each prompt is still one isolated one-shot.
+`/bench-run --dry-run` prints the checks, which prompts would run or be
+skipped, and the exact child command, and starts nothing. A prompt that
+already has a result on `origin/main` or in an open PR is skipped, so
+re-typing `/bench-run` after an interruption resumes the arm, and after CI
+turns green it skips all 11 and reaches the final merge step again (the
+helper runs `harness/merge_results.py` when that file exists, otherwise it
+lists the open PRs). A single prompt still runs with `/bench-run <prompt-id>`,
+for example `/bench-run game-melon-jelly`. The prompt TOML under `prompts/` is
+used unmodified. Each sidecar's `reasoning_effort` records the session's
+`CLAUDE_EFFORT` level.
 
 **In-session generation caveats.** The generation happens inside a Claude
 Code session, not through the gateway runner, so:
