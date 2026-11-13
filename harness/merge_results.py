@@ -104,6 +104,9 @@ def gate(pr, checks, main_paths, prompts, model_id, tag):
             reasons.append("already on main: " + entry["path"])
         if entry.get("deletions", 0):
             reasons.append("deletes lines: " + entry["path"])
+        if entry.get("changeType") != "ADDED":
+            reasons.append("not a new file (%s): %s" % (
+                entry.get("changeType"), entry["path"]))
     if family and prompt is not None:
         _file_set_reasons(files, family, prefix, tag, prompt, reasons)
     return reasons

@@ -87,7 +87,8 @@ GREEN = [{"name": "validate-prompts (3.11)", "bucket": "pass"}]
 
 
 def pr_files(*paths):
-    return [{"path": p, "additions": 5, "deletions": 0} for p in paths]
+    return [{"path": p, "additions": 5, "deletions": 0, "changeType": "ADDED"}
+            for p in paths]
 
 
 def make_pr(prefix="alpha", number=7, ext="html", family=None, tag=TAG,
@@ -242,6 +243,17 @@ class GateTests(unittest.TestCase):
         files = make_pr()["files"]
         files[0]["deletions"] = 2
         self.assertReason(run_gate(make_pr(files=files)), "deletes lines")
+
+    def test_renamed_file_is_refused(self):
+        # gh lists a rename as one entry: new path, deletions 0, RENAMED.
+        files = make_pr()["files"]
+        files[0].update(additions=0, changeType="RENAMED")
+        self.assertReason(run_gate(make_pr(files=files)), "not a new file")
+
+    def test_modified_file_is_refused(self):
+        files = make_pr()["files"]
+        files[0]["changeType"] = "MODIFIED"
+        self.assertReason(run_gate(make_pr(files=files)), "not a new file")
 
     def test_v2_tag_is_not_the_model_tag(self):
         pr = make_pr(tag=TAG + "-v2")
