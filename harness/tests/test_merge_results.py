@@ -9,6 +9,7 @@ import base64
 import hashlib
 import io
 import json
+import re
 import subprocess
 import tempfile
 import tomllib
@@ -47,6 +48,15 @@ text = "Build an app."
 GAMMA_TOML = """\
 id      = "game-gamma"
 title   = "Gamma game, no file_prefix"
+save_as = "html"
+
+[user]
+text = "Build a game."
+"""
+
+GAME_EPS_TOML = """\
+id      = "game-eps"
+title   = "Stem differs from id, no file_prefix"
 save_as = "html"
 
 [user]
@@ -262,10 +272,28 @@ class GateTests(unittest.TestCase):
         self.assertTrue(reasons)
         self.assertReason(reasons, "branch")
 
-    def test_v2_files_with_matching_branch_fail_tag_cross_check(self):
+    def test_v2_files_with_matching_branch_are_extra_and_missing(self):
         base = "results/alpha/alpha_%s-v2" % TAG
         pr = make_pr(files=pr_files(base + ".html", base + ".meta.json"))
-        self.assertTrue(run_gate(pr))
+        want = "results/alpha/alpha_%s" % TAG
+        self.assertEqual(run_gate(pr), [
+            "extra file: " + base + ".html",
+            "extra file: " + base + ".meta.json",
+            "missing: " + want + ".html",
+            "missing: " + want + ".meta.json",
+        ])
+
+    def test_derive_model_disagreement_is_its_own_reason(self):
+        # No file_prefix, an "_" in the stem, and an id that differs from the
+        # stem: derive_model cannot recover the prefix, so only (g) objects.
+        eps = prompt_entry("game_eps", GAME_EPS_TOML)
+        pr = make_pr("game_eps", family="eps")
+        main = MAIN_PATHS | {"results/eps/game_eps_other_model.meta.json"}
+        self.assertEqual(
+            run_gate(pr, main_paths=main, prompts=PROMPTS + [eps]),
+            ["derive_model disagrees with tag %s for results/eps/game_eps_%s.html"
+             % (TAG, TAG)],
+        )
 
     def test_branch_mismatch(self):
         pr = make_pr(headRefName="feat/7-alpha-someone-else-result")
@@ -552,6 +580,32 @@ def status_fields(argv):
     return fields
 
 
+REPO_API = "repos/{owner}/{repo}/"
+SHA40 = r"[0-9a-f]{40}"
+
+
+def api_call_problem(argv):
+    """Return why a ``gh api`` argv is not one the command makes, else ``None``.
+
+    The command makes four: the ref POST and the README PUT (``--input -``), a
+    status POST on a full sha, and the bare commit read (a read: any extra
+    field would make ``gh`` send a POST). Other argvs are not this check's concern.
+    """
+    if argv[:2] != ("gh", "api"):
+        return None
+    if len(argv) == 3 and re.fullmatch(REPO_API + "commits/" + SHA40, argv[2]):
+        return None
+    if argv[2:4] in (("--method", "POST"), ("--method", "PUT")) and len(argv) > 4:
+        method, endpoint = argv[3], argv[4]
+        if method == "POST" and endpoint == REPO_API + "git/refs":
+            return None
+        if method == "PUT" and endpoint == REPO_API + "contents/README.md":
+            return None
+        if method == "POST" and re.fullmatch(REPO_API + "statuses/" + SHA40, endpoint):
+            return None
+    return "gh api call outside the allowlist: %r" % (argv,)
+
+
 def status_posts(fake):
     """Return ``[(sha, context, description)]`` for every status post the fake saw."""
     return [(f["sha"], f["context"], f["description"])
@@ -587,6 +641,7 @@ class OrchestrationBase(unittest.TestCase):
                 self.assertNotIn("--admin", argv)
                 self.assertNotIn("--auto", argv)
                 self.assertNotIn("--delete-branch", argv)
+                self.assertIsNone(api_call_problem(argv))
                 fields = status_fields(argv)
                 if fields:
                     self.assertIn(fields["sha"], self.vouched, argv)
@@ -594,6 +649,52 @@ class OrchestrationBase(unittest.TestCase):
                     self.assertEqual(fields["state"], "success")
                     self.assertTrue(fields["description"].startswith(mr.STATUS_MARKER))
                     self.assertLessEqual(len(fields["description"]), 140)
+
+
+class ApiCallProblemTests(unittest.TestCase):
+    SHA = "c" * 40
+    REPO = "repos/{owner}/{repo}/"
+
+    def test_endpoints_the_command_uses_are_allowed(self):
+        for argv in (
+            ("gh", "api", "--method", "POST", self.REPO + "git/refs", "--input", "-"),
+            ("gh", "api", "--method", "PUT", self.REPO + "contents/README.md",
+             "--input", "-"),
+            ("gh", "api", "--method", "POST", self.REPO + "statuses/" + self.SHA,
+             "-f", "state=success", "-f", "context=orchestrai/test"),
+            ("gh", "api", self.REPO + "commits/" + self.SHA),
+        ):
+            with self.subTest(argv=argv):
+                self.assertIsNone(api_call_problem(argv))
+
+    def test_any_other_gh_api_call_is_flagged(self):
+        for argv in (
+            ("gh", "api", "--method", "PUT", self.REPO + "pulls/7/merge"),
+            ("gh", "api", "--method", "POST", self.REPO + "issues/7/comments"),
+            ("gh", "api", "--method", "POST", self.REPO + "git/refs/heads/main"),
+            ("gh", "api", "--method", "POST", self.REPO + "statuses/abc"),
+            ("gh", "api", "--method", "PUT", self.REPO + "branches/main/protection"),
+            ("gh", "api", self.REPO + "commits/" + self.SHA, "-f", "x=y"),
+            ("gh", "api", "-X", "POST", self.REPO + "git/refs"),
+            ("gh", "api", "--method", "PATCH", self.REPO + "git/refs"),
+            ("gh", "api"),
+        ):
+            with self.subTest(argv=argv):
+                self.assertIsNotNone(api_call_problem(argv))
+
+    def test_calls_that_are_not_gh_api_are_not_its_concern(self):
+        self.assertIsNone(api_call_problem(("gh", "pr", "merge", "7")))
+        self.assertIsNone(api_call_problem(("git", "fetch", "origin")))
+
+
+class ApiAllowlistWiringTests(OrchestrationBase):
+    def test_teardown_rejects_a_write_to_an_unlisted_endpoint(self):
+        # The default fake's catch-all rules accept this call; only tearDown objects.
+        self.fake = build_fake()
+        self.fake(("gh", "api", "--method", "PUT", "repos/{owner}/{repo}/pulls/7/merge"))
+        with self.assertRaises(AssertionError):
+            self.tearDown()
+        self.fake = None  # the real tearDown, which runs next, now passes
 
 
 ALPHA_FILES = ["results/alpha/alpha_%s.html" % TAG, "results/alpha/alpha_%s.meta.json" % TAG]
