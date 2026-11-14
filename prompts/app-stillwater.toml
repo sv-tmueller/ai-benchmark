@@ -58,7 +58,7 @@ Priority order (non-negotiable):
 
 One file. No server, no build step, no dependencies. The page itself loads
 nothing from the network; the only network use is whatever the browser's own
-speech recognition service needs. Inline CSS, one inline
+speech recognition and speech synthesis services need. Inline CSS, one inline
 `<script type="module">`, organised into clearly labelled sections, each with
 one job:
 
@@ -153,8 +153,9 @@ This is the part a careless build gets wrong. Required:
    reflective listening and open questions, keep turns short, and hand off to
    crisis resources when the safety section fires.
 4. Onboarding shows a plain-language disclosure the user must accept once:
-   what this is, what it is not, what is stored (on this device only), how to
-   delete it.
+   what this is, what it is not, what is stored (on this device only), that
+   the browser's speech service may process what is said and spoken outside
+   the device, and how to delete what is stored.
 5. Under-18 gate at first use (date of birth; refuse and point to resources).
 
 ## DO NOT BUILD (SCOPE GUARDRAILS)
