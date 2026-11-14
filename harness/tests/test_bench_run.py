@@ -389,7 +389,7 @@ class PrBodyTest(RepoCase):
         self.assertIn("one-shot", text)
         self.assertIn("results/gx-dir/gx_claude_fable_5_2.html", text)
         self.assertIn("results/gx-dir/gx_claude_fable_5_2.meta.json", text)
-        self.assertIn("no [grading] rule; no playability verdict written; browser verification pending", text)
+        self.assertIn("no [grading] rule; no playability verdict written; review pending", text)
         self.assertIn("temperature", text)
         self.assertIn("max_tokens", text)
         self.assertIn("usage", text)

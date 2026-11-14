@@ -56,8 +56,9 @@ Priority order (non-negotiable):
 
 ## ARCHITECTURE MANDATE
 
-One file. No server, no build step, no dependencies, no network requests at
-all: the page works offline once opened. Inline CSS, one inline
+One file. No server, no build step, no dependencies. The page itself loads
+nothing from the network; the only network use is whatever the browser's own
+speech recognition service needs. Inline CSS, one inline
 `<script type="module">`, organised into clearly labelled sections, each with
 one job:
 
@@ -159,7 +160,8 @@ This is the part a careless build gets wrong. Required:
 ## DO NOT BUILD (SCOPE GUARDRAILS)
 
 - A server, accounts, sync, payments, notifications, social features
-- Calls to any model or speech API over the network
+- Calls from the page to a hosted model or a third-party speech service (the
+  browser's built-in speech recognition and synthesis are the voice pipeline)
 - Multiple personas, mood charts beyond a simple history list
 - Storing raw audio — transcripts only
 - Frameworks, CDNs, fonts or images from the network
@@ -167,7 +169,8 @@ This is the part a careless build gets wrong. Required:
 ## ACCEPTANCE TESTS
 
 - T1 Opening the HTML file in a current Chromium-based browser shows the
-     welcome screen with no console errors and no network requests
+     welcome screen with no console errors and no network requests made by
+     the page
 - T2 Disclosure, date-of-birth gate and passcode creation work; a reload asks
      for the passcode and a wrong one is refused
 - T3 Start a session: after granting the microphone, the user's speech

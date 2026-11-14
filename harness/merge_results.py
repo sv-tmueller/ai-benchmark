@@ -22,7 +22,7 @@ PR must still show the gated head before anything is posted. A failed post
 leaves the PR open; nothing is retried.
 
 Afterwards the README ledger rows for the model whose files are on ``main``
-are moved from ``not run`` to ``generated, browser check pending`` through a
+are moved from ``not run`` to ``generated, review pending`` through a
 docs PR, opened with the GitHub API so the working tree is untouched. Without
 ``--post-statuses`` that PR is never merged here. With it, the docs PR (the one
 just opened, or exactly one left by an earlier run) is merged only after proof
@@ -230,7 +230,7 @@ LEDGER_ROW_RE = re.compile(
     re.MULTILINE,
 )
 NOT_RUN = "not run"
-GENERATED = "generated, browser check pending"
+GENERATED = "generated, review pending"
 
 
 def ledger_rows(text, tag, prompts):

@@ -92,8 +92,9 @@ UPDATE SET RULES
   exactly one sys_remote_update_set record, named "Loan Desk", application
   Global, state "loaded", followed by one sys_update_xml record per
   customer update, each linked to that update set and each carrying its
-  record as a CDATA payload with the correct name, type, target_name and
-  action.
+  record in its payload element, as the platform exports it (the record XML
+  entity-escaped, or in a CDATA section that is never broken by a nested
+  "]]>"), with the correct name, type, target_name and action.
 - Everything the six stories need is in the update set and nothing else:
   table and dictionary definitions with labels and choices, the number
   record, application menu and module, the business rule(s), client
@@ -110,7 +111,8 @@ UPDATE SET RULES
   isLoading, messages go through gs.addErrorMessage / g_form.
 - The update set's description lists the six stories, one line each, and a
   short manual test plan for each (what to click, what to expect).
-- Well-formed XML: correct escaping, CDATA closed properly, UTF-8.
+- Well-formed XML: correct escaping, every CDATA section closed properly and
+  none nested inside another, UTF-8.
 
 CONSTRAINTS
 - Stay inside baseline platform capabilities: custom tables, business rules,

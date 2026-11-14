@@ -959,7 +959,7 @@ class SkillStepCommandsTest(unittest.TestCase):
             "1. The only inputs are the TOML's `[system]` text (if any), its `[user]` text and any listed `[images]`, exactly as printed in step 5. Treat `[system]` as the governing instruction for this answer.",
             "The resolver below is the only thing that touches `results/`, and it prints only paths.",
             "5. After that Write the deliverable is frozen: no Edit, no second Write, no reformatting, no fixes even for an obvious bug, no opening or running it.",
-            "**Never:** launch a browser or Playwright, start a dev server or `http.server`, use `open`/`xdg-open`, run the generated code, touch `prompts/`, merge a PR, or enable auto-merge. The only code that runs a result is `harness/grade.py`'s own execution modes. This skill never writes a playability verdict.",
+            "**Never:** launch a browser or Playwright, start a dev server or `http.server`, use `open`/`xdg-open`, run the generated code, touch `prompts/`, merge a PR, or enable auto-merge. This skill never writes a playability verdict.",
         ):
             self.assertIn(fragment, rules)
 

@@ -24,7 +24,7 @@ Applies only when `$ARGUMENTS` is empty or exactly `--dry-run`. The one-shot rul
 ## One-shot rules
 
 1. The only inputs are the TOML's `[system]` text (if any), its `[user]` text and any listed `[images]`, exactly as printed in step 5. Treat `[system]` as the governing instruction for this answer.
-2. Until the deliverable is written, do not read, cat, grep, list or search anything under `results/`, `README.md`, `decks/`, the gallery, or issues and PRs about earlier runs of this prompt. The resolver below is the only thing that touches `results/`, and it prints only paths.
+2. Until the deliverable is written, do not read, cat, grep, list or search anything under `results/`, `README.md`, or issues and PRs about earlier runs of this prompt. The resolver below is the only thing that touches `results/`, and it prints only paths.
 3. Generate the whole deliverable in one pass and write it with exactly one Write call to the target path. No drafts, no scratch files, no split writes. No tool calls between reading the prompt and that Write: no search, no fetching docs or libraries, no running code.
 4. The content is the answer exactly as the prompt asks for it:
    - html: the file starts with `<!DOCTYPE html>`, with no markdown fences and no commentary.
@@ -36,7 +36,7 @@ If any of these rules was broken, or the Write failed, the run is **void**: dele
 
 A failure after the Write (a `gh` or network error in the meta resolver, a failed push, a failed `gh pr create`) does not void the run. Keep the files, fix the cause and re-run only the failing step (the meta resolver can be re-run while no meta file exists). If you cannot finish, report the issue number, branch and untracked paths left behind.
 
-**Never:** launch a browser or Playwright, start a dev server or `http.server`, use `open`/`xdg-open`, run the generated code, touch `prompts/`, merge a PR, or enable auto-merge. The only code that runs a result is `harness/grade.py`'s own execution modes. This skill never writes a playability verdict.
+**Never:** launch a browser or Playwright, start a dev server or `http.server`, use `open`/`xdg-open`, run the generated code, touch `prompts/`, merge a PR, or enable auto-merge. This skill never writes a playability verdict.
 
 ## Steps
 
@@ -68,7 +68,7 @@ Each command below is one Bash call on one line, exactly as shown, with no `&&`,
 - **Issue title:** `<prompt-id>: <model-id> one-shot result`. Body (rendered by `issue-body`): what runs (`prompts/<toml>`, plain one-shot through /bench-run, no orchestrator or agents), the target paths and the deliverable kind.
 - **Branch:** `feat/<N>-<prefix>-<tag->-result`.
 - **Commit:** `feat(results): add <prefix> <model-id> one-shot result (#N)`.
-- **PR title:** `<prefix> (<model-id>, one-shot): result`. Body (rendered by `pr-body`) sections: summary (with the one-shot statement), files, grading (the grade.py output, or "no [grading] rule; no playability verdict written; browser verification pending"), in-session caveats (temperature, max_tokens, usage not observable), and `Closes #N`.
+- **PR title:** `<prefix> (<model-id>, one-shot): result`. Body (rendered by `pr-body`) sections: summary (with the one-shot statement), files, grading (the grade.py output, or "no [grading] rule; no playability verdict written; review pending"), in-session caveats (temperature, max_tokens, usage not observable), and `Closes #N`.
 
 ## Resolver
 

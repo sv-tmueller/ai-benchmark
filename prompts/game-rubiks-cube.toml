@@ -19,13 +19,13 @@ A classic 3x3x3 cube that feels like the real object in my hand: I turn the whol
 
 THE CUBE (required)
 - 26 visible cubies with rounded edges and a dark plastic body. Stickers in the standard color scheme: white opposite yellow, red opposite orange, blue opposite green.
-- The cube state is a real permutation of the cubies. Every turn moves exactly the nine cubies of one layer by a quarter turn; nothing else can change the state, so the cube can never reach an unsolvable position.
+- The cube state is a real permutation of the cubies. The only things that change it are quarter turns of a face layer (nine cubies), of a middle slice, or of the whole cube, so the cube can never reach an unsolvable position.
 - Every turn is animated (about 150 to 250 ms, eased). Turns requested during an animation are queued, never dropped and never applied to a half-turned layer.
 - After each turn the cubies snap to exact positions and right angles; no drift after hundreds of turns.
 
 CONTROLS (mouse and touch, via Pointer Events)
 - Drag on the background: orbit the whole cube freely. The cube stays centred and fully in frame.
-- Drag on a sticker: twist the layer that sticker belongs to, in the direction of the drag. The layer follows the pointer while dragging and snaps to the nearest quarter turn on release; a short drag snaps back.
+- Drag on a sticker: twist a layer that contains that sticker. The drag direction along the sticker's face picks which of the two possible layers turns, and which way (the face the sticker is on never turns from a drag on it). The layer follows the pointer while dragging and snaps to the nearest quarter turn on release; a short drag snaps back.
 - Mouse wheel or pinch: zoom within sensible limits.
 - Keyboard: U, D, L, R, F, B turn the face clockwise (as seen looking at that face); with Shift counter-clockwise. M, E, S turn the middle slices. X, Y, Z rotate the whole cube. The keys always refer to the cube as currently viewed: F is the face towards me.
 - On-screen buttons for the same face turns, so it is playable on a phone.
