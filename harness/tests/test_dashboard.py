@@ -16,6 +16,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 import urllib.parse
@@ -480,3 +481,154 @@ class RenderTest(TempRootCase):
     def test_render_is_deterministic(self):
         self._fixture()
         self.assertEqual(_page(self.root), _page(self.root))
+
+
+# Items as the page script builds them from the table: data-sort values (null
+# when the cell has none) and the displayed text, per column key.
+_NODE_ITEMS = [
+    {"index": 0, "values": {"n": "10", "t": "b10", "effort": "2"},
+     "texts": {"n": "10", "t": "b10", "effort": "high"}},
+    {"index": 1, "values": {"n": "9", "t": "a", "effort": "0"},
+     "texts": {"n": "9", "t": "a", "effort": "low"}},
+    {"index": 2, "values": {"n": None, "t": None, "effort": None},
+     "texts": {"n": "—", "t": "—", "effort": "turbo"}},
+    {"index": 3, "values": {"n": "100", "t": "b9", "effort": "0"},
+     "texts": {"n": "100", "t": "b9", "effort": "low"}},
+    {"index": 4, "values": {"n": "9", "t": "b9", "effort": "4"},
+     "texts": {"n": "9", "t": "b9", "effort": "max"}},
+    {"index": 5, "values": {"n": "10", "t": "a", "effort": "2"},
+     "texts": {"n": "10", "t": "a", "effort": "high"}},
+]
+
+_NODE_SNIPPET = """
+var types = {n: "num", t: "text", effort: "num"};
+var items = %s;
+function run(sortKey, sortDir, groupKey) {
+  var r = orderRows(items, sortKey, sortDir, groupKey, types);
+  return {order: r.items.map(function (i) { return i.index; }), groups: r.groups};
+}
+console.log(JSON.stringify({
+  unsorted: run(null, "asc", ""),
+  numAsc: run("n", "asc", ""),
+  numDesc: run("n", "desc", ""),
+  textAsc: run("t", "asc", ""),
+  textDesc: run("t", "desc", ""),
+  byEffort: run(null, "asc", "effort"),
+  byEffortThenNumDesc: run("n", "desc", "effort"),
+  compare: [compareValues("9", "10", "num"), compareValues("b9", "b10", "text"),
+            compareValues(null, "1", "num"), compareValues("1", null, "text"),
+            compareValues(null, null, "num")]
+}));
+"""
+
+
+@unittest.skipUnless(shutil.which("node"), "node is not installed")
+class ScriptUnderNodeTest(TempRootCase):
+    def _script(self):
+        _add_result(self.root, "alpha", "alpha_m_low.html", meta={})
+        return _parse(_page(self.root)).script_text()[0]
+
+    def _run_node(self, source):
+        path = self.root / "script.js"
+        path.write_text(source, encoding="utf-8")
+        return subprocess.run(["node", str(path)], capture_output=True, text=True,
+                              timeout=30, check=True)
+
+    def test_script_is_valid_javascript(self):
+        path = self.root / "check.js"
+        path.write_text(self._script(), encoding="utf-8")
+        subprocess.run(["node", "--check", str(path)], capture_output=True, text=True,
+                       timeout=30, check=True)
+
+    def test_sorting_and_grouping(self):
+        result = self._run_node(self._script() + _NODE_SNIPPET % json.dumps(_NODE_ITEMS))
+        out = json.loads(result.stdout)
+
+        self.assertEqual(out["unsorted"], {"order": [0, 1, 2, 3, 4, 5], "groups": []})
+        # Numbers sort as numbers (9 < 10 < 100); missing is last in both
+        # directions; ties (9, 9 and 10, 10) fall back to the starting index.
+        self.assertEqual(out["numAsc"]["order"], [1, 4, 0, 5, 3, 2])
+        self.assertEqual(out["numDesc"]["order"], [3, 0, 5, 1, 4, 2])
+        # Text sorts naturally (b9 < b10), also with ties by index.
+        self.assertEqual(out["textAsc"]["order"], [1, 5, 3, 4, 0, 2])
+        self.assertEqual(out["textDesc"]["order"], [0, 3, 4, 1, 5, 2])
+        # Effort groups run low to max, missing last, with label and count.
+        self.assertEqual(out["byEffort"]["groups"], [
+            {"label": "low", "count": 2}, {"label": "high", "count": 2},
+            {"label": "max", "count": 1}, {"label": "—", "count": 1}])
+        self.assertEqual(out["byEffort"]["order"], [1, 3, 0, 5, 4, 2])
+        # Rows inside a group follow the column sort.
+        self.assertEqual(out["byEffortThenNumDesc"]["order"], [3, 1, 0, 5, 4, 2])
+        self.assertEqual(out["compare"][0], -1)
+        self.assertLess(out["compare"][1], 0)
+        self.assertEqual(out["compare"][2:], [1, -1, 0])
+
+
+class MainTest(TempRootCase):
+    def _main(self, argv=()):
+        out, err = io.StringIO(), io.StringIO()
+        code = dashboard.main(list(argv), repo_root=self.root, out=out, err=err)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_writes_the_page_at_the_repo_root_and_prints_its_path(self):
+        _add_result(self.root, "alpha", "alpha_m_low.html", meta={})
+        code, out, err = self._main()
+
+        target = self.root / "dashboard.html"
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out, "%s\n" % target)
+        self.assertEqual(target.read_text(encoding="utf-8"), _page(self.root))
+
+    def test_second_run_overwrites_and_is_byte_identical_for_the_same_input(self):
+        _add_result(self.root, "alpha", "alpha_m_low.html", meta={})
+        self._main()
+        first = (self.root / "dashboard.html").read_bytes()
+        (self.root / "dashboard.html").write_text("PLANTED-MARKER", encoding="utf-8")
+
+        code, _, _ = self._main()
+
+        self.assertEqual(code, 0)
+        self.assertEqual((self.root / "dashboard.html").read_bytes(), first)
+        self.assertNotIn(b"PLANTED-MARKER", first)
+
+    def test_no_results_still_writes_the_empty_page_and_exits_zero(self):
+        for setup in ("gitkeep only", "no results folder"):
+            with self.subTest(setup):
+                if setup == "gitkeep only":
+                    _write(self.root / "results" / ".gitkeep")
+                code, out, err = self._main()
+                page = (self.root / "dashboard.html").read_text(encoding="utf-8")
+                self.assertEqual((code, err), (0, ""))
+                self.assertIn("No results found under results/ in this checkout.", page)
+                self.assertNotIn("<table", page)
+
+    def test_bad_sidecars_warn_on_stderr_and_still_exit_zero(self):
+        _add_result(self.root, "alpha", "alpha_m_low.html", meta="{nope", run="[1]")
+        code, _, err = self._main()
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            sorted(err.splitlines()),
+            sorted(["warning: results/alpha/alpha_m_low.meta.json: cannot read meta file",
+                    "warning: results/alpha/alpha_m_low.run.json: run file is not a JSON object"]),
+        )
+
+    def test_unwritable_target_exits_one_with_one_line_on_stderr(self):
+        (self.root / "dashboard.html").mkdir()
+        code, out, err = self._main()
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(len(err.splitlines()), 1)
+        self.assertTrue(err.startswith("error: "))
+
+    def test_unexpected_argument_is_a_usage_error(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as caught:
+                self._main(["--output", "x.html"])
+        self.assertEqual(caught.exception.code, 2)
+        self.assertFalse((self.root / "dashboard.html").exists())
+
+    def test_script_runs_directly_from_any_directory(self):
+        script = Path(dashboard.__file__)
+        result = subprocess.run([sys.executable, str(script), "-h"], cwd=self.root,
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("dashboard.html", result.stdout)

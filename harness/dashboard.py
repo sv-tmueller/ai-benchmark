@@ -476,3 +476,41 @@ def render(rows):
         '<table id="results">\n<thead><tr>%s</tr></thead>\n<tbody>\n%s\n</tbody>\n</table>\n'
         "<script>%s</script>\n</body>\n</html>\n" % (header, body, SCRIPT)
     )
+
+
+# --- command line -----------------------------------------------------------
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(
+        description="Write dashboard.html at the repo root: one row per result under "
+                    "results/, sortable and groupable, for opening straight from the "
+                    "checkout. The file is git-ignored; run again after pulling new results."
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv=None, repo_root=REPO_ROOT, out=None, err=None):
+    """CLI entry point; returns the process exit code.
+
+    0 when the file is written (also with no results or with warnings), 1 when
+    writing fails; argparse exits 2 on a usage error.
+    """
+    out = sys.stdout if out is None else out
+    err = sys.stderr if err is None else err
+    parse_args(sys.argv[1:] if argv is None else argv)
+
+    target = Path(repo_root).absolute() / "dashboard.html"
+    try:
+        rows, warnings = collect_rows(repo_root)
+        for warning in warnings:
+            print("warning: %s" % warning, file=err)
+        target.write_text(render(rows), encoding="utf-8")
+    except OSError as exc:
+        print("error: %s" % exc, file=err)
+        return 1
+    print(target, file=out)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

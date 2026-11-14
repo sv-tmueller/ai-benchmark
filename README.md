@@ -17,6 +17,15 @@ blueprints for multi-file projects, plus text, math, SQL, vision and probe
 prompts) and every result generated from them were removed; they remain in
 the git history.
 
+**Dashboard.** `python3 harness/dashboard.py` writes `dashboard.html` at the
+repo root with one row per result under `results/`: prompt, model, effort,
+generation date, and the duration, output tokens and cost from the result's
+`.run.json` where it has one (a dash otherwise). Open the file in a browser
+straight from the checkout; it needs no network. Click a column header to sort
+(click again to reverse), group by prompt, model or effort, and click a file
+name to open that result in a new tab. The file is git-ignored; run the command
+again after pulling new results.
+
 ---
 
 ## Prompts
