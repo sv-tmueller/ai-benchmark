@@ -1969,6 +1969,14 @@ class SkillStepCommandsTest(unittest.TestCase):
         self.assertIn("Never interpret, fix or complete it", batch)
         self.assertIn("--select='<answer>'", batch)
 
+    def test_batch_mode_all_skips_the_question(self):
+        flat = " ".join(batch_mode().split())
+        self.assertIn("If the arguments contain `all`, go to step 3 with no `--prompts`.", flat)
+
+    def test_batch_mode_asks_again_after_a_bad_answer(self):
+        flat = " ".join(batch_mode().split())
+        self.assertIn("means nothing was selected: relay it and ask again from (b).", flat)
+
     def test_every_batch_helper_command_in_the_skill_parses_with_the_helper(self):
         cmds = batch_helper_commands()
         flags = {a for c in cmds for a in c if a.startswith("--")}
