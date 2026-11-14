@@ -100,6 +100,13 @@ class GradeCliTest(unittest.TestCase):
             ),
         )
 
+        # Skipped: the batch run file next to a gradable result (#315). It has
+        # no paired meta, so only the skip suffix keeps it from being graded.
+        _write(
+            self.results / "math-basic" / "math-basic_glm_5_3_flash.run.json",
+            "42",
+        )
+
         # Skipped: prompt exists but carries no grading rule.
         _write(self.results / "nograde" / "nograde_glm_5_3_flash.md", "hi\n")
         _write(
@@ -177,6 +184,14 @@ class GradeCliTest(unittest.TestCase):
         self.assertNotIn("rebuild_verdict_model_x_grading.json", names)
         self.assertNotIn("smoke_home_grading.json", names)
         self.assertNotIn("game-alpha_promo_grading.json", names)
+
+    def test_run_file_is_skipped_not_graded(self):
+        code, _ = self._run(["--all"])
+
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            sorted(self.results.glob("*/*.run_grading.json")), [])
+        self.assertEqual(set(self._sidecars()), self.expected)
 
     def test_no_grading_rule_is_skipped_not_failed(self):
         self._run(["--all"])

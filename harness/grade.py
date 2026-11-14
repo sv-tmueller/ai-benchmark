@@ -43,6 +43,7 @@ PLAYABILITY_MODE = "playability"
 _SKIP_SUFFIXES = (
     META_SUFFIX,
     SIDECAR_SUFFIX,
+    ".run.json",
     "_review.html",
     ".png",
     ".jpg",
