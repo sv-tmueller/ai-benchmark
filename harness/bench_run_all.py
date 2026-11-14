@@ -47,8 +47,10 @@ patch; the real-git tests exercise the worktree helpers with it unpatched.
 """
 
 import argparse
+import base64
 import fcntl
 import json
+import math
 import os
 import re
 import shlex
@@ -313,7 +315,11 @@ def launch(claude_bin, slash, model, effort, timeout, repo_root, environ, pass_f
 
 @dataclass
 class ChildSummary:
-    """What the helper keeps of a child: never the result text, only markers."""
+    """What the helper keeps of a child: never the result text, only markers.
+
+    ``metrics`` is the six run-file values (see ``run_metrics``), or ``None``
+    when the child's output carries no usable usage data.
+    """
 
     exit_code: int
     timed_out: bool
@@ -325,6 +331,7 @@ class ChildSummary:
     denied_tools: list = field(default_factory=list)
     model_usage: list = field(default_factory=list)
     model_ok: bool | None = None
+    metrics: dict | None = None
 
 
 def _result_object(raw):
@@ -338,12 +345,55 @@ def _result_object(raw):
     return data if isinstance(data, dict) else None
 
 
+# The run file's keys, in contract order, with where each comes from.
+METRIC_KEYS = ("duration_seconds", "input_tokens", "output_tokens",
+               "cache_read_tokens", "cache_write_tokens", "cost_usd")
+_TOKEN_FIELDS = (("input_tokens", "input_tokens"),
+                 ("output_tokens", "output_tokens"),
+                 ("cache_read_tokens", "cache_read_input_tokens"),
+                 ("cache_write_tokens", "cache_creation_input_tokens"))
+
+
+def _count(value):
+    """``value`` if it is a non-negative ``int`` (never a ``bool``), else ``None``."""
+    ok = isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    return value if ok else None
+
+
+def _amount(value):
+    """``value`` if it is a non-negative finite ``int`` or ``float`` (never a ``bool``), else ``None``."""
+    ok = (isinstance(value, (int, float)) and not isinstance(value, bool)
+          and math.isfinite(value) and value >= 0)
+    return value if ok else None
+
+
+def run_metrics(data):
+    """The six run-file values from a child's JSON result object, or ``None``.
+
+    ``data`` is the parsed result. Usable means: ``usage`` is a dict whose four
+    token fields are non-negative ints, ``duration_ms`` and ``total_cost_usd``
+    are non-negative finite numbers (no bools anywhere), and the four token
+    counts add up to more than zero, which excludes an API error before any
+    model call. Anything else gives ``None``, never a partial result. Other
+    fields, ``is_error`` and ``subtype`` do not matter.
+    """
+    if not isinstance(data, dict) or not isinstance(data.get("usage"), dict):
+        return None
+    usage = data["usage"]
+    tokens = {key: _count(usage.get(source)) for key, source in _TOKEN_FIELDS}
+    duration, cost = _amount(data.get("duration_ms")), _amount(data.get("total_cost_usd"))
+    if None in tokens.values() or duration is None or cost is None or not sum(tokens.values()):
+        return None
+    return {"duration_seconds": round(duration / 1000, 1), **tokens, "cost_usd": round(float(cost), 6)}
+
+
 def summarize(run, model):
     """Reduce a child's output to exit state, markers and denied tool names.
 
     Only a ``STOP:`` line or a ``run void`` line is ever taken from the result
     text; the rest of it and every ``permission_denials[].tool_input`` (which
-    can contain the deliverable) are dropped here.
+    can contain the deliverable) are dropped here. The usage numbers become
+    ``metrics``, except for a child that timed out.
     """
     out = ChildSummary(run.exit_code, run.timed_out)
     data = _result_object(run.stdout)
@@ -369,6 +419,8 @@ def summarize(run, model):
     if isinstance(usage, dict):
         out.model_usage = sorted(usage)
         out.model_ok = model in usage
+    if not run.timed_out:
+        out.metrics = run_metrics(data)
     return out
 
 
@@ -793,6 +845,54 @@ def preflight(args, environ, repo_root):
 
 def _say(text=""):
     print(text, flush=True)
+
+
+METRICS_START = "<!-- run-metrics -->"
+METRICS_END = "<!-- /run-metrics -->"
+_CLOSES_LINE = re.compile(r"(?m)^Closes #\d+\r?$")
+
+
+def metrics_section(metrics, run_path):
+    """The PR description's "Run metrics" section, between its two markers."""
+    if metrics is None:
+        lines = ["Unavailable: the JSON output of the batch session that generated this result "
+                 "carried no usable usage data, so no run file was written."]
+    else:
+        lines = [
+            "Duration %.1f s, {:,} output tokens, cost %.6f USD.".format(metrics["output_tokens"])
+            % (metrics["duration_seconds"], metrics["cost_usd"]),
+            "",
+            "| Tokens | Count |",
+            "|---|---:|",
+            "| Input | {:,} |".format(metrics["input_tokens"]),
+            "| Output | {:,} |".format(metrics["output_tokens"]),
+            "| Cache read | {:,} |".format(metrics["cache_read_tokens"]),
+            "| Cache write | {:,} |".format(metrics["cache_write_tokens"]),
+            "",
+            "Read by `harness/bench_run_all.py` from the JSON output of the batch session that "
+            "generated this result, after it exited; that session cannot observe its own usage. "
+            "Recorded in `%s`." % run_path,
+        ]
+    return "\n".join([METRICS_START, "## Run metrics", "", *lines, METRICS_END])
+
+
+def splice_section(body, section):
+    """Put ``section`` into a PR description and return the new text.
+
+    A span between the two markers is replaced. Otherwise the section goes in
+    front of the first line that is exactly ``Closes #<n>``, or at the end.
+    """
+    body = body or ""
+    start = body.find(METRICS_START)
+    end = body.find(METRICS_END, start + len(METRICS_START)) if start >= 0 else -1
+    if start >= 0 and end >= 0:
+        return body[:start] + section + body[end + len(METRICS_END):]
+    closes = _CLOSES_LINE.search(body)
+    if closes is None:
+        head = body.rstrip("\n")
+        return (head + "\n\n" if head else "") + section + "\n"
+    head = body[:closes.start()].rstrip("\n")
+    return (head + "\n\n" if head else "") + section + "\n\n" + body[closes.start():]
 
 
 def describe(summary, pr):

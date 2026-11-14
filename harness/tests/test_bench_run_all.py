@@ -84,9 +84,14 @@ sys.exit(beh.get("exit", 0))
 '''
 
 
+USAGE = {"input_tokens": 28, "output_tokens": 77902,
+         "cache_read_input_tokens": 1082945, "cache_creation_input_tokens": 109699}
+
+
 def result_json(text="ok", **kw):
     d = {"type": "result", "subtype": "success", "is_error": False, "result": text,
-         "permission_denials": [], "modelUsage": {"claude-fable-5-2": {}}}
+         "permission_denials": [], "modelUsage": {"claude-fable-5-2": {}},
+         "usage": dict(USAGE), "duration_ms": 821274, "total_cost_usd": 5.088076999999998}
     d.update(kw)
     return d
 
@@ -270,11 +275,171 @@ class SummarizeTest(unittest.TestCase):
         events = [{"type": "system"}, result_json("STOP: x"), {"type": "other"}]
         self.assertEqual(self.summarize(events).stop_line, "STOP: x")
 
+    def test_usable_usage_is_kept_as_the_six_metrics_and_the_text_is_still_dropped(self):
+        out = self.summarize(result_json("SECRET-DELIVERABLE"))
+        self.assertEqual(out.metrics["output_tokens"], 77902)
+        self.assertEqual(out.metrics["duration_seconds"], 821.3)
+        self.assertNotIn("SECRET", repr(out))
+
+    def test_unusable_usage_leaves_no_metrics(self):
+        self.assertIsNone(self.summarize(result_json(usage=None)).metrics)
+
+    def test_a_timed_out_child_has_no_metrics_even_with_parseable_output(self):
+        self.assertIsNone(self.summarize(result_json(), timed_out=True).metrics)
+
+    def test_unparseable_output_has_no_metrics(self):
+        self.assertIsNone(self.summarize(None, stdout="not json").metrics)
+
     def test_unparseable_output_gives_no_json_and_no_text(self):
         out = self.summarize(None, stdout="not json SECRET")
         self.assertFalse(out.parsed)
         self.assertIsNone(out.stop_line)
         self.assertNotIn("SECRET", repr(out))
+
+
+class RunMetricsTest(unittest.TestCase):
+    def test_the_six_values_are_converted_and_rounded_in_contract_order(self):
+        out = bra.run_metrics(result_json())
+        self.assertEqual(list(out), ["duration_seconds", "input_tokens", "output_tokens",
+                                     "cache_read_tokens", "cache_write_tokens", "cost_usd"])
+        self.assertEqual(out, {"duration_seconds": 821.3, "input_tokens": 28,
+                               "output_tokens": 77902, "cache_read_tokens": 1082945,
+                               "cache_write_tokens": 109699, "cost_usd": 5.088077})
+
+    def test_whole_number_duration_and_cost_are_accepted(self):
+        out = bra.run_metrics(result_json(duration_ms=2000, total_cost_usd=3))
+        self.assertEqual((out["duration_seconds"], out["cost_usd"]), (2.0, 3.0))
+
+    def test_zero_tokens_in_some_fields_are_usable_when_the_sum_is_positive(self):
+        usage = {"input_tokens": 0, "output_tokens": 5,
+                 "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+        out = bra.run_metrics(result_json(usage=usage, duration_ms=0, total_cost_usd=0))
+        self.assertEqual(out["output_tokens"], 5)
+
+    def test_extra_and_unknown_fields_do_not_matter(self):
+        usage = dict(USAGE, server_tool_use={"web_search_requests": 0}, service_tier="standard")
+        out = bra.run_metrics(result_json(usage=usage, is_error=True, subtype="x", extra=1))
+        self.assertIsNotNone(out)
+
+    def test_unusable_data_gives_none_and_never_a_partial_result(self):
+        def without(key):
+            d = result_json()
+            del d[key]
+            return d
+
+        def with_usage(**kw):
+            return result_json(usage=dict(USAGE, **kw))
+
+        def without_usage(key):
+            d = result_json()
+            del d["usage"][key]
+            return d
+
+        cases = {
+            "not a dict": None,
+            "a list": [result_json()],
+            "usage missing": without("usage"),
+            "usage not a dict": result_json(usage=[1, 2, 3, 4]),
+            "duration missing": without("duration_ms"),
+            "cost missing": without("total_cost_usd"),
+            "input missing": without_usage("input_tokens"),
+            "output missing": without_usage("output_tokens"),
+            "cache read missing": without_usage("cache_read_input_tokens"),
+            "cache write missing": without_usage("cache_creation_input_tokens"),
+            "token as string": with_usage(output_tokens="77902"),
+            "token as float": with_usage(output_tokens=1.5),
+            "token as bool": with_usage(input_tokens=True),
+            "negative token": with_usage(cache_read_input_tokens=-1),
+            "token None": with_usage(output_tokens=None),
+            "duration as string": result_json(duration_ms="821274"),
+            "duration as bool": result_json(duration_ms=True),
+            "negative duration": result_json(duration_ms=-1),
+            "nan duration": result_json(duration_ms=float("nan")),
+            "inf duration": result_json(duration_ms=float("inf")),
+            "cost as string": result_json(total_cost_usd="5.08"),
+            "cost as bool": result_json(total_cost_usd=False),
+            "negative cost": result_json(total_cost_usd=-0.01),
+            "nan cost": result_json(total_cost_usd=float("nan")),
+            "inf cost": result_json(total_cost_usd=float("inf")),
+            "all-zero usage (API error before any model call)": result_json(
+                usage={"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0,
+                       "cache_creation_input_tokens": 0}, total_cost_usd=0, is_error=True),
+        }
+        for label, data in cases.items():
+            with self.subTest(label):
+                self.assertIsNone(bra.run_metrics(data))
+
+
+class MetricsSectionTest(unittest.TestCase):
+    METRICS = {"duration_seconds": 821.3, "input_tokens": 28, "output_tokens": 77902,
+               "cache_read_tokens": 1082945, "cache_write_tokens": 109699, "cost_usd": 5.088077}
+    PATH = "results/melon-jelly/melon-jelly_claude_fable_5_2_high.run.json"
+
+    def test_the_usable_section_shows_duration_output_tokens_cost_and_the_breakdown(self):
+        text = bra.metrics_section(self.METRICS, self.PATH)
+        self.assertTrue(text.startswith("<!-- run-metrics -->\n## Run metrics\n"))
+        self.assertTrue(text.endswith("<!-- /run-metrics -->"))
+        self.assertIn("Duration 821.3 s, 77,902 output tokens, cost 5.088077 USD.", text)
+        for row in ("| Input | 28 |", "| Output | 77,902 |",
+                    "| Cache read | 1,082,945 |", "| Cache write | 109,699 |"):
+            self.assertIn(row, text)
+        self.assertIn("`%s`" % self.PATH, text)
+        self.assertIn("harness/bench_run_all.py", text)
+
+    def test_a_short_duration_and_a_small_cost_keep_their_fixed_decimals(self):
+        text = bra.metrics_section(dict(self.METRICS, duration_seconds=2.0, cost_usd=0.5), self.PATH)
+        self.assertIn("Duration 2.0 s,", text)
+        self.assertIn("cost 0.500000 USD.", text)
+
+    def test_the_unavailable_section_says_so_and_names_no_run_file(self):
+        text = bra.metrics_section(None, self.PATH)
+        self.assertEqual(text, (
+            "<!-- run-metrics -->\n## Run metrics\n\n"
+            "Unavailable: the JSON output of the batch session that generated this result "
+            "carried no usable usage data, so no run file was written.\n"
+            "<!-- /run-metrics -->"))
+
+
+class SpliceSectionTest(unittest.TestCase):
+    SECTION = "<!-- run-metrics -->\n## Run metrics\n\nbody\n<!-- /run-metrics -->"
+    BODY = "## Summary\n\ntext\n\n## In-session caveats\n\nnotes\n\nCloses #315\n\nfooter\n"
+
+    def test_the_section_goes_in_front_of_the_closes_line(self):
+        out = bra.splice_section(self.BODY, self.SECTION)
+        self.assertEqual(out, "## Summary\n\ntext\n\n## In-session caveats\n\nnotes\n\n"
+                              + self.SECTION + "\n\nCloses #315\n\nfooter\n")
+
+    def test_without_a_closes_line_the_section_is_appended(self):
+        out = bra.splice_section("## Summary\n\ntext\n", self.SECTION)
+        self.assertEqual(out, "## Summary\n\ntext\n\n" + self.SECTION + "\n")
+
+    def test_a_closes_mention_inside_a_line_is_not_the_anchor(self):
+        body = "This PR Closes #1 sometimes.\n\nmore\n"
+        self.assertTrue(bra.splice_section(body, self.SECTION).endswith(self.SECTION + "\n"))
+
+    def test_an_empty_body_becomes_just_the_section(self):
+        self.assertEqual(bra.splice_section("", self.SECTION), self.SECTION + "\n")
+        self.assertEqual(bra.splice_section(None, self.SECTION), self.SECTION + "\n")
+
+    def test_a_second_application_replaces_the_span_between_the_markers(self):
+        first = bra.splice_section(self.BODY, self.SECTION)
+        newer = "<!-- run-metrics -->\n## Run metrics\n\nnewer\n<!-- /run-metrics -->"
+        second = bra.splice_section(first, newer)
+        self.assertEqual(second.count("<!-- run-metrics -->"), 1)
+        self.assertEqual(second.count("<!-- /run-metrics -->"), 1)
+        self.assertIn("newer", second)
+        self.assertNotIn("\nbody\n", second)
+        self.assertEqual(second, self.BODY.replace("Closes #315", newer + "\n\nCloses #315"))
+
+    def test_applying_the_same_section_twice_changes_nothing(self):
+        once = bra.splice_section(self.BODY, self.SECTION)
+        self.assertEqual(bra.splice_section(once, self.SECTION), once)
+
+    def test_a_lone_start_marker_is_not_a_span(self):
+        body = "<!-- run-metrics -->\nstray\n\nCloses #4\n"
+        out = bra.splice_section(body, self.SECTION)
+        self.assertEqual(out.count("<!-- /run-metrics -->"), 1)
+        self.assertIn("stray", out)
 
 
 class LaunchTest(FakeClaudeCase):
