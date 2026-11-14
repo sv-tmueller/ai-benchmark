@@ -6,8 +6,13 @@
 headless ``claude -p "/bench-run <id>"`` child with the same model and effort
 as the calling session, a narrow tool allowlist and
 ``--permission-mode dontAsk``, so every generation is one isolated one-shot
-session. The helper reads no result content: it looks at file names, git and
-``gh pr list`` only, and never merges anything itself.
+session. The helper reads no result content: it looks at file names, git,
+``gh pr list`` and, for a PR a child opened, ``gh pr view``, and never merges
+anything itself. It does write once per such PR: it adds the run metrics of the
+child (duration, tokens, cost, read from the child's JSON output after it
+exited) as ``<deliverable stem>.run.json`` through the GitHub contents API, and
+puts a "Run metrics" section into the PR description with ``gh pr edit``. A
+failure there is a note in the report line, never a halt or a changed exit code.
 
 A batch runs in a private git worktree for its model and effort level,
 ``.claude/worktrees/bench-run-<model_tag>_<effort>``, detached at
