@@ -71,8 +71,8 @@ def discover_modes(package=MODES_PACKAGE):
 def module_name_for_mode(mode_name):
     """Map a ``[grading].mode`` string to its module name (D1a).
 
-    TOML mode strings may be hyphenated (``sql-exec``) while module files are
-    underscored (``sql_exec.py``); the sidecar ``mode`` field keeps the
+    TOML mode strings may be hyphenated (``some-mode``) while module files are
+    underscored (``some_mode.py``); the sidecar ``mode`` field keeps the
     literal TOML string. Non-string values are returned unchanged.
     """
     if isinstance(mode_name, str):

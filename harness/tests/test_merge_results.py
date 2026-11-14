@@ -384,9 +384,9 @@ class LedgerTests(unittest.TestCase):
     def test_row_updated_when_both_files_on_main(self):
         new, updated, _ = rewrite()
         self.assertEqual(status_cell(new, "results/alpha/alpha_claude_fable_5_2.html"),
-                         "generated, browser check pending")
+                         "generated, review pending")
         self.assertEqual(status_cell(new, "results/beta/beta_claude_fable_5_2.md"),
-                         "generated, browser check pending")
+                         "generated, review pending")
         self.assertEqual([row["pid"] for row in updated], ["game-alpha", "app-beta"])
 
     def test_row_untouched_when_deliverable_not_on_main(self):
@@ -781,7 +781,7 @@ class MergeTests(OrchestrationBase):
         new_readme = base64.b64decode(body["content"]).decode("utf-8")
         self.assertEqual(
             status_cell(new_readme, "results/alpha/alpha_claude_fable_5_2.html"),
-            "generated, browser check pending")
+            "generated, review pending")
         self.assertEqual(
             status_cell(new_readme, "results/beta/beta_claude_fable_5_2.md"), "not run")
         create = self.fake.find("gh", "pr", "create")[0][0]
@@ -912,7 +912,7 @@ class BehindTests(OrchestrationBase):
 
 DONE_README = README.replace(
     "alpha_claude_fable_5_2.html` | not run",
-    "alpha_claude_fable_5_2.html` | generated, browser check pending")
+    "alpha_claude_fable_5_2.html` | generated, review pending")
 A, B = "a" * 40, "b" * 40
 
 
@@ -1084,7 +1084,7 @@ class ResultStatusTests(OrchestrationBase):
         second = make_pr("beta", number=8, ext="md", headRefOid=B)
         readme = DONE_README.replace(
             "beta_claude_fable_5_2.md` | not run",
-            "beta_claude_fable_5_2.md` | generated, browser check pending")
+            "beta_claude_fable_5_2.md` | generated, review pending")
         self.fake = build_fake(prs=[first, second], readme=readme,
                                main_after=MAIN_PATHS | set(BETA_FILES), strict_api=True)
         script_status(self.fake, B)
@@ -1182,7 +1182,7 @@ class DocsPrTests(OrchestrationBase):
 
     def test_rows_already_updated_need_no_docs_pr(self):
         done = README.replace("alpha_claude_fable_5_2.html` | not run",
-                              "alpha_claude_fable_5_2.html` | generated, browser check pending")
+                              "alpha_claude_fable_5_2.html` | generated, review pending")
         self.fake = build_fake(main_before=MAIN_PATHS | set(ALPHA_FILES), readme=done)
         code, out, _ = run_main(self.fake)
         self.assertEqual(code, 0)

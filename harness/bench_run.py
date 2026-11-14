@@ -41,7 +41,7 @@ from harness.modes._common import derive_model, model_tag  # noqa: E402
 MODES = ("plan", "meta", "prompt", "issue-body", "pr-body", "grade")
 WORK_DIR = ".bench-run"
 KINDS = {"html": "single HTML file", "xml": "single XML file"}
-NO_GRADING = "no [grading] rule; no playability verdict written; browser verification pending"
+NO_GRADING = "no [grading] rule; no playability verdict written; review pending"
 
 
 class Stop(Exception):

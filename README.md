@@ -47,7 +47,7 @@ name) and a `[system]`/`[user]` text pair.
 
 | Prompt | Deliverable | Runtime needs |
 |---|---|---|
-| `app-stillwater.toml` | HTML: voice-first AI companion that remembers sessions, browser-only | A Chromium-based browser and a microphone (text fallback otherwise); no network |
+| `app-stillwater.toml` | HTML: voice-first AI companion that remembers sessions, browser-only | A Chromium-based browser and a microphone (text fallback otherwise); the page loads nothing itself, but Chrome's speech recognition needs to be online |
 
 ### Text tasks
 
@@ -126,7 +126,7 @@ brace/paren balance, and console capture across 10 s. The result is labelled
 own. A result has no playability verdict until this check has run; generation
 alone does not earn one.
 
-**Status.** A row moves from `not run` to `generated, browser check pending`
+**Status.** A row moves from `not run` to `generated, review pending`
 when its result and sidecar are on `main`.
 
 | Prompt | Deliverable | Target path | Status |
@@ -155,7 +155,7 @@ its `.meta.json` (plus `_grading.json` only for graded prompts) as new files,
 and the checks are green. A PR that fails the gate, or that GitHub refuses to
 merge, stays open with the reason printed; the command never uses `--admin`
 or `--auto`. Afterwards it opens one docs PR that moves the model's `not run`
-rows whose files are now on `main` to `generated, browser check pending`;
+rows whose files are now on `main` to `generated, review pending`;
 that PR is left for you to merge unless the opt-in below is used. Exit codes:
 0 done, 1 something stayed open, 2 bad model id or failed preflight.
 

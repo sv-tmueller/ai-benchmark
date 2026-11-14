@@ -6,8 +6,7 @@ The rule comes from the prompt TOML's ``[grading]`` table:
     mode     = "contains"
     expected = "42"
 
-``expected`` is compared as text, so numeric answers (as in
-``vision-shape-count.toml``) work without quoting.
+``expected`` is compared as text, so numeric answers work without quoting.
 """
 
 from ._common import derive_model

@@ -57,7 +57,7 @@ entities: hero  flight  laser  airliner  holding  jet  missile  wreck
 vfx:      particles  explosions  trails  speedlines
 shaders:  radialBlur  grade  fire  water  windows  cloud
 game:     mission  camera  hud  cinematics  scoring  debug
-selftest  flight  collision  holding  mission
+selftest  flightChecks  collisionChecks  holdingChecks  missionChecks
 main               bootstrap: create systems, start the loop
 ```
 - Architecture rules: the simulation sections (`flight`, `holding`, `collision`, `jet` AI,
@@ -369,13 +369,13 @@ changes the feel.
 Opening the file with `?selftest` in the URL skips the game, runs the checks below against the
 simulation sections and shows one PASS or FAIL line per check, with the measured value, on a
 plain page and in the console.
-- `flight`: turn rate at 190 m/s is below turn rate at 0 m/s; terminal speeds land within 5% of
+- `flightChecks`: turn rate at 190 m/s is below turn rate at 0 m/s; terminal speeds land within 5% of
 CONFIG for cruise and boost; 10,000 steps of random input never produce NaN.
-- `collision`: a sphere overlapping any AABB is pushed fully outside; the grid lookup agrees with
+- `collisionChecks`: a sphere overlapping any AABB is pushed fully outside; the grid lookup agrees with
 brute force on 1,000 random points.
-- `holding`: 8 m/s² of brake from 110 m/s reaches under 30 m/s within 12 s; 10 m/s² sustained
+- `holdingChecks`: 8 m/s² of brake from 110 m/s reaches under 30 m/s within 12 s; 10 m/s² sustained
 crosses stress 70; a tail grab tears at 1.5 s and drops hull by 30.
-- `mission`: every phase transition in order; every fail state produces its reason; retry restores
+- `missionChecks`: every phase transition in order; every fail state produces its reason; retry restores
 the phase checkpoint.
 ## Self-check before you finish (fix whatever fails)
 - The file opens with zero console errors and no network requests beyond the import map. With

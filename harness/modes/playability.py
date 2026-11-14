@@ -1,14 +1,13 @@
 """``playability`` grading mode: read the CDP-harness verdict from the meta.
 
 This mode needs no ``[grading]`` block. The verdict lives in the result's
-paired ``<stem>.meta.json``, in one of two shapes found across ``results/``:
+paired ``<stem>.meta.json``, in one of two accepted shapes:
 
 - newer: ``meta["playability_verification"]["playability_verdict"]``
 - older: ``meta["playability"]["label"]``
 
 ``PLAYABLE_VERIFIED`` is the only passing label; every other label
-(``BOOTS_ONLY``, ``BROKEN_AT_BOOT``, ``BLUEPRINT_ONLY``,
-``BLUEPRINT_INCOMPLETE``, ``SCRIPT_TRUNCATED``) fails. Existing labels are
+(``BOOTS_ONLY``, ``BROKEN_AT_BOOT``, ``SCRIPT_TRUNCATED``, ...) fails. Existing labels are
 taken as ground truth — no re-verification happens here.
 """
 

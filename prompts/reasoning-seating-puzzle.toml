@@ -31,9 +31,10 @@ Deliver the answer as a single, self-contained HTML page (inline CSS, no CDN,
 no external assets, no JavaScript needed):
 - the five clues, restated;
 - the reasoning as a numbered list of steps, in the order you made them;
-- the final answer in one element with id="answer": a row of five labelled
-  seats, 1 to 5 from left to right, each showing the name of the person
-  sitting there.
+- the final answer in one element with id="answer": every arrangement that
+  satisfies all five clues, each as its own row of five labelled seats, 1 to
+  5 from left to right, each seat showing the name of the person sitting
+  there. If exactly one arrangement is possible, that is one row.
 
 The deliverable is one file, reasoning-seating-puzzle.html, starting with <!DOCTYPE html>, no markdown fences, no explanations.
 '''
