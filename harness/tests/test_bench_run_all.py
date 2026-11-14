@@ -444,7 +444,7 @@ class FakeGit:
     def init(self, **overrides):
         st = {"origin_main": "abc", "gh_ok": True, "main_files": [], "prs": [], "next_pr": 1,
               "trees": {str(self.main_root): {"branch": "main", "head": "abc", "dirty_tracked": []}},
-              "worktrees": []}
+              "worktrees": [], "unmerged": ["child-commit"]}
         st.update(overrides)
         self.save(st)
 
@@ -568,6 +568,8 @@ class FakeGit:
             return self.done(tree["head"] + "\n")
         if cmd == ["git", "rev-parse", "origin/main"]:
             return self.done(st["origin_main"] + "\n")
+        if cmd == ["git", "merge-base", "--is-ancestor", "HEAD", "origin/main"]:
+            return self.done(rc=1 if tree["head"] in st["unmerged"] else 0)
         if cmd == ["git", "rev-parse", "--show-toplevel"]:
             return self.done(str(root) + "\n")
         if cmd[:2] == ["git", "status"]:
@@ -1041,7 +1043,28 @@ class WorktreeReuseTest(BatchCase):
         first = self.calls()[0]["start_tree"]
         self.assertEqual((first["branch"], first["head"]), ("", "abc"))
 
-    def test_a_clean_worktree_left_detached_at_an_old_head_is_synced_to_origin_main(self):
+    def test_a_clean_worktree_left_on_a_branch_at_an_unmerged_commit_is_still_reused(self):
+        self.git.register(self.wt, branch="feat/9-x", head="child-commit")
+        code, out = self.batch()
+        self.assertEqual(code, 0, out)
+        self.assertEqual([c for c in self.git.calls if c[:3] == ["git", "worktree", "add"]], [])
+        self.assertEqual(self.calls()[0]["start_tree"]["head"], "abc")
+
+    def test_a_clean_worktree_detached_at_an_unmerged_commit_stops_the_run_and_is_left_alone(self):
+        self.git.register(self.wt, branch="", head="child-commit")
+        code, out = self.batch()
+        self.assertEqual(code, 2)
+        self.assertRegex(out, r"(?m)^STOP: worktree: %s is detached at child-commit, which is not on "
+                              r"origin/main; inspect it, put a branch on the commit to keep it, "
+                              r"then git worktree remove %s$" % (re.escape(str(self.wt)), re.escape(str(self.wt))))
+        self.assertEqual(self.calls(), [])
+        self.assertEqual(self.git.tree(self.wt), {"branch": "", "head": "child-commit", "dirty_tracked": []})
+        self.assertTrue(self.wt.exists())
+        touching = [c for c in self.git.calls
+                    if c[:2] == ["git", "switch"] or (c[:2] == ["git", "worktree"] and c[2] in ("remove", "add", "prune"))]
+        self.assertEqual(touching, [])
+
+    def test_a_clean_worktree_detached_at_an_old_head_is_synced_to_origin_main(self):
         self.git.register(self.wt, branch="", head="old")
         self.batch()
         self.assertEqual(self.calls()[0]["start_tree"]["head"], "abc")
@@ -1126,7 +1149,7 @@ class WorktreeFinishTest(BatchCase):
         code, out = self.batch()
         self.assertNotEqual(code, 0)
         self.assertEqual(self.remove_calls(), [])
-        self.assertIn("worktree: kept %s (halted; the next run reuses it only if it is clean)" % self.wt, out)
+        self.assertIn("worktree: kept %s (halted; the next run reuses it only if it is clean and on a branch or origin/main)" % self.wt, out)
         self.assertTrue((self.wt / "results/lava-lamp/stray.txt").exists())
 
     def test_the_run_after_a_halt_stops_on_the_dirty_worktree(self):
@@ -1158,6 +1181,18 @@ class WorktreeSettleTest(BatchCase):
         self.assertIn("worktree: kept %s (halted" % self.wt, out)
         self.assertTrue(self.wt.exists())
         self.assertNotEqual(code, 0)
+
+    def test_the_run_after_a_detached_commit_halt_stops_instead_of_dropping_the_commit(self):
+        self.set_children(by_prompt={"game-melon-jelly": {"effects": {"commit": True}}})
+        self.batch()
+        before = len(self.calls())
+        code, out = self.batch()
+        self.assertEqual(code, 2)
+        self.assertEqual(len(self.calls()), before)
+        self.assertRegex(out, r"(?m)^STOP: worktree: .*bench-run-claude_fable_5_2_high is detached at child-commit")
+        self.assertEqual(self.git.tree(self.wt)["head"], "child-commit")
+        self.assertTrue(self.wt.exists())
+        self.assertEqual([c for c in self.git.calls if c[:3] == ["git", "worktree", "remove"]], [])
 
     def test_a_failed_return_to_origin_main_halts(self):
         def failing(cmd, **kw):
@@ -1292,6 +1327,18 @@ class DryRunTest(BatchCase):
         self.assertEqual(self.git.tree(self.wt), {"branch": "feat/9-x", "head": "old", "dirty_tracked": []})
         self.assertFalse(bra.lock_path(self.wt).exists())
 
+    def test_dry_run_fails_the_worktree_check_for_a_worktree_detached_at_an_unmerged_commit(self):
+        self.git.register(self.wt, branch="", head="child-commit")
+        code, out = self.batch("--dry-run")
+        self.assertNotEqual(code, 0)
+        self.assertRegex(out, r"(?m)^check FAIL: worktree - .* is detached at child-commit, which is not on origin/main")
+        self.assertEqual(self.git.tree(self.wt), {"branch": "", "head": "child-commit", "dirty_tracked": []})
+
+    def test_dry_run_says_would_reuse_for_a_branch_at_an_unmerged_commit(self):
+        self.git.register(self.wt, branch="feat/9-x", head="child-commit")
+        _, out = self.batch("--dry-run")
+        self.assertRegex(out, r"(?m)^check ok: worktree - would reuse ")
+
     def test_dry_run_says_would_prune_and_create_for_a_registered_missing_worktree(self):
         self.git.register(self.wt)
         shutil.rmtree(self.wt)
@@ -1370,6 +1417,19 @@ class RealGitWorktreeTest(unittest.TestCase):
         self.assertEqual(self.git("branch", "--show-current", cwd=self.wt), "")
         self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.wt), self.git("rev-parse", "origin/main"))
         self.assertTrue(self.git("branch", "--list", "feat/1-x"))  # the child's commit stays reachable
+
+    def test_a_detached_commit_not_on_origin_main_is_a_stop_but_a_branch_on_it_is_reusable(self):
+        bra.setup_worktree(self.repo, self.wt)
+        self.git("commit", "-q", "--allow-empty", "-m", "child", cwd=self.wt)
+        sha = self.git("rev-parse", "HEAD", cwd=self.wt)
+        with self.assertRaises(bra.WorktreeStop) as ctx:
+            bra.classify_worktree(self.repo, self.wt)
+        self.assertIn(str(self.wt), str(ctx.exception))
+        self.assertIn(sha, str(ctx.exception))
+        self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.wt), sha)
+        self.git("switch", "-q", "-c", "feat/1-x", cwd=self.wt)
+        self.assertEqual(bra.setup_worktree(self.repo, self.wt), "reuse")
+        self.assertTrue(self.git("branch", "--list", "feat/1-x"))
 
     def test_remove_succeeds_with_only_ignored_files_and_is_refused_for_untracked_results(self):
         bra.setup_worktree(self.repo, self.wt)

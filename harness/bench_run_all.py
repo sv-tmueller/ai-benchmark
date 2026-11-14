@@ -16,7 +16,8 @@ batches for other models or effort levels can run from it at the same time.
 An exclusive ``flock`` on ``<worktree>.lock`` (inherited by every child)
 stops a second batch for the same model and effort while one is running. After
 a run that ended without a halt the worktree is removed; after a halt it is
-kept and the next run reuses it only if it is clean. ``--smoke`` and
+kept and the next run reuses it only if it is clean and not detached at a commit
+not on ``origin/main``. ``--smoke`` and
 ``--dry-run`` create nothing.
 
 Usage (from the repo root)::
@@ -571,7 +572,9 @@ def classify_worktree(repo_root, wt):
     """Decide what setup would do: ``create``, ``prune and create`` or ``reuse``.
 
     Raises ``WorktreeStop`` for a folder that is not a worktree of this checkout
-    and for a kept worktree that is not clean. This runs before any git
+    and for a kept worktree that is not clean or that is detached at a commit
+    not on ``origin/main`` (switching away would orphan it; one on a branch is
+    reusable, the branch keeps its commit). This runs before any git
     command inside ``wt``: in an unregistered folder git walks up to the main
     checkout and would act on that instead.
     """
@@ -593,6 +596,14 @@ def classify_worktree(repo_root, wt):
     if lines:
         raise WorktreeStop("%s has %d changed or untracked paths from an earlier run; "
                            "inspect it, then git worktree remove --force %s" % (wt, len(lines), wt))
+    if not _git_out(wt, "branch", "--show-current"):
+        head = _git_out(wt, "rev-parse", "HEAD")
+        if not head:
+            raise WorktreeStop("cannot read HEAD of %s" % wt)
+        if _run(["git", "merge-base", "--is-ancestor", "HEAD", "origin/main"], cwd=wt).returncode:
+            raise WorktreeStop("%s is detached at %s, which is not on origin/main; inspect it, "
+                               "put a branch on the commit to keep it, then git worktree remove %s"
+                               % (wt, head, wt))
     return "reuse"
 
 
@@ -619,7 +630,7 @@ def finish_worktree(repo_root, wt, halt):
     untracked files and ignores git-ignored ones such as ``.bench-run/``.
     """
     if halt:
-        return "worktree: kept %s (halted; the next run reuses it only if it is clean)" % wt
+        return "worktree: kept %s (halted; the next run reuses it only if it is clean and on a branch or origin/main)" % wt
     done = _run(["git", "worktree", "remove", str(wt)], cwd=repo_root)
     if done.returncode == 0:
         return "worktree: removed %s" % wt

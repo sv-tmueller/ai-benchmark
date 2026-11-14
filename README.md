@@ -104,7 +104,7 @@ never in your checkout, so batches for other models or effort levels can run
 side by side from the same checkout; a second batch for the same model and
 effort stops while the first is running. After a run that ended without a halt
 the worktree is removed; after a halt it is kept, and the next run reuses it
-only if it is clean.
+only if it is clean and not detached at a commit that is not on `origin/main`.
 `/bench-run --dry-run` prints the checks, which prompts would run or be
 skipped, and the exact child command, and starts nothing. A prompt that
 already has a result on `origin/main` or in an open PR is skipped, so
