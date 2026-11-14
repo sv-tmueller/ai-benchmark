@@ -10,6 +10,7 @@ import io
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -56,10 +57,15 @@ if eff:
         path = sc["files"][pid] if rel == "{target}" else rel
         os.makedirs(os.path.dirname(path), exist_ok=True)
         open(path, "w").write("SECRET-DELIVERABLE")
+    tree = st["trees"][os.path.realpath(os.getcwd())]  # the tree this child runs in
     if "branch" in eff:
-        st["branch"] = eff["branch"]
+        tree["branch"] = eff["branch"]
     if "dirty_tracked" in eff:
-        st["dirty_tracked"] = eff["dirty_tracked"]
+        tree["dirty_tracked"] = eff["dirty_tracked"]
+    if eff.get("commit"):
+        tree["head"] = "child-commit"
+    if "origin_main" in eff:
+        st["origin_main"] = eff["origin_main"]
     json.dump(st, open(sp, "w"))
 if beh.get("sleep"):
     time.sleep(beh["sleep"])
@@ -393,14 +399,26 @@ class SmokeTest(FakeClaudeCase):
 class FakeGit:
     """Stands in for ``git`` and ``gh`` behind the helper's ``_run`` seam.
 
-    The working-tree state is the real temp repo directory (untracked = any
-    file outside ``prompts/`` and ``harness/``); branch, PRs and so on live in
-    ``state.json``, which the fake claude can change too.
+    Every checkout has a tree: the main repo and each worktree that
+    ``git worktree add`` registered. The working-tree state of a tree is its
+    real temp directory (untracked = any file outside ``prompts/``,
+    ``harness/`` and the git-ignored ``.bench-run/``, and for the main repo
+    ``.claude/worktrees/``); its branch, head and tracked changes live in
+    ``state.json``, which the fake claude changes too, for the tree it runs
+    in. ``origin_main``, the PRs and ``gh`` state are shared by all trees,
+    like the refs of a real clone. A command resolves to the nearest tree at
+    or above its ``cwd``, so a git call in an unregistered folder under the
+    repo lands on the main checkout, as real git would.
     """
 
     def __init__(self, case):
         self.case = case
-        self.calls = []
+        self.calls = []  # every command, in order
+        self.cwds = []   # the resolved cwd of each command, parallel to calls
+
+    @property
+    def main_root(self):
+        return self.case.repo.resolve()
 
     def state(self):
         return json.loads((self.case.dir / "state.json").read_text())
@@ -408,41 +426,149 @@ class FakeGit:
     def save(self, st):
         (self.case.dir / "state.json").write_text(json.dumps(st))
 
+    def init(self, **overrides):
+        st = {"origin_main": "abc", "gh_ok": True, "main_files": [], "prs": [], "next_pr": 1,
+              "trees": {str(self.main_root): {"branch": "main", "head": "abc", "dirty_tracked": []}},
+              "worktrees": []}
+        st.update(overrides)
+        self.save(st)
+
+    def set_main(self, **fields):
+        """Change the main checkout's ``branch``, ``head`` or ``dirty_tracked``."""
+        self.set_tree(self.main_root, **fields)
+
+    def set_tree(self, root, **fields):
+        st = self.state()
+        st["trees"][str(Path(root).resolve())].update(fields)
+        self.save(st)
+
+    def set_shared(self, **fields):
+        st = self.state()
+        st.update(fields)
+        self.save(st)
+
+    def tree(self, root=None):
+        return self.state()["trees"][str(Path(root or self.main_root).resolve())]
+
+    def register(self, root, branch="", head="abc", dirty_tracked=()):
+        """Register ``root`` as a worktree, as an earlier run would have left it."""
+        root = Path(root).resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        st = self.state()
+        st["worktrees"].append(str(root))
+        st["trees"][str(root)] = {"branch": branch, "head": head, "dirty_tracked": list(dirty_tracked)}
+        self.save(st)
+
+    def calls_in(self, root):
+        root = Path(root).resolve()
+        return [c for c, w in zip(self.calls, self.cwds) if w == root]
+
     @staticmethod
     def done(out="", rc=0, err=""):
         return subprocess.CompletedProcess([], rc, out, err)
 
-    def untracked(self):
-        repo = self.case.repo
+    @staticmethod
+    def root_of(st, cwd):
+        here = Path(cwd).resolve()
+        for cand in (here, *here.parents):
+            if str(cand) in st["trees"]:
+                return cand
+        raise AssertionError("git ran outside every tree: %s" % cwd)
+
+    def untracked(self, root=None):
+        root = Path(root or self.main_root).resolve()
+        skip = ["prompts/", "harness/", ".bench-run/"]
+        if root == self.main_root:
+            skip.append(".claude/worktrees/")
         found = []
-        for p in sorted(repo.rglob("*")):
-            rel = p.relative_to(repo).as_posix()
-            if p.is_file() and not rel.startswith(("prompts/", "harness/")):
+        for p in sorted(root.rglob("*")):
+            rel = p.relative_to(root).as_posix()
+            if p.is_file() and not rel.startswith(tuple(skip)):
                 found.append(rel)
         return found
+
+    def worktree(self, cmd, st, root):
+        sub = cmd[2]
+        if sub == "list":
+            out = "worktree %s\nHEAD %s\nbranch refs/heads/%s\n\n" % (
+                self.main_root, st["trees"][str(self.main_root)]["head"],
+                st["trees"][str(self.main_root)]["branch"])
+            for path in st["worktrees"]:
+                out += "worktree %s\nHEAD %s\ndetached\n" % (path, st["trees"][path]["head"])
+                if not Path(path).exists():
+                    out += "prunable gitdir file points to non-existent location\n"
+                out += "\n"
+            return self.done(out)
+        if sub == "add":
+            path = Path(cmd[4]).resolve()
+            if str(path) in st["worktrees"]:
+                return self.done(rc=128, err="fatal: '%s' is a missing but already registered worktree;\n" % path)
+            if path.exists() and any(path.iterdir()):
+                return self.done(rc=128, err="fatal: '%s' already exists\n" % path)
+            path.mkdir(parents=True, exist_ok=True)
+            for sub_dir in ("prompts", "harness"):
+                if (self.main_root / sub_dir).is_dir():
+                    shutil.copytree(self.main_root / sub_dir, path / sub_dir)
+            st["worktrees"].append(str(path))
+            st["trees"][str(path)] = {"branch": "", "head": st["origin_main"], "dirty_tracked": []}
+            self.save(st)
+            return self.done()
+        if sub == "remove":
+            path = Path(cmd[-1]).resolve()
+            if str(path) not in st["worktrees"]:
+                return self.done(rc=128, err="fatal: '%s' is not a working tree\n" % path)
+            if st["trees"][str(path)]["dirty_tracked"] or self.untracked(path):
+                if "--force" not in cmd:
+                    return self.done(rc=128, err="fatal: '%s' contains modified or untracked files, "
+                                                 "use --force to delete it\n" % path)
+            shutil.rmtree(path)
+            st["worktrees"].remove(str(path))
+            del st["trees"][str(path)]
+            self.save(st)
+            return self.done()
+        if sub == "prune":
+            for path in [p for p in st["worktrees"] if not Path(p).exists()]:
+                st["worktrees"].remove(path)
+                del st["trees"][path]
+            self.save(st)
+            return self.done()
+        raise AssertionError("unexpected worktree command %r" % (cmd,))
 
     def __call__(self, cmd, cwd=None, timeout=None):
         self.calls.append(list(cmd))
         st = self.state()
+        self.cwds.append(Path(cwd).resolve() if cwd else None)
         if cmd[0] not in ("git", "gh"):
             return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+        root = self.root_of(st, cwd or self.main_root)
+        tree = st["trees"][str(root)]
         if cmd[:3] == ["git", "fetch", "origin"]:
             return self.done()
         if cmd == ["git", "branch", "--show-current"]:
-            return self.done(st["branch"] + "\n")
+            return self.done(tree["branch"] + "\n")
         if cmd == ["git", "rev-parse", "HEAD"]:
-            return self.done(st["head"] + "\n")
+            return self.done(tree["head"] + "\n")
         if cmd == ["git", "rev-parse", "origin/main"]:
             return self.done(st["origin_main"] + "\n")
+        if cmd == ["git", "rev-parse", "--show-toplevel"]:
+            return self.done(str(root) + "\n")
         if cmd[:2] == ["git", "status"]:
-            lines = [" M " + p for p in st["dirty_tracked"]] + ["?? " + p for p in self.untracked()]
+            lines = [" M " + p for p in tree["dirty_tracked"]]
+            if "--untracked-files=no" not in cmd:
+                lines += ["?? " + p for p in self.untracked(root)]
             return self.done("".join(line + "\n" for line in lines))
         if cmd[:4] == ["git", "ls-tree", "-r", "--name-only"]:
             return self.done("".join(p + "\n" for p in st["main_files"]))
         if cmd == ["git", "switch", "main"]:
-            st["branch"] = "main"
+            tree["branch"] = "main"
             self.save(st)
             return self.done()
+        if cmd == ["git", "switch", "--detach", "origin/main"]:
+            tree["branch"], tree["head"] = "", st["origin_main"]
+            self.save(st)
+            return self.done()
+        if cmd[:2] == ["git", "worktree"]:
+            return self.worktree(cmd, st, root)
         if cmd == ["gh", "auth", "status"]:
             return self.done(rc=0 if st["gh_ok"] else 1, err="" if st["gh_ok"] else "not logged in")
         if cmd[:3] == ["gh", "pr", "list"]:
@@ -472,8 +598,7 @@ class BatchCase(FakeClaudeCase):
                 (self.repo / "prompts" / p.name).write_text(p.read_text(encoding="utf-8"))
         self.targets = dict(readme_ledger())
         self.git = FakeGit(self)
-        self.git.save({"branch": "main", "head": "abc", "origin_main": "abc", "gh_ok": True,
-                       "main_files": [], "prs": [], "dirty_tracked": [], "next_pr": 1})
+        self.git.init()
         self.set_children()
 
     def set_children(self, by_prompt=None, default=None, help_text=EFFORT_HELP):
@@ -555,15 +680,11 @@ class BatchPreflightTest(BatchCase):
         self.assertIn("alias", out)
 
     def test_not_on_main_stops_before_any_child(self):
-        st = self.git.state()
-        st["branch"] = "feat/x"
-        self.git.save(st)
+        self.git.set_main(branch="feat/x")
         self.assert_no_child(*self.batch())
 
     def test_head_behind_origin_main_stops_before_any_child(self):
-        st = self.git.state()
-        st["origin_main"] = "def"
-        self.git.save(st)
+        self.git.set_shared(origin_main="def")
         self.assert_no_child(*self.batch())
 
     def test_untracked_file_stops_before_any_child(self):
@@ -571,9 +692,7 @@ class BatchPreflightTest(BatchCase):
         self.assert_no_child(*self.batch())
 
     def test_modified_tracked_file_stops_before_any_child(self):
-        st = self.git.state()
-        st["dirty_tracked"] = ["README.md"]
-        self.git.save(st)
+        self.git.set_main(dirty_tracked=["README.md"])
         self.assert_no_child(*self.batch())
 
     def test_gh_auth_failure_stops_before_any_child(self):
