@@ -1,11 +1,11 @@
 ---
 name: bench-run
-description: One-shot a single benchmark prompt in this session and file the result: deliverable plus meta sidecar under results/, a grading sidecar where the prompt has a [grading] rule, one issue, one branch, one PR that closes it. With no arguments it runs the whole Fable 5.2 arm instead, one fresh headless session per prompt, through harness/bench_run_all.py. No orchestrator, no agents, never launches a browser. User-invocable only.
+description: One-shot a single benchmark prompt in this session and file the result: deliverable plus meta sidecar under results/, a grading sidecar where the prompt has a [grading] rule, one issue, one branch, one PR that closes it. With no arguments it lists the Fable 5.2 arm's prompts, marks those that already have a result, asks which to run and runs the chosen ones, one fresh headless session per prompt, through harness/bench_run_all.py; with all as the argument it runs the whole arm without asking. No orchestrator, no agents, never launches a browser. User-invocable only.
 disable-model-invocation: true
-argument-hint: [<prompt-id>] [--dry-run]
+argument-hint: [<prompt-id> | all] [--dry-run]
 ---
 
-You are reading this because the user typed `/bench-run`. The arguments are in `$ARGUMENTS`. If `$ARGUMENTS` is empty or exactly `--dry-run`, this is **batch mode**: follow "Batch mode" below and nothing else. Otherwise `$ARGUMENTS` is a prompt id (or a TOML file stem) and an optional `--dry-run`: do exactly what follows, in order. A single prompt is a plain in-session one-shot: no orchestrator, no agent team, no repair round.
+You are reading this because the user typed `/bench-run`. The arguments are in `$ARGUMENTS`. If `$ARGUMENTS`, apart from an optional `--dry-run`, is empty or exactly `all`, this is **batch mode**: follow "Batch mode" below and nothing else. Otherwise `$ARGUMENTS` is a prompt id (or a TOML file stem) and an optional `--dry-run`: do exactly what follows, in order. A single prompt is a plain in-session one-shot: no orchestrator, no agent team, no repair round.
 
 Commands are written `python3`; use `python` only where `python3` is missing.
 
@@ -15,13 +15,18 @@ The effort level is this session's own. The resolver reads it from `CLAUDE_EFFOR
 
 ## Batch mode
 
-Applies only when `$ARGUMENTS` is empty or exactly `--dry-run`. The one-shot rules and the Steps below govern `/bench-run <prompt-id>` and each child session the helper starts, not this batch session. This session generates nothing: `harness/bench_run_all.py` creates or reuses a worktree for this model and effort under `.claude/worktrees/`, detached at `origin/main`, starts one fresh headless `claude -p "/bench-run <prompt-id>"` child per prompt of the arm inside it (same model and effort as this session, a narrow tool allowlist, no merge rights) and then runs the merge step there. This checkout is never switched or written to, so runs for other models or effort levels can run from it at the same time. A second run for the same model and effort stops while the first is running.
+Applies only when `$ARGUMENTS`, apart from an optional `--dry-run`, is empty or exactly `all`. Empty arguments ask which prompts to run; `all` runs the whole arm without asking. The one-shot rules and the Steps below govern `/bench-run <prompt-id>` and each child session the helper starts, not this batch session. This session generates nothing: `harness/bench_run_all.py` creates or reuses a worktree for this model and effort under `.claude/worktrees/`, detached at `origin/main`, starts one fresh headless `claude -p "/bench-run <prompt-id>"` child per selected prompt inside it (same model and effort as this session, a narrow tool allowlist, no merge rights) and then runs the merge step there. This checkout is never switched or written to, so runs for other models or effort levels can run from it at the same time. A second run for the same model and effort stops while the first is running.
 
 1. Pass the exact model id from your system prompt as `--model`. If you do not know it with certainty, stop and ask the user; the helper rejects bare aliases such as `fable` or `opus`. The effort level is read from `CLAUDE_EFFORT` by the helper; never retype it. It is part of every result file name, so the skip check and the report are for this session's effort level only.
-2. Run `python3 harness/bench_run_all.py --model <model-id> --dry-run` in the foreground and relay its output as printed. If the arguments were `--dry-run`, end here. If any line starts with `STOP:` or any check says FAIL, relay it and end.
-3. Otherwise run `python3 harness/bench_run_all.py --model <model-id>` with the Bash tool's `run_in_background: true` (fifteen generations far exceed the 10-minute limit of a foreground call) and wait for it to exit.
-4. Relay the helper's report exactly as printed: one line per prompt, the counts, the log folder, the merge-step result and the worktree line. After a halt the worktree is kept and its path is printed; the next run reuses it only if it is clean and is not detached at a commit that is not on `origin/main`, and otherwise stops and names it. Re-typing `/bench-run` later skips every prompt that already has a result on `origin/main` or in an open PR and reaches the merge step again.
-5. Never open `results/`, the log folder, the batch worktree, PR diffs or child transcripts, and never write, generate, merge or enable auto-merge yourself. The only merge that happens is the helper's own call to `harness/merge_results.py`, when that file exists.
+2. **Choose the prompts.** If the arguments contain `all`, go to step 3 with no `--prompts`. Otherwise:
+   - (a) Run `python3 harness/bench_run_all.py --model <model-id> --list` and relay it as printed. If a line starts with `STOP:`, relay it and end.
+   - (b) Ask "Which prompts should run? Answer `all`, or numbers such as `2`, `1,4,7`, `3-6` or `1,3-5`." Then end your turn; nothing runs until the user answers.
+   - (c) Take the user's next message, trimmed, verbatim. Never interpret, fix or complete it ("first three" is not `1-3`). If it contains anything other than letters, digits, commas, hyphens and spaces, say it can't be read and ask again. Otherwise run `python3 harness/bench_run_all.py --model <model-id> --select='<answer>'`. The `=` form stops argparse from reading `-x` as a flag; the character filter makes the single quotes safe.
+   - (d) Only a line starting with `prompts:` is a selection. Anything else (an `INVALID:` line or an error) means nothing was selected: relay it and ask again from (b). Don't run `--list` again.
+3. Run `python3 harness/bench_run_all.py --model <model-id> --dry-run`, with `--prompts <selection>` appended when step 2 produced one, in the foreground and relay its output as printed. If the arguments contained `--dry-run`, end here. If any line starts with `STOP:` or any check says FAIL, relay it and end.
+4. Otherwise run `python3 harness/bench_run_all.py --model <model-id>`, with `--prompts <selection>` appended when step 2 produced one, with the Bash tool's `run_in_background: true` (one generation alone can exceed the 10-minute limit of a foreground call) and wait for it to exit.
+5. Relay the helper's report exactly as printed: one line per selected prompt, the counts, the log folder, the merge-step result and the worktree line. After a halt the worktree is kept and its path is printed; the next run reuses it only if it is clean and is not detached at a commit that is not on `origin/main`, and otherwise stops and names it. Running `/bench-run all`, or the same selection, later skips every prompt that already has a result on `origin/main` or in an open PR and reaches the merge step again.
+6. Never open `results/`, the log folder, the batch worktree, PR diffs or child transcripts, and never write, generate, merge or enable auto-merge yourself. The only merge that happens is the helper's own call to `harness/merge_results.py`, when that file exists.
 
 ## One-shot rules
 
@@ -44,7 +49,7 @@ A failure after the Write (a `gh` or network error in the meta resolver, a faile
 
 Each command below is one Bash call on one line, exactly as shown, with no `&&`, `;`, pipes, redirects (including `2>&1`), `$(...)`, backticks, heredocs or `cd`. Multi-line text goes only through the files the resolver writes; this overrides the general habit of passing multi-line text through a heredoc.
 
-1. **Parse arguments.** No arguments (or only `--dry-run`) means batch mode: see "Batch mode" and stop reading here. Otherwise the first token is `<prompt-id>`; `--dry-run` may follow.
+1. **Parse arguments.** No arguments, `all`, or either with `--dry-run` means batch mode: see "Batch mode" and stop reading here. Otherwise the first token is `<prompt-id>`; `--dry-run` may follow.
 2. **Fresh-session guard.** If this session has already read, discussed or generated any result for this prompt, or any other benchmark generation, stop and ask for a fresh session. One prompt per session.
 3. **Preflight** (skipped by `--dry-run` except `git fetch origin main`):
    - `git fetch origin main`, then `git rev-parse HEAD origin/main`: the two lines must be equal; otherwise tell the user to switch and pull. The first line is the starting commit.

@@ -91,11 +91,15 @@ Every prompt is run as a plain one-shot: one fresh session per prompt, one
 pass, one file, no orchestrator, no agents and no repair round. The table
 below is the ledger for Claude Fable 5.2.
 
-**How to run.** Start the whole arm with `/bench-run` and no arguments from a
+**How to run.** Start a batch with `/bench-run` and no arguments from a
 checkout of `main` that matches `origin/main` with no tracked changes
-(untracked files don't matter). The skill calls
+(untracked files don't matter). It lists the arm's 15 prompts numbered in
+ledger order, marks each one that already has a result on `origin/main` or in
+an open PR for your model and effort level, and asks which to run: `all`, or
+numbers such as `2`, `1,4,7`, `3-6` or `1,3-5`; any other answer is asked
+again. `/bench-run all` runs the whole arm without asking. The skill calls
 [`harness/bench_run_all.py`](harness/bench_run_all.py), which starts one fresh
-headless Claude Code session per prompt (`claude -p "/bench-run <prompt-id>"`)
+headless Claude Code session per selected prompt (`claude -p "/bench-run <prompt-id>"`)
 with the calling session's exact model id and effort level, a narrow tool
 allowlist and no merge rights, so each prompt is still one isolated one-shot.
 The sessions run in a private git worktree for that model and effort level
@@ -105,11 +109,13 @@ side by side from the same checkout; a second batch for the same model and
 effort stops while the first is running. After a run that ended without a halt
 the worktree is removed; after a halt it is kept, and the next run reuses it
 only if it is clean and not detached at a commit that is not on `origin/main`.
-`/bench-run --dry-run` prints the checks, which prompts would run or be
-skipped, and the exact child command, and starts nothing. A prompt that
-already has a result on `origin/main` or in an open PR is skipped, so
-re-typing `/bench-run` after an interruption resumes the arm, and after CI
-turns green it skips all 15 and reaches the final merge step again (the
+`/bench-run --dry-run` asks the same question, then prints the checks, which
+selected prompts would run or be skipped, and the exact child command, and
+starts nothing; `/bench-run all --dry-run` does this for the whole arm. A
+prompt that already has a result on `origin/main` or in an open PR is skipped
+even when selected, so re-typing `/bench-run all` after an interruption
+resumes the arm, and after CI turns green it skips all 15 and reaches the
+final merge step again (the
 helper runs `harness/merge_results.py` when that file exists, otherwise it
 lists the open PRs). A single prompt still runs with `/bench-run <prompt-id>`,
 for example `/bench-run game-melon-jelly`. The prompt TOML under `prompts/` is
