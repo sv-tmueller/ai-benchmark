@@ -122,7 +122,7 @@ def _read_run_file(run_path, relpath, warnings):
         return None, None, None
     try:
         data = json.loads(run_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:
         warnings.append("%s: cannot read run file (%s)" % (relpath, exc))
         return None, None, None
     if not isinstance(data, dict):
@@ -165,7 +165,10 @@ def collect_rows(repo_root):
         relpath = path.relative_to(repo_root).as_posix()
         if SURROGATES.search(relpath):
             warnings.append("%s: name is not valid UTF-8" % relpath)
-        meta = read_meta(path)
+        try:
+            meta = read_meta(path)
+        except RecursionError:  # a deeply nested sidecar; read_meta does not catch it
+            meta = None
         if meta is None:
             warnings.append("%s: cannot read meta file" % meta_path.relative_to(repo_root).as_posix())
             meta = {}
@@ -493,7 +496,7 @@ def render(rows):
     options = "".join('<option value="%s">%s</option>' % (_esc(v), _esc(label))
                       for v, label in GROUP_OPTIONS)
     control = ('<p><label for="group-by">Group by</label> '
-               '<select id="group-by">%s</select></p>\n' % options)
+               '<select id="group-by" autocomplete="off">%s</select></p>\n' % options)
     header = "".join(
         '<th scope="col" data-key="%s" data-type="%s"%s><button type="button">%s</button></th>'
         % (key, kind, ' class="num"' if kind == "num" else "", _esc(label))

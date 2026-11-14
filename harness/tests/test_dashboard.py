@@ -178,7 +178,7 @@ class CollectRowsTest(TempRootCase):
         for name in ("b_zeta_low.html", "b_alpha_high.html", "b_alpha_low.html",
                      "b_alpha.html", "a_zeta_low.html"):
             _add_result(self.root, "b" if name.startswith("b") else "a", name,
-                        meta={"model": name.split("_")[1]})
+                        meta={"model": Path(name).stem.split("_")[1]})
         rows, _ = dashboard.collect_rows(self.root)
         self.assertEqual(
             [r.file for r in rows],
@@ -290,6 +290,7 @@ class PageParser(html.parser.HTMLParser):
         self.rows = []         # {"attrs", "cells": [{"attrs", "text", "links"}]}
         self.headings = []     # group-heading rows (there are none at load)
         self.options = []      # (value, label) of the <option> elements
+        self.selects = []      # attrs of the <select> elements
         self.empty = []        # text of <p class="empty">
         self.tags = []
         self._capture = None
@@ -321,6 +322,8 @@ class PageParser(html.parser.HTMLParser):
             self._row["cells"].append(self._cell)
         elif tag == "a" and self._cell is not None:
             self._cell["links"].append(attrs)
+        elif tag == "select":
+            self.selects.append(attrs)
         elif tag == "option":
             self._option = [attrs.get("value"), ""]
             self.options.append(self._option)
@@ -400,6 +403,15 @@ class RenderTest(TempRootCase):
                          [("", "none"), ("prompt", "prompt"), ("model", "model"), ("effort", "effort")])
         self.assertIn("3 results from results/ in this checkout.", page)
         self.assertEqual(parsed.headings, [])
+
+    def test_group_by_select_opts_out_of_form_restoring(self):
+        # The script never renders at load, so a browser-restored choice would
+        # show above an ungrouped table.
+        self._fixture()
+        selects = _parse(_page(self.root)).selects
+        self.assertEqual(len(selects), 1)
+        self.assertEqual(selects[0].get("id"), "group-by")
+        self.assertEqual(selects[0].get("autocomplete"), "off")
 
     def test_cells_show_formatted_values_and_sort_by_raw_ones(self):
         self._fixture()
@@ -637,8 +649,12 @@ class MainTest(TempRootCase):
     def test_no_results_still_writes_the_empty_page_and_exits_zero(self):
         for setup in ("gitkeep only", "no results folder"):
             with self.subTest(setup):
+                if (self.root / "results").exists():
+                    shutil.rmtree(self.root / "results")
                 if setup == "gitkeep only":
                     _write(self.root / "results" / ".gitkeep")
+                else:
+                    self.assertFalse((self.root / "results").exists())
                 code, out, err = self._main()
                 page = (self.root / "dashboard.html").read_text(encoding="utf-8")
                 self.assertEqual((code, err), (0, ""))
@@ -670,6 +686,7 @@ class MainTest(TempRootCase):
         deliverables = (
             (b"bad\xffdir", b"bad\xffdir_claude_low"),
             (b"good", b"g\xff_claude_low"),
+            (b"good", b"good_cl\xffaude_low"),
         )
         try:
             for directory, stem in deliverables:
@@ -689,12 +706,12 @@ class MainTest(TempRootCase):
         err_text = err.buffer.getvalue().decode("utf-8")
 
         self.assertEqual(code, 0)
-        self.assertEqual(len(err_text.splitlines()), 2, err_text)
+        self.assertEqual(len(err_text.splitlines()), 3, err_text)
         for line in err_text.splitlines():
             self.assertTrue(line.startswith("warning: results/"), line)
         page = (self.root / "dashboard.html").read_bytes().decode("utf-8")
         parsed = _parse(page)
-        self.assertEqual(len(parsed.rows), 2)
+        self.assertEqual(len(parsed.rows), 3)
         shown = {}
         for row in parsed.rows:
             cells = row["cells"]
@@ -709,6 +726,45 @@ class MainTest(TempRootCase):
         self.assertEqual(
             shown[b"results/good/g\xff_claude_low.html"],
             ["good", "claude", "low", "g�_claude_low.html"])
+        # A bad byte inside the tag reaches the model cell, cleaned.
+        self.assertEqual(
+            shown[b"results/good/good_cl\xffaude_low.html"],
+            ["good", "cl�aude", "low", "good_cl�aude_low.html"])
+
+    def test_lone_surrogate_in_meta_text_is_cleaned_and_never_a_traceback(self):
+        # JSON "\\udcff" decodes to a lone surrogate that no UTF-8 stream can encode.
+        _add_result(
+            self.root, "alpha", "alpha_m_low.html",
+            meta='{"prompt_id": "p\\udcffid", "title": "t\\udcffitle", '
+                 '"model": "m\\udcffodel", "params": {"reasoning_effort": "\\udcff"}}')
+        out = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", errors="strict")
+        err = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", errors="strict")
+
+        code = dashboard.main([], repo_root=self.root, out=out, err=err)
+
+        self.assertEqual(code, 0)
+        page = (self.root / "dashboard.html").read_bytes().decode("utf-8")
+        row = _parse(page).rows[0]
+        self.assertEqual([c["text"] for c in row["cells"]][:3], ["p�id", "m�odel", "�"])
+        self.assertEqual(row["cells"][0]["attrs"]["title"], "t�itle")
+
+    def test_deeply_nested_run_file_warns_and_still_writes_the_row(self):
+        _add_result(self.root, "alpha", "alpha_m_low.html", meta={}, run="[" * 100000)
+        code, _, err = self._main()
+        self.assertEqual(code, 0)
+        self.assertEqual(len(err.splitlines()), 1, err)
+        self.assertTrue(err.startswith("warning: results/alpha/alpha_m_low.run.json: "), err)
+        row = _parse((self.root / "dashboard.html").read_text(encoding="utf-8")).rows[0]
+        self.assertEqual([c["text"] for c in row["cells"]][4:7], [DASH, DASH, DASH])
+
+    def test_deeply_nested_meta_file_warns_and_still_writes_the_row(self):
+        _add_result(self.root, "alpha", "alpha_m_low.html", meta="[" * 100000)
+        code, _, err = self._main()
+        self.assertEqual(code, 0)
+        self.assertEqual(len(err.splitlines()), 1, err)
+        self.assertTrue(err.startswith("warning: results/alpha/alpha_m_low.meta.json: "), err)
+        row = _parse((self.root / "dashboard.html").read_text(encoding="utf-8")).rows[0]
+        self.assertEqual([c["text"] for c in row["cells"]][:3], ["alpha", "m", "low"])
 
     def test_unwritable_target_exits_one_with_one_line_on_stderr(self):
         (self.root / "dashboard.html").mkdir()
