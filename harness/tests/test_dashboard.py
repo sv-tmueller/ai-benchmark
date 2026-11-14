@@ -232,3 +232,251 @@ class FormatTest(unittest.TestCase):
         self.assertEqual(dashboard.format_cost(0.004), "<$0.01")
         self.assertEqual(dashboard.format_cost(0.01), "$0.01")
         self.assertEqual(dashboard.format_generated("2026-11-14T18:00:59Z"), "2026-11-14 18:00")
+
+
+class PageParser(html.parser.HTMLParser):
+    """Collect the parts of a rendered page the tests look at."""
+
+    def __init__(self):
+        super().__init__()
+        self.csp = None
+        self.scripts = []
+        self.styles = []
+        self.headers = []      # attrs of the <th> cells in <thead>
+        self.rows = []         # {"attrs", "cells": [{"attrs", "text", "links"}]}
+        self.headings = []     # group-heading rows (there are none at load)
+        self.options = []      # (value, label) of the <option> elements
+        self.empty = []        # text of <p class="empty">
+        self.tags = []
+        self._capture = None
+        self._in_thead = False
+        self._row = None
+        self._cell = None
+        self._option = None
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        self.tags.append(tag)
+        if tag == "meta" and attrs.get("http-equiv") == "Content-Security-Policy":
+            self.csp = attrs["content"]
+        elif tag in ("script", "style"):
+            self._capture = []
+            (self.scripts if tag == "script" else self.styles).append(self._capture)
+        elif tag == "thead":
+            self._in_thead = True
+        elif tag == "th" and self._in_thead:
+            self.headers.append(attrs)
+        elif tag == "tr" and not self._in_thead:
+            if attrs.get("class") == "group-heading":
+                self.headings.append(attrs)
+            else:
+                self._row = {"attrs": attrs, "cells": []}
+                self.rows.append(self._row)
+        elif tag == "td" and self._row is not None:
+            self._cell = {"attrs": attrs, "text": "", "links": []}
+            self._row["cells"].append(self._cell)
+        elif tag == "a" and self._cell is not None:
+            self._cell["links"].append(attrs)
+        elif tag == "option":
+            self._option = [attrs.get("value"), ""]
+            self.options.append(self._option)
+        elif tag == "p" and attrs.get("class") == "empty":
+            self._capture = []
+            self.empty.append(self._capture)
+
+    def handle_endtag(self, tag):
+        if tag in ("script", "style", "p"):
+            self._capture = None
+        elif tag == "thead":
+            self._in_thead = False
+        elif tag == "td":
+            self._cell = None
+        elif tag == "tr":
+            self._row = None
+        elif tag == "option":
+            self._option = None
+
+    def handle_data(self, data):
+        if self._capture is not None:
+            self._capture.append(data)
+        if self._cell is not None:
+            self._cell["text"] += data
+        if self._option is not None:
+            self._option[1] += data
+
+    def script_text(self):
+        return ["".join(parts) for parts in self.scripts]
+
+    def style_text(self):
+        return ["".join(parts) for parts in self.styles]
+
+
+def _parse(page):
+    parser = PageParser()
+    parser.feed(page)
+    parser.close()
+    return parser
+
+
+def _page(root):
+    rows, _ = dashboard.collect_rows(root)
+    return dashboard.render(rows)
+
+
+class RenderTest(TempRootCase):
+    def _fixture(self):
+        _add_result(
+            self.root, "alpha", "alpha_claude_opus_4_8_high.html",
+            meta={"prompt_id": "game-alpha", "title": "Alpha game", "model": "claude-opus-4-8",
+                  "params": {"reasoning_effort": "high"}, "generated_utc": "2026-11-14T18:00:00Z"},
+            run={"duration_seconds": 754, "output_tokens": 12345, "cost_usd": 1.234},
+        )
+        _add_result(self.root, "alpha", "alpha_glm_5_low.html", meta={},
+                    run={"duration_seconds": 45, "output_tokens": 9, "cost_usd": 0.004})
+        _add_result(self.root, "beta", "beta_glm_5.html", meta={})
+
+    def test_page_structure(self):
+        self._fixture()
+        page = _page(self.root)
+        parsed = _parse(page)
+
+        self.assertEqual(
+            [(h["data-key"], h["data-type"]) for h in parsed.headers],
+            [("prompt", "text"), ("model", "text"), ("effort", "num"), ("generated", "text"),
+             ("duration", "num"), ("output_tokens", "num"), ("cost", "num"), ("file", "text")],
+        )
+        self.assertEqual(len(parsed.rows), 3)
+        self.assertEqual([r["attrs"]["data-index"] for r in parsed.rows], ["0", "1", "2"])
+        for row in parsed.rows:
+            self.assertEqual(len(row["cells"]), 8)
+        for header, cell in zip(parsed.headers, parsed.rows[0]["cells"]):
+            if header["data-type"] == "num" and "data-sort" in cell["attrs"]:
+                float(cell["attrs"]["data-sort"])
+        self.assertEqual([tuple(o) for o in parsed.options],
+                         [("", "none"), ("prompt", "prompt"), ("model", "model"), ("effort", "effort")])
+        self.assertIn("3 results from results/ in this checkout.", page)
+        self.assertEqual(parsed.headings, [])
+
+    def test_cells_show_formatted_values_and_sort_by_raw_ones(self):
+        self._fixture()
+        parsed = _parse(_page(self.root))
+        # Rows start sorted by prompt (alpha before game-alpha is not the case:
+        # "alpha" < "beta" < "game-alpha"), then model, then effort.
+        texts = [[c["text"] for c in r["cells"]] for r in parsed.rows]
+        self.assertEqual(texts[0][:7],
+                         ["alpha", "glm_5", "low", DASH, "45s", "9", "<$0.01"])
+        self.assertEqual(texts[1][:7], ["beta", "glm_5", DASH, DASH, DASH, DASH, DASH])
+        self.assertEqual(texts[2][:7],
+                         ["game-alpha", "claude-opus-4-8", "high", "2026-11-14 18:00",
+                          "12m 34s", "12,345", "$1.23"])
+        attrs = [[c["attrs"] for c in r["cells"]] for r in parsed.rows]
+        self.assertEqual(attrs[0][2]["data-sort"], "0")          # low
+        self.assertEqual(attrs[2][2]["data-sort"], "2")          # high
+        self.assertEqual(attrs[2][3]["data-sort"], "2026-11-14T18:00:00Z")
+        self.assertEqual(float(attrs[2][4]["data-sort"]), 754)
+        self.assertEqual(float(attrs[2][5]["data-sort"]), 12345)
+        self.assertEqual(float(attrs[2][6]["data-sort"]), 1.234)
+        self.assertEqual(attrs[2][0]["title"], "Alpha game")
+        self.assertEqual(attrs[2][0]["data-sort"], "game-alpha")
+        self.assertEqual(attrs[0][7]["data-sort"], "alpha_glm_5_low.html")
+        # Missing values have no data-sort at all.
+        for cell in range(2, 7):
+            self.assertNotIn("data-sort", attrs[1][cell])
+        self.assertIn("&lt;$0.01", _page(self.root))
+        self.assertNotIn("<$0.01", _page(self.root))
+
+    def test_unknown_effort_is_shown_but_sorts_as_missing(self):
+        _add_result(self.root, "alpha", "alpha_m_low.html",
+                    meta={"params": {"reasoning_effort": "turbo"}})
+        parsed = _parse(_page(self.root))
+        cell = parsed.rows[0]["cells"][2]
+        self.assertEqual(cell["text"], "turbo")
+        self.assertNotIn("data-sort", cell["attrs"])
+
+    def test_values_from_disk_are_escaped_everywhere(self):
+        evil = "<script>alert(1)</script></script>\"'&amp;"
+        _add_result(
+            self.root, "we&ird", "we&ird_m_low.html",
+            meta={"prompt_id": evil, "title": evil, "model": evil,
+                  "params": {"reasoning_effort": evil}},
+        )
+        _add_result(self.root, "plain", "plain_m'<i>_low.html", meta={})
+        page = _page(self.root)
+
+        self.assertNotIn(evil, page)
+        self.assertIn(html.escape(evil, quote=True), page)
+        self.assertNotIn("alert(1)</script>", page)
+        self.assertNotIn("<i>", page)
+        self.assertIn("plain_m&#x27;&lt;i&gt;_low.html", page)
+        self.assertIn("we&amp;ird", page)
+        self.assertEqual(page.count("<script"), 1)
+        self.assertEqual(_parse(page).script_text(), [dashboard.SCRIPT])
+        self.assertEqual(_parse(page).style_text(), [dashboard.STYLE])
+
+    def test_deliverable_contents_never_reach_the_page(self):
+        marker = "DELIVERABLE-MARKER-9f3a"
+        _add_result(self.root, "alpha", "alpha_m_low.html", meta={},
+                    deliverable="<script>%s</script>" % marker)
+        self.assertNotIn(marker, _page(self.root))
+
+    def test_links_open_in_a_new_tab_with_percent_encoded_relative_hrefs(self):
+        self._fixture()
+        weird_folder = "we ird#?%'\":x"
+        weird_name = "we ird#?%'\":x_m ?%'\"#:_low.html"
+        _add_result(self.root, weird_folder, weird_name, meta={})
+        parsed = _parse(_page(self.root))
+
+        links = [link for row in parsed.rows for cell in row["cells"] for link in cell["links"]]
+        self.assertEqual(len(links), 4)
+        for link in links:
+            self.assertEqual(link["target"], "_blank")
+            self.assertEqual(link["rel"], "noopener noreferrer")
+            self.assertTrue(link["href"].startswith("results/"), link["href"])
+            self.assertRegex(link["href"], r"^[A-Za-z0-9_.~%/-]+$")
+            target = self.root / urllib.parse.unquote(link["href"])
+            self.assertTrue(target.is_file(), link["href"])
+        weird = [l for l in links if "%23" in l["href"]]
+        self.assertEqual(len(weird), 1)
+        self.assertEqual(urllib.parse.unquote(weird[0]["href"]),
+                         "results/%s/%s" % (weird_folder, weird_name))
+        self.assertEqual(
+            [c["text"] for r in parsed.rows for c in r["cells"][7:]].count(weird_name), 1)
+
+    def test_page_is_self_contained_and_uses_no_unsafe_script_apis(self):
+        self._fixture()
+        page = _page(self.root)
+        for needle in ("http:", "https:", "src=", "<link", "@import", "url(",
+                       "innerHTML", "insertAdjacentHTML", "document.write", "eval"):
+            self.assertNotIn(needle, page)
+
+    def test_csp_hashes_match_the_emitted_script_and_style(self):
+        self._fixture()
+        parsed = _parse(_page(self.root))
+
+        def sha(text):
+            digest = hashlib.sha256(text.encode("utf-8")).digest()
+            return "'sha256-%s'" % base64.b64encode(digest).decode("ascii")
+
+        self.assertEqual(
+            parsed.csp,
+            "default-src 'none'; script-src %s; style-src %s"
+            % (sha(parsed.script_text()[0]), sha(parsed.style_text()[0])),
+        )
+
+    def test_page_without_results_says_so_and_has_no_table_or_script(self):
+        page = dashboard.render([])
+        parsed = _parse(page)
+        self.assertEqual(["".join(p) for p in parsed.empty],
+                         ["No results found under results/ in this checkout."])
+        self.assertIn("<h1>", page)
+        for needle in ("<table", "<select", "<script"):
+            self.assertNotIn(needle, page)
+        self.assertEqual(
+            parsed.csp,
+            "default-src 'none'; style-src 'sha256-%s'"
+            % base64.b64encode(hashlib.sha256(dashboard.STYLE.encode("utf-8")).digest()).decode("ascii"),
+        )
+
+    def test_render_is_deterministic(self):
+        self._fixture()
+        self.assertEqual(_page(self.root), _page(self.root))

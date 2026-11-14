@@ -18,10 +18,14 @@ file name is HTML-escaped; the page's script and style are fixed text.
 """
 
 import argparse
+import base64
 import datetime
+import hashlib
+import html
 import json
 import math
 import sys
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -193,3 +197,282 @@ def format_cost(usd):
 def format_generated(value):
     """``2026-11-14T18:00:00Z`` -> ``2026-11-14 18:00``."""
     return datetime.datetime.strptime(value, GENERATED_FORMAT).strftime("%Y-%m-%d %H:%M")
+
+
+# --- the page ---------------------------------------------------------------
+#
+# STYLE and SCRIPT are fixed text. Nothing read from disk is ever inserted into
+# them, so no sidecar value can break out of the <script> or <style> element,
+# and the Content-Security-Policy below pins the page to exactly these two
+# blocks (by sha256), which also blocks any network access.
+
+STYLE = r"""
+:root{color-scheme:light dark}
+body{font-family:system-ui,sans-serif;margin:1.5rem}
+table{border-collapse:collapse;width:100%}
+th,td{padding:.35rem .6rem;text-align:left;border-bottom:1px solid #8884}
+thead th{position:sticky;top:0;background:Canvas}
+th button{font:inherit;font-weight:600;background:none;border:0;padding:0;color:inherit;cursor:pointer}
+th[aria-sort=ascending] button::after{content:" \25B2"}
+th[aria-sort=descending] button::after{content:" \25BC"}
+th.num,td.num{text-align:right;font-variant-numeric:tabular-nums}
+tbody tr:nth-child(even){background:#f3f3f3}
+tr.group-heading th{background:#dde3ee;padding-top:.6rem}
+@media (prefers-color-scheme: dark){
+tbody tr:nth-child(even){background:#1f1f1f}
+tr.group-heading th{background:#2b3345}
+}
+"""
+
+SCRIPT = r"""
+"use strict";
+var MISSING_LABEL = "—";
+
+function isMissing(value) {
+  return value === null || value === undefined;
+}
+
+// Ascending comparison of two data-sort values; a missing value sorts last.
+function compareValues(a, b, type) {
+  var aMissing = isMissing(a);
+  var bMissing = isMissing(b);
+  if (aMissing || bMissing) {
+    return aMissing === bMissing ? 0 : (aMissing ? 1 : -1);
+  }
+  if (type === "num") {
+    return parseFloat(a) - parseFloat(b);
+  }
+  return a.localeCompare(b, "en", {numeric: true});
+}
+
+// items: [{index, values: {key: string|null}, texts: {key: string}}].
+// Returns {items, groups: [{label, count}]}; items are ordered so each group's
+// members are contiguous. Missing values stay last in both sort directions.
+function orderRows(items, sortKey, sortDir, groupKey, types) {
+  var direction = sortDir === "desc" ? -1 : 1;
+  function byRow(x, y) {
+    if (sortKey) {
+      var a = x.values[sortKey];
+      var b = y.values[sortKey];
+      var c = compareValues(a, b, types[sortKey]);
+      if (c !== 0) {
+        return isMissing(a) || isMissing(b) ? c : c * direction;
+      }
+    }
+    return x.index - y.index;
+  }
+  if (!groupKey) {
+    return {items: items.slice().sort(byRow), groups: []};
+  }
+  var buckets = new Map();
+  items.forEach(function (item) {
+    var value = item.values[groupKey];
+    var key = isMissing(value) ? null : value;
+    if (!buckets.has(key)) {
+      buckets.set(key, []);
+    }
+    buckets.get(key).push(item);
+  });
+  var keys = Array.from(buckets.keys()).sort(function (a, b) {
+    return compareValues(a, b, types[groupKey]);
+  });
+  var ordered = [];
+  var groups = [];
+  keys.forEach(function (key) {
+    var members = buckets.get(key).sort(byRow);
+    ordered = ordered.concat(members);
+    groups.push({
+      label: key === null ? MISSING_LABEL : members[0].texts[groupKey],
+      count: members.length
+    });
+  });
+  return {items: ordered, groups: groups};
+}
+
+if (typeof document !== "undefined") {
+  document.addEventListener("DOMContentLoaded", function () {
+    var table = document.getElementById("results");
+    var select = document.getElementById("group-by");
+    if (!table || !select) {
+      return;
+    }
+    var body = table.tBodies[0];
+    var headers = Array.from(table.tHead.rows[0].cells);
+    var types = {};
+    headers.forEach(function (th) {
+      types[th.dataset.key] = th.dataset.type;
+    });
+    var items = Array.from(body.rows).map(function (row) {
+      var values = {};
+      var texts = {};
+      headers.forEach(function (th, i) {
+        var cell = row.cells[i];
+        values[th.dataset.key] = cell.dataset.sort === undefined ? null : cell.dataset.sort;
+        texts[th.dataset.key] = cell.textContent;
+      });
+      return {index: Number(row.dataset.index), row: row, values: values, texts: texts};
+    });
+    var sortKey = null;
+    var sortDir = "asc";
+
+    function render() {
+      var result = orderRows(items, sortKey, sortDir, select.value, types);
+      while (body.firstChild) {
+        body.removeChild(body.firstChild);
+      }
+      var position = 0;
+      var groups = result.groups.length ? result.groups : [null];
+      groups.forEach(function (group) {
+        var count = group ? group.count : result.items.length;
+        if (group) {
+          var tr = document.createElement("tr");
+          tr.className = "group-heading";
+          var th = document.createElement("th");
+          th.colSpan = headers.length;
+          th.scope = "colgroup";
+          th.textContent = group.label + " (" + group.count + ")";
+          tr.appendChild(th);
+          body.appendChild(tr);
+        }
+        for (var i = 0; i < count; i++) {
+          body.appendChild(result.items[position].row);
+          position += 1;
+        }
+      });
+      headers.forEach(function (th) {
+        if (th.dataset.key === sortKey) {
+          th.setAttribute("aria-sort", sortDir === "asc" ? "ascending" : "descending");
+        } else {
+          th.removeAttribute("aria-sort");
+        }
+      });
+    }
+
+    headers.forEach(function (th) {
+      th.querySelector("button").addEventListener("click", function () {
+        if (sortKey === th.dataset.key) {
+          sortDir = sortDir === "asc" ? "desc" : "asc";
+        } else {
+          sortKey = th.dataset.key;
+          sortDir = "asc";
+        }
+        render();
+      });
+    });
+    select.addEventListener("change", render);
+  });
+}
+"""
+
+# (data-key, header text, data-type); the page and its script both rely on
+# this order.
+COLUMNS = (
+    ("prompt", "Prompt", "text"),
+    ("model", "Model", "text"),
+    ("effort", "Effort", "num"),
+    ("generated", "Generated (UTC)", "text"),
+    ("duration", "Duration", "num"),
+    ("output_tokens", "Output tokens", "num"),
+    ("cost", "Cost (USD)", "num"),
+    ("file", "Result", "text"),
+)
+GROUP_OPTIONS = (("", "none"), ("prompt", "prompt"), ("model", "model"), ("effort", "effort"))
+
+
+def _esc(value):
+    """Escape a value for HTML text or a double-quoted attribute."""
+    return html.escape(str(value), quote=True)
+
+
+def _number(value):
+    """Render a checked, finite, non-negative number for ``data-sort``."""
+    return repr(value)
+
+
+def _td(shown, sort=None, numeric=False, title=None, markup=False):
+    """One table cell. ``shown`` is escaped unless ``markup`` (already safe HTML)."""
+    attrs = ""
+    if numeric:
+        attrs += ' class="num"'
+    if sort is not None:
+        attrs += ' data-sort="%s"' % _esc(sort)
+    if title is not None:
+        attrs += ' title="%s"' % _esc(title)
+    return "<td%s>%s</td>" % (attrs, shown if markup else _esc(shown))
+
+
+def _text_cell(value, title=None):
+    if value is None:
+        return _td(DASH)
+    return _td(value, sort=value, title=title)
+
+
+def _number_cell(value, formatter):
+    if value is None:
+        return _td(DASH, numeric=True)
+    return _td(formatter(value), sort=_number(value), numeric=True)
+
+
+def _row_html(row):
+    effort = row.effort
+    effort_sort = str(EFFORT_LEVELS.index(effort)) if effort in EFFORT_LEVELS else None
+    href = urllib.parse.quote(row.relpath, safe="/")
+    link = ('<a href="%s" target="_blank" rel="noopener noreferrer">%s</a>'
+            % (_esc(href), _esc(row.file)))
+    cells = [
+        _text_cell(row.prompt, title=row.title),
+        _text_cell(row.model),
+        _td(effort if effort is not None else DASH, sort=effort_sort, numeric=True),
+        _td(DASH) if row.generated is None
+        else _td(format_generated(row.generated), sort=row.generated),
+        _number_cell(row.duration, format_duration),
+        _number_cell(row.output_tokens, format_tokens),
+        _number_cell(row.cost, format_cost),
+        _td(link, sort=row.file, markup=True),
+    ]
+    return '<tr data-index="%d">%s</tr>' % (row.index, "".join(cells))
+
+
+def _sha256(text):
+    digest = hashlib.sha256(text.encode("utf-8")).digest()
+    return "'sha256-%s'" % base64.b64encode(digest).decode("ascii")
+
+
+def render(rows):
+    """Return the whole page for ``rows`` (as from :func:`collect_rows`)."""
+    if rows:
+        csp = "default-src 'none'; script-src %s; style-src %s" % (_sha256(SCRIPT), _sha256(STYLE))
+    else:
+        csp = "default-src 'none'; style-src %s" % _sha256(STYLE)
+    head = (
+        '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
+        '<meta http-equiv="Content-Security-Policy" content="%s">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        "<title>Benchmark results</title>\n<style>%s</style>\n</head>\n<body>\n"
+        "<h1>Benchmark results</h1>\n" % (csp, STYLE)
+    )
+    if not rows:
+        return head + (
+            '<p class="empty">No results found under results/ in this checkout.</p>\n'
+            "</body>\n</html>\n"
+        )
+    count = len(rows)
+    intro = (
+        "<p>%d %s from results/ in this checkout. Duration, output tokens and cost come "
+        "from each result's .run.json; %s means not recorded.</p>\n"
+        % (count, "result" if count == 1 else "results", DASH)
+    )
+    options = "".join('<option value="%s">%s</option>' % (_esc(v), _esc(label))
+                      for v, label in GROUP_OPTIONS)
+    control = ('<p><label for="group-by">Group by</label> '
+               '<select id="group-by">%s</select></p>\n' % options)
+    header = "".join(
+        '<th scope="col" data-key="%s" data-type="%s"%s><button type="button">%s</button></th>'
+        % (key, kind, ' class="num"' if kind == "num" else "", _esc(label))
+        for key, label, kind in COLUMNS
+    )
+    body = "\n".join(_row_html(row) for row in rows)
+    return head + intro + control + (
+        '<table id="results">\n<thead><tr>%s</tr></thead>\n<tbody>\n%s\n</tbody>\n</table>\n'
+        "<script>%s</script>\n</body>\n</html>\n" % (header, body, SCRIPT)
+    )
