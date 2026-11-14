@@ -1,7 +1,0 @@
-{
-  "prompt_id": "epsilon-prompt",
-  "model": "m1",
-  "mode": "contains",
-  "pass": true,
-  "detail": "stray verdict on a prompt the harness cannot grade"
-}

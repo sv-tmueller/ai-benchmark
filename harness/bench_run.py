@@ -40,6 +40,7 @@ from harness.modes._common import derive_model, model_tag  # noqa: E402
 
 MODES = ("plan", "meta", "prompt", "issue-body", "pr-body", "grade")
 WORK_DIR = ".bench-run"
+KINDS = {"html": "single HTML file", "xml": "single XML file"}
 NO_GRADING = "no [grading] rule; no playability verdict written; browser verification pending"
 
 
@@ -98,7 +99,7 @@ def resolve(repo_root, arg, model):
     tpath, prompt = find_prompt(repo_root, arg)
     pid = prompt["id"]
 
-    # folder from the existing metas of this prompt
+    # folder from the existing metas of this prompt, else the file prefix
     metas = []
     for m in sorted(Path(repo_root, "results").glob("*/*.meta.json")):
         try:
@@ -107,24 +108,18 @@ def resolve(repo_root, arg, model):
             continue
         if meta.get("prompt_id") == pid:
             metas.append((m, meta))
-    folders = sorted({m.parent.name for m, _ in metas})
-    if len(folders) != 1:
-        raise Stop("%d results folders for %s %s; ask the user which one" % (len(folders), pid, folders))
-    folder = folders[0]
-
     prefix = prompt.get("file_prefix") or tpath.stem
+    folders = sorted({m.parent.name for m, _ in metas})
+    if len(folders) > 1:
+        raise Stop("%d results folders for %s %s; ask the user which one" % (len(folders), pid, folders))
+    folder = folders[0] if folders else prefix
     exts = {Path(meta["outputs"]["deliverable"]).suffix.lstrip(".") for _, meta in metas
             if isinstance(meta.get("outputs"), dict) and meta["outputs"].get("deliverable")}
     ext = prompt.get("save_as") or (exts.pop() if len(exts) == 1 else None)
     if not ext:
         raise Stop("cannot determine the extension (save_as unset, metas give %s)" % sorted(exts))
 
-    if ext == "html":
-        kind = "single HTML file"
-    elif ext == "md" and prompt.get("category") in ("game-generation", "app-generation"):
-        kind = "single markdown blueprint"
-    else:
-        kind = "text answer"
+    kind = KINDS.get(ext, "text answer")
 
     model_id = re.sub(r"\[[^\]]*\]$", "", model.strip()).strip()
     try:
@@ -169,7 +164,7 @@ def check_free(repo_root, plan, mode, run):
 
 
 def meta_text(plan, environ, meta_mode):
-    """The sidecar (Fable 5.1 shape plus the one-shot keys), as JSON text."""
+    """The one-shot meta sidecar, as JSON text."""
     prompt = plan.prompt
     ctx = ("The Claude Code system context was present alongside the TOML system text."
            if "system" in prompt

@@ -1,7 +1,0 @@
-{
-  "prompt_id": "sql-write-query",
-  "model": "glm_5_3_flash",
-  "mode": "sql-exec",
-  "pass": true,
-  "detail": "2 row(s) match the answer key"
-}

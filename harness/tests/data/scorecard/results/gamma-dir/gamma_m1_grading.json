@@ -1,7 +1,0 @@
-{
-  "prompt_id": "gamma-prompt",
-  "model": "m1",
-  "mode": "contains",
-  "pass": true,
-  "detail": "expected y found"
-}

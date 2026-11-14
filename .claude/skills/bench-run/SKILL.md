@@ -17,7 +17,7 @@ Applies only when `$ARGUMENTS` is empty or exactly `--dry-run`. The one-shot rul
 
 1. Pass the exact model id from your system prompt as `--model`. If you do not know it with certainty, stop and ask the user; the helper rejects bare aliases such as `fable` or `opus`. The effort level is read from `CLAUDE_EFFORT` by the helper; never retype it.
 2. Run `python3 harness/bench_run_all.py --model <model-id> --dry-run` in the foreground and relay its output as printed. If the arguments were `--dry-run`, end here. If any line starts with `STOP:` or any check says FAIL, relay it and end.
-3. Otherwise run `python3 harness/bench_run_all.py --model <model-id>` with the Bash tool's `run_in_background: true` (eleven generations far exceed the 10-minute limit of a foreground call) and wait for it to exit.
+3. Otherwise run `python3 harness/bench_run_all.py --model <model-id>` with the Bash tool's `run_in_background: true` (fifteen generations far exceed the 10-minute limit of a foreground call) and wait for it to exit.
 4. Relay the helper's report exactly as printed: one line per prompt, the counts, the log folder and the merge-step result. Re-typing `/bench-run` later skips every prompt that already has a result on `origin/main` or in an open PR and reaches the merge step again.
 5. Never open `results/`, the log folder, PR diffs or child transcripts, and never write, generate, merge or enable auto-merge yourself. The only merge that happens is the helper's own call to `harness/merge_results.py`, when that file exists.
 
@@ -28,8 +28,8 @@ Applies only when `$ARGUMENTS` is empty or exactly `--dry-run`. The one-shot rul
 3. Generate the whole deliverable in one pass and write it with exactly one Write call to the target path. No drafts, no scratch files, no split writes. No tool calls between reading the prompt and that Write: no search, no fetching docs or libraries, no running code.
 4. The content is the answer exactly as the prompt asks for it:
    - html: the file starts with `<!DOCTYPE html>`, with no markdown fences and no commentary.
-   - md blueprint: one markdown document with every project file as a fenced code block labelled with its path.
-   - text: only the answer the prompt asks for.
+   - xml: the file starts with `<?xml version="1.0" encoding="UTF-8"?>`, with no markdown fences and no commentary.
+   - anything else: only the answer the prompt asks for.
 5. After that Write the deliverable is frozen: no Edit, no second Write, no reformatting, no fixes even for an obvious bug, no opening or running it.
 
 If any of these rules was broken, or the Write failed, the run is **void**: delete the files you wrote, create no issue, and report "run void, re-run in a fresh session".
@@ -52,14 +52,14 @@ Each command below is one Bash call on one line, exactly as shown, with no `&&`,
 5. **Print the prompt verbatim:** `python3 harness/bench_run.py prompt <prompt-id> <model-id>` prints the `[system]` text, a `-----` line, the `[user]` text and one `image: prompts/<file>` line per `[images].files` entry. Read exactly those image files (read-only).
 6. **Generate** the deliverable and Write it to the planned target path (one Write, see the one-shot rules).
 7. **Meta.** `python3 harness/bench_run.py meta <prompt-id> <model-id>`. It requires the deliverable to exist and be non-empty and writes the sidecar shown in the plan preview, with `generated_utc` stamped now.
-8. **Grade only if the plan says a grading mode** (the TOML has `[grading]`; no prompt of the batch arm has one): `python3 harness/bench_run.py grade <prompt-id> <model-id>` runs `harness/grade.py --prompt` for it, prints the output and saves it for the PR body. On a non-zero exit it has deleted only this run's own grading sidecar (it is never committed): keep the deliverable and meta, restore any other sidecar it touched as in step 9, and report the error line (for example a missing sympy). Without `[grading]`, skip this step and write nothing about playability.
+8. **Grade only if the plan says a grading mode** (the TOML has `[grading]`; no prompt of the batch arm has one): `python3 harness/bench_run.py grade <prompt-id> <model-id>` runs `harness/grade.py --prompt` for it, prints the output and saves it for the PR body. On a non-zero exit it has deleted only this run's own grading sidecar (it is never committed): keep the deliverable and meta, restore any other sidecar it touched as in step 9, and report the error line. Without `[grading]`, skip this step and write nothing about playability.
 9. **Scope check.** `git status --porcelain --untracked-files=all` must show only the run's own 2 or 3 new paths (deliverable, meta, and the grading sidecar if `grade` exited 0 and wrote one). `grade.py --prompt` can rewrite the sidecars of other models' results for the same prompt; restore any such file with `git restore -- <path>` and mention it in the PR.
 10. **Issue.** `python3 harness/bench_run.py issue-body <prompt-id> <model-id>` writes the body and prints its path. Then `gh issue create --title "<issue_title>" --body-file <issue-body-path>` with the plan's `issue_title`; note the number `N`.
 11. **Branch.** `git switch -c <branch>`; the untracked new files carry over.
 12. **Commit.** `git add results/<folder>/<file>` once per run path, where `<folder>/<file>` is the part of the plan's `target`, `meta` or `grading_sidecar` path after `results/`. `git diff --cached --name-only` must equal exactly the run's own paths, with nothing under `prompts/`. Then `git commit -m "<commit>" --trailer "<trailer line>"` with the plan's `commit` line, and one `--trailer` for each attribution trailer your session's own rules require (none if they require none; this skill prescribes no attribution).
 13. **Push.** `git push -u origin feat/<N>-<prefix>-<tag->-result`, the branch from the Naming section.
 14. **PR.** `python3 harness/bench_run.py pr-body <prompt-id> <model-id> <N> --footer "<PR ending>"` writes the body, containing `Closes #N`, and prints its path; add `--footer` only if your session's own rules require a PR ending, with that exact line. Then `gh pr create --title "<pr_title>" --body-file <pr-body-path>` with the plan's `pr_title`. Never merge the PR and never enable auto-merge.
-15. **Return.** `git switch main`, or whatever branch you started on. Report the issue and PR URLs, the paths, the grading result and the next step: for game and app results, browser verification on a stronger machine, whose verdict is added later in its own commit outside this skill.
+15. **Return.** `git switch main`, or whatever branch you started on. Report the issue and PR URLs, the paths, the grading result and the next step: for HTML results, browser verification on a stronger machine, whose verdict is added later in its own commit outside this skill; for the ServiceNow update set, importing it into a Personal Developer Instance.
 
 ## Naming
 
@@ -74,7 +74,7 @@ Each command below is one Bash call on one line, exactly as shown, with no `&&`,
 
 `harness/bench_run.py` is the resolver. Run it from the repo root, one mode per call, ids unquoted, one line each: `python3 harness/bench_run.py <mode> <prompt-id> <model-id>`. It needs Python 3.11+ and read-only `git` and `gh`.
 
-- `plan` and `meta`: resolve the prompt, results folder, extension, model tag and paths, and check that no target exists on disk, on `origin/main` or in an open PR. `plan` prints only `key: value` lines and a sidecar preview, never any content from a result file; `meta` writes the sidecar.
+- `plan` and `meta`: resolve the prompt, results folder (the folder of the prompt's existing results, else its `file_prefix`), extension, model tag and paths, and check that no target exists on disk, on `origin/main` or in an open PR. `plan` prints only `key: value` lines and a sidecar preview, never any content from a result file; `meta` writes the sidecar.
 - `prompt`: prints the prompt exactly as step 5 describes.
 - `issue-body` and `pr-body <N> [--footer "<line>"]`: write the issue or PR body to `.bench-run/<prefix>_<tag>.issue.md` or `.pr.md` (a git-ignored folder) and print that path. For a graded prompt `pr-body` stops with a `STOP:` line unless `grade` saved its output.
 - `grade`: runs `harness/grade.py --prompt <prompt-id>`, prints its output and saves it to `.bench-run/<prefix>_<tag>.grade.txt`; on failure it deletes only this run's own grading sidecar.

@@ -230,6 +230,13 @@ class GateTests(unittest.TestCase):
         main = MAIN_PATHS | {"results/alpha-old/alpha_older.meta.json"}
         self.assertReason(run_gate(make_pr(), main_paths=main), "wrong folder")
 
+    def test_first_result_of_a_prompt_uses_the_prefix_as_folder(self):
+        self.assertEqual(run_gate(make_pr(), main_paths=frozenset()), [])
+
+    def test_first_result_of_a_prompt_in_another_folder_is_rejected(self):
+        pr = make_pr(family="beta")
+        self.assertReason(run_gate(pr, main_paths=frozenset()), "wrong folder")
+
     def test_red_checks(self):
         checks = [{"name": "validate-prompts (3.11)", "bucket": "fail"}]
         self.assertReason(run_gate(make_pr(), checks=checks),
@@ -447,11 +454,11 @@ class LedgerTests(unittest.TestCase):
         new, updated, _ = rewrite(main_paths=paths)
         self.assertEqual(status_cell(new, "results/zzz/zzz_claude_fable_5_2.html"), "not run")
 
-    def test_real_readme_has_eleven_rows_for_fable(self):
+    def test_real_readme_has_fifteen_rows_for_fable(self):
         text = (mr.REPO_ROOT / "README.md").read_text(encoding="utf-8")
         prompts = mr.prompts_by_id(mr.load_prompt_files(mr.PROMPTS_DIR))
         rows = mr.ledger_rows(text, "claude_fable_5_2", prompts)
-        self.assertEqual(len(rows), 11)
+        self.assertEqual(len(rows), 15)
 
 
 # --- orchestration ----------------------------------------------------------

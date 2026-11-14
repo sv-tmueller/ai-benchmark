@@ -1,7 +1,0 @@
-{
-  "prompt_id": "game-weichensteller",
-  "model": "claude_fable_5_1",
-  "mode": "playability",
-  "pass": true,
-  "detail": "playability verdict: PLAYABLE_VERIFIED"
-}

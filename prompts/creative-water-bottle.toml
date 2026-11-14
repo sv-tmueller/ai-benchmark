@@ -1,8 +1,14 @@
-id          = "creative-product-description"
-title       = "Write a creative product description for a smart water bottle"
+# Reworked in #285: the task (a 120-150 word product description) is
+# unchanged; the answer is now delivered as one HTML page so it can be
+# reviewed in a browser. The id now equals the file stem (it used to be
+# "creative-product-description").
+id          = "creative-water-bottle"
+title       = "Creative product description for a smart water bottle, as an HTML page"
 category    = "creative-writing"
 difficulty  = "easy"
 temperature = 0.7
+save_as     = "html"
+file_prefix = "creative-water-bottle"
 
 [system]
 text = "You are a creative copywriter for premium lifestyle brands."
@@ -20,4 +26,16 @@ called "HydraSense". Key features:
 
 Make it engaging but not gimmicky. Target audience: health-conscious
 professionals aged 25-45.
+
+PRESENTATION
+Deliver the description as a single, self-contained HTML page (inline CSS, no
+CDN, no external assets, no images, no JavaScript needed). The page shows the
+product name as the heading and the description as the body copy, set like the
+hero text of a premium product page.
+- The complete description, and nothing else, is inside one element with
+  id="description". Its text is the 120-150 words that count.
+- Outside that element the page may only show the product name and a line
+  with the word count of the description.
+
+The deliverable is one file, creative-water-bottle.html, starting with <!DOCTYPE html>, no markdown fences, no explanations.
 '''

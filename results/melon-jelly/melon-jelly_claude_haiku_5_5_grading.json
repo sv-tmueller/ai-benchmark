@@ -1,7 +1,0 @@
-{
-  "prompt_id": "game-melon-jelly",
-  "model": "claude_haiku_5_5",
-  "mode": "playability",
-  "pass": false,
-  "detail": "playability verdict: BOOTS_ONLY"
-}

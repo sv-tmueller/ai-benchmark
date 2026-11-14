@@ -9,4 +9,4 @@
 ## Style
 
 - Conventional commits (`feat:`, `fix:`, `docs:` …), matching the existing git log
-- New harness code is stdlib-only Python 3.11+ unless a mode genuinely needs a library (sympy for symbolic math); no other new dependencies without justification in the PR body
+- New harness code is stdlib-only Python 3.11+ unless a mode genuinely needs a library; no new dependencies without justification in the PR body

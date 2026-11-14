@@ -30,12 +30,11 @@ def derive_model(result_path, prompt=None):
     names diverge from prompt ids across the corpus, so the directory name is
     only a last resort:
 
-    1. ``prompt["file_prefix"]`` — e.g. ``follow-spec`` in
-       ``results/probe-follow-spec/follow-spec_glm_5_3_flash.txt``.
-    2. ``prompt["id"]`` — for prompts that declare no ``file_prefix``
-       (``math-addition``, ``vision-shape-count``).
-    3. The stem after its first underscore — for prefix-divergent results
-       whose prompt is unknown (e.g. ``servicenow-catalog-stories_*``).
+    1. ``prompt["file_prefix"]`` — e.g. ``melon-jelly`` in
+       ``results/melon-jelly/melon-jelly_claude_fable_5_2.html``.
+    2. ``prompt["id"]`` — for prompts that declare no ``file_prefix``.
+    3. The stem after its first underscore — for results whose prompt is
+       unknown.
 
     The remainder keeps embedded underscores and name suffixes intact
     (``melon-jelly_claude_haiku_5_5-v2.html`` -> ``claude_haiku_5_5-v2``).

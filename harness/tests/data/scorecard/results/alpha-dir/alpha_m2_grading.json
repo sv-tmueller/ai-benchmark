@@ -1,7 +1,0 @@
-{
-  "prompt_id": "alpha-prompt",
-  "model": "m2",
-  "mode": "contains",
-  "pass": false,
-  "detail": "expected x not found"
-}

@@ -1,6 +1,0 @@
-id       = "delta-prompt"
-title    = "Delta"
-category = "cat-delta"
-
-[user]
-text = "Build a game."

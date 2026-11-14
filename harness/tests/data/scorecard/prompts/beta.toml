@@ -1,6 +1,0 @@
-id       = "beta-prompt"
-title    = "Beta"
-category = "cat-beta"
-
-[user]
-text = "Say hello."
