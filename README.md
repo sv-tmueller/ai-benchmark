@@ -639,7 +639,7 @@ generation alone does not earn one.
 | `game-last-flight` | blueprint (md) | `results/last-flight/last-flight_claude_fable_5_2.md` | generated, browser check pending |
 | `game-cities-skylines` | blueprint (md) | `results/cities-skylines/cities-skylines_claude_fable_5_2.md` | generated, browser check pending |
 | `game-mario-kart` | blueprint (md) | `results/mario-kart/mario-kart_claude_fable_5_2.md` | generated, browser check pending |
-| `app-stillwater` | blueprint (md) | `results/stillwater/stillwater_claude_fable_5_2.md` | not run |
+| `app-stillwater` | blueprint (md) | `results/stillwater/stillwater_claude_fable_5_2.md` | generated, browser check pending |
 | `game-weichensteller` | HTML | `results/weichensteller/weichensteller_claude_fable_5_2.html` | not run |
 
 **Merging results.** `python3 harness/merge_results.py --model <model-id>`
