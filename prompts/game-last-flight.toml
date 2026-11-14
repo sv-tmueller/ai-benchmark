@@ -10,8 +10,6 @@ id          = "game-last-flight"
 title       = "Cinematic 3D superhero flight and rescue game as a single HTML file (Three.js)"
 category    = "game-generation"
 difficulty  = "hard"
-temperature = 0.2
-max_tokens  = 65536
 save_as     = "html"
 file_prefix = "last-flight"
 

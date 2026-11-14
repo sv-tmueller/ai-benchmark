@@ -175,9 +175,6 @@ def meta_text(plan, environ, meta_mode):
            if "system" in prompt
            else "The TOML has no system text; the Claude Code system context was present.")
 
-    def given(key, name):
-        return "%s %s" % (name, prompt[key]) if key in prompt else "%s not set in the TOML" % name
-
     sidecar = {
         "generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if meta_mode
         else "<UTC timestamp stamped in meta mode>",
@@ -192,10 +189,9 @@ def meta_text(plan, environ, meta_mode):
             "temperature": None,
             "max_tokens_requested_initial": None,
             "reasoning_effort": plan.effort,
-            "note": "Sampling settings from the TOML (%s) could not be applied in-session; session defaults applied. "
+            "note": "Session defaults applied; sampling settings cannot be set in-session. "
             "reasoning_effort is the CLAUDE_EFFORT level in effect when the run started. "
-            "%s finish_reason and usage are not observable in-session." % (
-                given("temperature", "temperature") + "; " + given("max_tokens", "max_tokens"), ctx),
+            "%s finish_reason and usage are not observable in-session." % ctx,
         },
         "finish_reason": None,
         "truncated": False,
@@ -317,8 +313,8 @@ def pr_body(plan, number, footer, grade_text):
         "",
         "## In-session caveats",
         "",
-        "Generated in-session by Claude Code: the TOML's temperature and max_tokens could not be "
-        "applied (session defaults applied), and finish_reason and usage are not observable.",
+        "Generated in-session by Claude Code: session defaults applied (sampling settings cannot be "
+        "set in-session), and finish_reason and usage are not observable.",
         "",
         "Closes #%d" % number,
     ]

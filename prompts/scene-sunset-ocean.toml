@@ -1,9 +1,7 @@
-id          = "game-sunset-ocean"
+id          = "scene-sunset-ocean"
 title       = "Photoreal Three.js sunset ocean scene as a single HTML file"
-category    = "game-generation"
+category    = "scene-generation"
 difficulty  = "hard"
-temperature = 0.2
-max_tokens  = 65536
 save_as     = "html"
 file_prefix = "sunset-ocean"
 

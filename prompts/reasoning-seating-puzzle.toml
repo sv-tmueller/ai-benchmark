@@ -5,7 +5,6 @@ id          = "reasoning-seating-puzzle"
 title       = "Solve a deductive seating puzzle step by step, as an HTML page"
 category    = "reasoning"
 difficulty  = "hard"
-temperature = 0.0
 save_as     = "html"
 file_prefix = "reasoning-seating-puzzle"
 

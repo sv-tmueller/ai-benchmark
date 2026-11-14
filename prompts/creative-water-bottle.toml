@@ -6,7 +6,6 @@ id          = "creative-water-bottle"
 title       = "Creative product description for a smart water bottle, as an HTML page"
 category    = "creative-writing"
 difficulty  = "easy"
-temperature = 0.7
 save_as     = "html"
 file_prefix = "creative-water-bottle"
 

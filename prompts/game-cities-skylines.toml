@@ -10,8 +10,6 @@ id          = "game-cities-skylines"
 title       = "Cities: Skylines II-class city builder as a single HTML file (Three.js)"
 category    = "game-generation"
 difficulty  = "hard"
-temperature = 0.2
-max_tokens  = 65536
 save_as     = "html"
 file_prefix = "cities-skylines"
 

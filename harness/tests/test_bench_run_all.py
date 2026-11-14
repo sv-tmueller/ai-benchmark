@@ -646,7 +646,7 @@ class BatchCase(FakeClaudeCase):
 class ArmDataTest(unittest.TestCase):
     def test_arm_prompts_match_the_readme_ledger_in_order(self):
         self.assertEqual(list(bra.ARM_PROMPTS), [pid for pid, _ in readme_ledger()])
-        self.assertEqual(len(bra.ARM_PROMPTS), 15)
+        self.assertEqual(len(bra.ARM_PROMPTS), 14)
 
     def test_each_arm_prompt_has_one_toml_with_prefix_and_save_as_and_no_images_or_grading(self):
         import tomllib
@@ -694,7 +694,7 @@ class SelectionParseTest(unittest.TestCase):
 
     def test_a_single_number_a_list_and_a_range(self):
         for text, want in (("2", arm(2)), ("1,4,7", arm(1, 4, 7)), ("3-6", arm(3, 4, 5, 6)),
-                           ("1,3-5", arm(1, 3, 4, 5)), ("15", arm(15)), ("1-15", bra.ARM_PROMPTS)):
+                           ("1,3-5", arm(1, 3, 4, 5)), ("14", arm(14)), ("1-14", bra.ARM_PROMPTS)):
             with self.subTest(text=text):
                 self.assertEqual(bra.parse_selection(text), want)
 
@@ -709,7 +709,7 @@ class SelectionParseTest(unittest.TestCase):
         self.assertEqual(bra.parse_selection("4-4"), arm(4))
 
     def test_every_malformed_or_out_of_range_answer_is_rejected(self):
-        for text in ("", "   ", "0", "16", "3-16", "0-3", "6-3", "1,,2", "1,", ",1", "-3", "3-",
+        for text in ("", "   ", "0", "15", "3-15", "0-3", "6-3", "1,,2", "1,", ",1", "-3", "3-",
                      "1-2-3", "all,3", "3,all", "1 3", "1.5", "x", "game-melon-jelly",
                      "first three", "٣", "1-٣", "１", "99999999999999999999",
                      "1" * 5000, "all all", "1;2", "1-"):
@@ -719,9 +719,9 @@ class SelectionParseTest(unittest.TestCase):
 
     def test_a_selection_error_is_a_value_error_with_a_reason(self):
         with self.assertRaises(ValueError) as ctx:
-            bra.parse_selection("16")
+            bra.parse_selection("15")
         self.assertIsInstance(ctx.exception, bra.SelectionError)
-        self.assertIn("16", str(ctx.exception))
+        self.assertIn("15", str(ctx.exception))
 
 
 class SelectModeTest(BatchCase):
@@ -734,8 +734,8 @@ class SelectModeTest(BatchCase):
     def test_a_valid_answer_prints_the_prompts_line_in_arm_order_and_starts_nothing(self):
         code, out = self.batch("--select", "1,3-5")
         self.assertEqual(code, 0, out)
-        self.assertEqual(out, "prompts: game-melon-jelly,game-minecraft,game-meridian-launch,"
-                              "game-sunset-ocean\n")
+        self.assertEqual(out, "prompts: game-melon-jelly,game-minecraft,scene-meridian-launch,"
+                              "scene-sunset-ocean\n")
         self.assert_read_only()
 
     def test_a_scrambled_answer_comes_back_sorted_and_without_repeats(self):
@@ -743,14 +743,14 @@ class SelectModeTest(BatchCase):
         self.assertEqual(out, "prompts: game-melon-jelly,game-minecraft\n")
 
     def test_selecting_everything_prints_prompts_all(self):
-        for answer in ("all", "ALL", "1-15", "15,1-14"):
+        for answer in ("all", "ALL", "1-14", "14,1-13"):
             with self.subTest(answer=answer):
                 code, out = self.batch("--select", answer)
                 self.assertEqual((code, out), (0, "prompts: all\n"))
         self.assert_read_only()
 
     def test_an_empty_or_unparseable_answer_is_invalid_with_exit_3(self):
-        for answer in ("", "x", "16", "first three"):
+        for answer in ("", "x", "15", "first three"):
             with self.subTest(answer=answer):
                 code, out = self.batch("--select", answer)
                 self.assertEqual(code, 3, out)
@@ -782,16 +782,16 @@ class ListModeTest(BatchCase):
                      for n, p in prs]
         self.git.save(st)
 
-    def test_it_prints_a_header_and_fifteen_numbered_prompts_in_arm_order(self):
+    def test_it_prints_a_header_and_fourteen_numbered_prompts_in_arm_order(self):
         code, out = self.batch("--list")
         self.assertEqual(code, 0, out)
         lines = out.splitlines()
-        self.assertEqual(lines[0], "arm: 15 prompts for claude-fable-5-2 at effort high")
-        self.assertEqual(len(lines), 16)
+        self.assertEqual(lines[0], "arm: 14 prompts for claude-fable-5-2 at effort high")
+        self.assertEqual(len(lines), 15)
         self.assertEqual(self.rows(out), [(str(i), pid, "no result")
                                           for i, pid in enumerate(bra.ARM_PROMPTS, 1)])
         self.assertEqual(lines[1], " 1. game-melon-jelly  no result")
-        self.assertEqual(lines[10], "10. app-stillwater  no result")
+        self.assertEqual(lines[10], "10. game-weichensteller  no result")
 
     def test_a_result_on_origin_main_and_one_in_an_open_pr_are_marked(self):
         self.set_files(main_files=["results/lava-lamp/lava-lamp_claude_fable_5_2_high.html"],
@@ -876,7 +876,7 @@ class SubsetRunTest(BatchCase):
         self.assertEqual(self.called_ids(), ["game-melon-jelly", "game-minecraft"])
         self.assertIn("[1/2] game-melon-jelly  running ...", out)
         self.assertIn("[2/2] game-minecraft  pr-opened #2", out)
-        self.assertNotIn("/15]", out)
+        self.assertNotIn("/14]", out)
 
     def test_the_report_lists_only_the_selected_prompts_and_counts_them(self):
         _, out = self.batch("--prompts", self.CHOSEN)
@@ -914,7 +914,7 @@ class SubsetRunTest(BatchCase):
         code, out = self.batch("--prompts", "all")
         self.assertEqual(code, 0, out)
         self.assertEqual(self.called_ids(), list(bra.ARM_PROMPTS))
-        self.assertIn("[15/15] servicenow-loaner-request", out)
+        self.assertIn("[14/14] servicenow-loaner-request", out)
 
     def test_a_repeated_id_starts_one_child(self):
         self.batch("--prompts", "game-melon-jelly,game-melon-jelly")
@@ -923,12 +923,12 @@ class SubsetRunTest(BatchCase):
     def test_after_a_halt_only_the_remaining_selected_prompts_are_not_started(self):
         self.set_children(by_prompt={"game-lava-lamp": {
             "effects": {"write": ["results/lava-lamp/stray.txt"]}}})
-        code, out = self.batch("--prompts", "game-sunset-ocean,game-melon-jelly,game-lava-lamp,game-minecraft")
+        code, out = self.batch("--prompts", "scene-sunset-ocean,game-melon-jelly,game-lava-lamp,game-minecraft")
         self.assertEqual(self.called_ids(), ["game-melon-jelly", "game-lava-lamp"])
         rep = self.report_lines(out)
-        self.assertEqual(list(rep), ["game-melon-jelly", "game-lava-lamp", "game-minecraft", "game-sunset-ocean"])
+        self.assertEqual(list(rep), ["game-melon-jelly", "game-lava-lamp", "game-minecraft", "scene-sunset-ocean"])
         self.assertEqual(rep["game-minecraft"][0], "not-started: tree dirty after game-lava-lamp")
-        self.assertEqual(rep["game-sunset-ocean"][0], "not-started: tree dirty after game-lava-lamp")
+        self.assertEqual(rep["scene-sunset-ocean"][0], "not-started: tree dirty after game-lava-lamp")
         self.assertRegex(out, r"(?m)^not-started: 2$")
         self.assertNotEqual(code, 0)
 
@@ -952,7 +952,7 @@ class SubsetRunTest(BatchCase):
 
     def test_the_dry_run_with_prompts_all_shows_the_whole_arm(self):
         _, out = self.batch("--dry-run", "--prompts", "all")
-        self.assertEqual(len(re.findall(r"(?m)^prompt ", out)), 15)
+        self.assertEqual(len(re.findall(r"(?m)^prompt ", out)), 14)
 
 
 class RejectedPromptsTest(BatchCase):
@@ -970,7 +970,7 @@ class RejectedPromptsTest(BatchCase):
 
     def test_an_unknown_id_is_named_in_the_stop_line(self):
         _, out = self.batch("--prompts", "game-melon-jelly,game-unknown")
-        self.assertIn("STOP: game-unknown is not one of the 15 arm prompts", out)
+        self.assertIn("STOP: game-unknown is not one of the 14 arm prompts", out)
 
     def test_an_empty_value_does_not_quietly_mean_the_whole_arm(self):
         code, out = self.batch("--prompts", "")
@@ -1062,7 +1062,7 @@ class BatchPreflightTest(BatchCase):
         (self.repo / "scratch.txt").write_text("x")
         code, out = self.batch()
         self.assertEqual(code, 0, out)
-        self.assertEqual(len(self.calls()), 15)
+        self.assertEqual(len(self.calls()), 14)
 
     def test_modified_tracked_file_stops_before_any_child(self):
         self.git.set_main(dirty_tracked=["README.md"])
@@ -1076,14 +1076,14 @@ class BatchPreflightTest(BatchCase):
 
 
 class BatchLoopTest(BatchCase):
-    def test_a_clean_run_attempts_all_fifteen_in_order_and_reports_each_pr(self):
+    def test_a_clean_run_attempts_all_fourteen_in_order_and_reports_each_pr(self):
         code, out = self.batch()
         self.assertEqual(code, 0, out)
         self.assertEqual(self.called_ids(), list(bra.ARM_PROMPTS))
         rep = self.report_lines(out)
         self.assertEqual(list(rep), list(bra.ARM_PROMPTS))
         self.assertEqual(rep["game-melon-jelly"], ("pr-opened #1", "https://example.test/pull/1"))
-        self.assertEqual(rep["game-weichensteller"], ("pr-opened #11", "https://example.test/pull/11"))
+        self.assertEqual(rep["game-weichensteller"], ("pr-opened #10", "https://example.test/pull/10"))
 
     def test_every_child_gets_the_model_and_the_effort_level(self):
         self.batch()
@@ -1094,7 +1094,7 @@ class BatchLoopTest(BatchCase):
 
     def test_progress_lines_come_before_the_report(self):
         _, out = self.batch()
-        first_progress = out.index("[1/15] game-melon-jelly")
+        first_progress = out.index("[1/14] game-melon-jelly")
         self.assertLess(first_progress, out.index("game-melon-jelly  pr-opened"))
 
     def test_prompt_on_origin_main_is_skipped(self):
@@ -1103,7 +1103,7 @@ class BatchLoopTest(BatchCase):
         self.git.save(st)
         code, out = self.batch()
         self.assertNotIn("game-melon-jelly", self.called_ids())
-        self.assertEqual(len(self.calls()), 14)
+        self.assertEqual(len(self.calls()), 13)
         self.assertEqual(self.report_lines(out)["game-melon-jelly"][0], "skipped: on origin/main")
 
     def test_a_result_at_another_effort_level_is_not_a_reason_to_skip(self):
@@ -1112,7 +1112,7 @@ class BatchLoopTest(BatchCase):
         self.git.save(st)
         _, out = self.batch()
         self.assertIn("game-melon-jelly", self.called_ids())
-        self.assertEqual(len(self.calls()), 15)
+        self.assertEqual(len(self.calls()), 14)
 
     def test_the_report_names_the_model_and_the_effort_level(self):
         _, out = self.batch()
@@ -1150,9 +1150,9 @@ class BatchLoopTest(BatchCase):
             "game-melon-jelly": {"exit": 1, "effects": {}},
             "game-lava-lamp": {"sleep": 60, "effects": {}},
             "game-minecraft": {"json": result_json("STOP: results/x already exists on disk"), "effects": {}},
-            "game-meridian-launch": {"json": result_json("x\nrun void, re-run in a fresh session"),
+            "scene-meridian-launch": {"json": result_json("x\nrun void, re-run in a fresh session"),
                                      "effects": {}},
-            "game-sunset-ocean": {"json": result_json("x", is_error=True, subtype="error_during_execution"),
+            "scene-sunset-ocean": {"json": result_json("x", is_error=True, subtype="error_during_execution"),
                                   "effects": {}},
         })
         # the 2 s timeout applies to every child; only lava-lamp is slow
@@ -1163,10 +1163,10 @@ class BatchLoopTest(BatchCase):
         self.assertEqual(rep["game-lava-lamp"][0], "timed-out")
         self.assertTrue(rep["game-minecraft"][0].startswith("ended without PR"))
         self.assertIn("STOP: results/x already exists on disk", rep["game-minecraft"][0])
-        self.assertIn("run void", rep["game-meridian-launch"][0])
-        self.assertEqual(rep["game-sunset-ocean"][0], "failed: error_during_execution")
+        self.assertIn("run void", rep["scene-meridian-launch"][0])
+        self.assertEqual(rep["scene-sunset-ocean"][0], "failed: error_during_execution")
         self.assertTrue(rep["game-horror-house"][0].startswith("pr-opened"))
-        self.assertEqual(len(rep), 15)
+        self.assertEqual(len(rep), 14)
         self.assertNotEqual(code, 0)
 
     def test_denied_tool_names_and_a_model_mismatch_are_reported_without_content(self):
@@ -1183,7 +1183,7 @@ class BatchLoopTest(BatchCase):
 
     def test_counts_and_log_folder_are_reported(self):
         _, out = self.batch()
-        self.assertRegex(out, r"(?m)^pr-opened: 15$")
+        self.assertRegex(out, r"(?m)^pr-opened: 14$")
         self.assertIn("log folder: %s" % (self.dir / "logs"), out)
         self.assertTrue((self.dir / "logs" / "game-melon-jelly.json").exists())
 
@@ -1210,7 +1210,7 @@ class BatchCleanupTest(BatchCase):
             "json": result_json("run void, re-run in a fresh session"),
             "effects": {"write": ["{target}"]}}})
         code, out = self.batch()
-        self.assertEqual(len(self.calls()), 15)
+        self.assertEqual(len(self.calls()), 14)
         name = Path(self.targets["game-melon-jelly"]).name
         moved = self.dir / "logs" / "leftovers" / "game-melon-jelly" / name
         self.assertTrue(moved.is_file())
@@ -1220,7 +1220,7 @@ class BatchCleanupTest(BatchCase):
     def test_a_clean_worktree_on_a_feature_branch_is_detached_at_origin_main_again(self):
         self.set_children(by_prompt={"game-melon-jelly": {"effects": {"branch": "feat/9-x"}}})
         self.batch()
-        self.assertEqual(len(self.calls()), 15)
+        self.assertEqual(len(self.calls()), 14)
         self.assertEqual(self.calls()[0]["start_tree"]["branch"], "")
         self.assertEqual(self.calls()[1]["start_tree"]["branch"], "")  # after the feat/9-x child
         self.assertIn(["git", "switch", "--detach", "origin/main"], self.git.calls_in(self.wt))
@@ -1264,7 +1264,7 @@ class WorktreeCreationTest(BatchCase):
     def test_every_child_runs_in_the_worktree_named_after_the_run_tag(self):
         self.batch()
         self.assertEqual(self.wt.name, "bench-run-claude_fable_5_2_high")
-        self.assertEqual(len(self.calls()), 15)
+        self.assertEqual(len(self.calls()), 14)
         for call in self.calls():
             self.assertEqual(Path(call["cwd"]).resolve(), self.wt.resolve())
 
@@ -1344,12 +1344,12 @@ class WorktreeLockTest(BatchCase):
         self.hold(self.wt_for("max"))
         code, out = self.batch()
         self.assertEqual(code, 0, out)
-        self.assertEqual(len(self.calls()), 15)
+        self.assertEqual(len(self.calls()), 14)
 
     def test_the_lock_fd_is_passed_to_every_child(self):
         with mock.patch.object(bra, "launch", wraps=bra.launch) as launch:
             self.batch()
-        self.assertEqual(launch.call_count, 15)
+        self.assertEqual(launch.call_count, 14)
         for call in launch.call_args_list:
             (fd,) = call.kwargs["pass_fds"]
             self.assertIsInstance(fd, int)

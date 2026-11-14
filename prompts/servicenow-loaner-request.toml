@@ -9,8 +9,6 @@ id          = "servicenow-loaner-request"
 title       = "Equipment Loan Desk as one importable ServiceNow update set (XML)"
 category    = "servicenow"
 difficulty  = "hard"
-temperature = 0.2
-max_tokens  = 65536
 save_as     = "xml"
 file_prefix = "servicenow-loaner-request"
 
