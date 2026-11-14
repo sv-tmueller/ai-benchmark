@@ -9,8 +9,6 @@ id          = "game-melon-jelly"
 title       = "Melon Jelly: XPBD soft-body watermelon slice"
 category    = "game-generation"
 difficulty  = "hard"
-temperature = 0.2
-max_tokens  = 65536
 save_as     = "html"
 file_prefix = "melon-jelly"
 

@@ -2,8 +2,6 @@ id          = "game-minecraft"
 title       = "Build a Minecraft clone as a single self-contained HTML file"
 category    = "game-generation"
 difficulty  = "hard"
-temperature = 0.2
-max_tokens  = 65536
 save_as     = "html"
 file_prefix = "minecraft"
 

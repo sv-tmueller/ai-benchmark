@@ -69,20 +69,19 @@ if str(REPO_ROOT) not in sys.path:
 
 from harness.modes._common import EFFORT_LEVELS, model_tag, run_tag, session_effort  # noqa: E402
 
-# The 15 prompts of the one-shot arm, in ledger order: every prompt under
+# The 14 prompts of the one-shot arm, in ledger order: every prompt under
 # prompts/. A unit test checks this against the README ledger table and the
 # prompt files.
 ARM_PROMPTS = (
     "game-melon-jelly",
     "game-lava-lamp",
     "game-minecraft",
-    "game-meridian-launch",
-    "game-sunset-ocean",
+    "scene-meridian-launch",
+    "scene-sunset-ocean",
     "game-horror-house",
     "game-last-flight",
     "game-cities-skylines",
     "game-mario-kart",
-    "app-stillwater",
     "game-weichensteller",
     "game-rubiks-cube",
     "creative-water-bottle",

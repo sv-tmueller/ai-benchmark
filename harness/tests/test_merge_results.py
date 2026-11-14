@@ -510,11 +510,11 @@ class LedgerTests(unittest.TestCase):
         new, updated, _ = rewrite(main_paths=paths)
         self.assertEqual(status_cell(new, "results/zzz/zzz_claude_fable_5_2_<effort>.html"), "not run")
 
-    def test_real_readme_has_fifteen_rows_for_fable(self):
+    def test_real_readme_has_fourteen_rows_for_fable(self):
         text = (mr.REPO_ROOT / "README.md").read_text(encoding="utf-8")
         prompts = mr.prompts_by_id(mr.load_prompt_files(mr.PROMPTS_DIR))
         rows = mr.ledger_rows(text, "claude_fable_5_2", prompts)
-        self.assertEqual(len(rows), 15)
+        self.assertEqual(len(rows), 14)
 
 
 # --- orchestration ----------------------------------------------------------

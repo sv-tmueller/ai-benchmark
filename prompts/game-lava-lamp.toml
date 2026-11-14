@@ -7,8 +7,6 @@ id          = "game-lava-lamp"
 title       = "Photoreal ray-marched lava lamp studio shot"
 category    = "game-generation"
 difficulty  = "hard"
-temperature = 0.2
-max_tokens  = 65536
 save_as     = "html"
 file_prefix = "lava-lamp"
 

@@ -21,8 +21,6 @@ id          = "game-weichensteller"
 title       = "Weichensteller: Three.js model-railway junction game"
 category    = "game-generation"
 difficulty  = "hard"
-temperature = 0.2
-max_tokens  = 65536
 save_as     = "html"
 file_prefix = "weichensteller"
 

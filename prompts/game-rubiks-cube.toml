@@ -5,8 +5,6 @@ id          = "game-rubiks-cube"
 title       = "Rubik's Cube: a solvable 3D cube puzzle as a single HTML file (Three.js)"
 category    = "game-generation"
 difficulty  = "hard"
-temperature = 0.2
-max_tokens  = 65536
 save_as     = "html"
 file_prefix = "rubiks-cube"
 

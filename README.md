@@ -7,9 +7,8 @@ prompt, an `.xml` update set that imports into an instance.
 
 Two things live here:
 
-- **`prompts/`** — 15 TOML prompt definitions: eleven games and 3D scenes,
-  one app, one creative-writing task, one reasoning task and one ServiceNow
-  build task.
+- **`prompts/`** — 14 TOML prompt definitions: eleven games and 3D scenes,
+  one creative-writing task, one reasoning task and one ServiceNow build task.
 - **`results/`** — the collected outputs, one folder per prompt, each
   deliverable next to a `.meta.json` sidecar.
 
@@ -23,7 +22,7 @@ the git history.
 ## Prompts
 
 One TOML file per prompt. Core fields: `id` (equal to the file stem),
-`title`, `category`, `difficulty`, `temperature`, `max_tokens`, `save_as`
+`title`, `category`, `difficulty`, `save_as`
 (the deliverable's extension), `file_prefix` (the result file and folder
 name) and a `[system]`/`[user]` text pair.
 
@@ -34,20 +33,14 @@ name) and a `[system]`/`[user]` text pair.
 | `game-melon-jelly.toml` | HTML: soft-body watermelon slice to squish and cut | None — fully offline |
 | `game-lava-lamp.toml` | HTML: ray-marched lava lamp studio shot | None — fully offline |
 | `game-minecraft.toml` | HTML: voxel world with mining, crafting and mobs | Internet — Three.js + JSZip from a CDN; optional resource pack |
-| `game-meridian-launch.toml` | HTML: scripted rocket launch scene | Internet — Three.js from a CDN |
-| `game-sunset-ocean.toml` | HTML: open ocean at sunset | Internet — Three.js from a CDN |
+| `scene-meridian-launch.toml` | HTML: scripted rocket launch scene | Internet — Three.js from a CDN |
+| `scene-sunset-ocean.toml` | HTML: open ocean at sunset | Internet — Three.js from a CDN |
 | `game-horror-house.toml` | HTML: first-person haunted-house escape | Internet — Three.js from a CDN |
 | `game-last-flight.toml` | HTML: superhero flight and airliner rescue, with a `?selftest` mode | Internet — Three.js + postprocessing from a CDN |
 | `game-cities-skylines.toml` | HTML: city builder with a living demo city | Internet — Three.js from a CDN |
 | `game-mario-kart.toml` | HTML: kart racer | Internet — Three.js from a CDN |
 | `game-weichensteller.toml` | HTML: model-railway junction game | Internet — Three.js from a CDN |
 | `game-rubiks-cube.toml` | HTML: 3D Rubik's cube to scramble and solve by hand | Internet — Three.js from a CDN |
-
-### App
-
-| Prompt | Deliverable | Runtime needs |
-|---|---|---|
-| `app-stillwater.toml` | HTML: voice-first AI companion that remembers sessions, browser-only | A Chromium-based browser and a microphone (text fallback otherwise); the page loads nothing itself, but Chrome's speech recognition and network voices need to be online |
 
 ### Text tasks
 
@@ -80,10 +73,10 @@ The model tag is the model id in lower case with every run of
 non-alphanumerics replaced by `_` (`claude-fable-5-2` → `claude_fable_5_2`).
 The effort is the effort level of the session that generated the result
 (`low`, `medium`, `high`, `xhigh` or `max`), so
-`stillwater_claude_fable_5_2_high.html` is Fable 5.2 at `high`, and results of
+`melon-jelly_claude_fable_5_2_high.html` is Fable 5.2 at `high`, and results of
 one model at different effort levels sit side by side.
 The sidecar records the prompt, the model, how the result was generated and
-which sampling settings applied.
+that the session's defaults applied.
 
 ## One-shot arm
 
@@ -93,7 +86,7 @@ below is the ledger for Claude Fable 5.2.
 
 **How to run.** Start a batch with `/bench-run` and no arguments from a
 checkout of `main` that matches `origin/main` with no tracked changes
-(untracked files don't matter). It lists the arm's 15 prompts numbered in
+(untracked files don't matter). It lists the arm's 14 prompts numbered in
 ledger order, marks each one that already has a result on `origin/main` or in
 an open PR for your model and effort level, and asks which to run: `all`, or
 numbers such as `2`, `1,4,7`, `3-6` or `1,3-5`; any other answer is asked
@@ -114,7 +107,7 @@ selected prompts would run or be skipped, and the exact child command, and
 starts nothing; `/bench-run all --dry-run` does this for the whole arm. A
 prompt that already has a result on `origin/main` or in an open PR is skipped
 even when selected, so re-typing `/bench-run all` after an interruption
-resumes the arm, and after CI turns green it skips all 15 and reaches the
+resumes the arm, and after CI turns green it skips all 14 and reaches the
 final merge step again (the
 helper runs `harness/merge_results.py` when that file exists, otherwise it
 lists the open PRs). A single prompt still runs with `/bench-run <prompt-id>`,
@@ -129,7 +122,7 @@ another level generates a second set of results.
 **In-session generation caveats.** The generation happens inside a Claude
 Code session, so:
 
-- `temperature` and `max_tokens` from the TOML cannot be set; the session
+- No sampling settings can be set, so the prompt files carry none; the session
   defaults apply.
 - `finish_reason` and token `usage` are not observable. The sidecar records
   them as `null` with a note.
@@ -140,7 +133,7 @@ results is a separate step: HTML results are opened in a browser on a
 stronger machine, and the ServiceNow update set is imported into a Personal
 Developer Instance.
 
-**Verification bar.** Per HTML game or app: a click-through transition,
+**Verification bar.** Per HTML game or scene: a click-through transition,
 sustained animation (pixel motion sampled over at least 3 s), per-script
 brace/paren balance, and console capture across 10 s. The result is labelled
 `PLAYABLE_VERIFIED`, `BOOTS_ONLY` or `BROKEN_AT_BOOT` (see
@@ -158,13 +151,12 @@ for example `generated (high, max), review pending`.
 | `game-melon-jelly` | HTML | `results/melon-jelly/melon-jelly_claude_fable_5_2_<effort>.html` | not run |
 | `game-lava-lamp` | HTML | `results/lava-lamp/lava-lamp_claude_fable_5_2_<effort>.html` | not run |
 | `game-minecraft` | HTML | `results/minecraft/minecraft_claude_fable_5_2_<effort>.html` | not run |
-| `game-meridian-launch` | HTML | `results/meridian-launch/meridian-launch_claude_fable_5_2_<effort>.html` | not run |
-| `game-sunset-ocean` | HTML | `results/sunset-ocean/sunset-ocean_claude_fable_5_2_<effort>.html` | not run |
+| `scene-meridian-launch` | HTML | `results/meridian-launch/meridian-launch_claude_fable_5_2_<effort>.html` | not run |
+| `scene-sunset-ocean` | HTML | `results/sunset-ocean/sunset-ocean_claude_fable_5_2_<effort>.html` | not run |
 | `game-horror-house` | HTML | `results/horror-house/horror-house_claude_fable_5_2_<effort>.html` | not run |
 | `game-last-flight` | HTML | `results/last-flight/last-flight_claude_fable_5_2_<effort>.html` | not run |
 | `game-cities-skylines` | HTML | `results/cities-skylines/cities-skylines_claude_fable_5_2_<effort>.html` | not run |
 | `game-mario-kart` | HTML | `results/mario-kart/mario-kart_claude_fable_5_2_<effort>.html` | not run |
-| `app-stillwater` | HTML | `results/stillwater/stillwater_claude_fable_5_2_<effort>.html` | not run |
 | `game-weichensteller` | HTML | `results/weichensteller/weichensteller_claude_fable_5_2_<effort>.html` | not run |
 | `game-rubiks-cube` | HTML | `results/rubiks-cube/rubiks-cube_claude_fable_5_2_<effort>.html` | not run |
 | `creative-water-bottle` | HTML | `results/creative-water-bottle/creative-water-bottle_claude_fable_5_2_<effort>.html` | not run |

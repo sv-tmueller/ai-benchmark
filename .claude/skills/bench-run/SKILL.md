@@ -76,7 +76,7 @@ Each command below is one Bash call on one line, exactly as shown, with no `&&`,
 - **Issue title:** `<prompt-id>: <model-id> (<effort>) one-shot result`. Body (rendered by `issue-body`): what runs (`prompts/<toml>`, plain one-shot through /bench-run, no orchestrator or agents), the target paths and the deliverable kind.
 - **Branch:** `feat/<N>-<prefix>-<tag->-result`.
 - **Commit:** `feat(results): add <prefix> <model-id> <effort> one-shot result (#N)`.
-- **PR title:** `<prefix> (<model-id>, <effort>, one-shot): result`. Body (rendered by `pr-body`) sections: summary (with the one-shot statement), files, grading (the grade.py output, or "no [grading] rule; no playability verdict written; review pending"), in-session caveats (temperature, max_tokens, usage not observable), and `Closes #N`.
+- **PR title:** `<prefix> (<model-id>, <effort>, one-shot): result`. Body (rendered by `pr-body`) sections: summary (with the one-shot statement), files, grading (the grade.py output, or "no [grading] rule; no playability verdict written; review pending"), in-session caveats (session defaults applied, finish_reason and usage not observable), and `Closes #N`.
 
 ## Resolver
 

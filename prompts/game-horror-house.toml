@@ -7,8 +7,6 @@ id          = "game-horror-house"
 title       = "First-person haunted-house escape game as a single HTML file (Three.js)"
 category    = "game-generation"
 difficulty  = "hard"
-temperature = 0.2
-max_tokens  = 65536
 save_as     = "html"
 file_prefix = "horror-house"
 

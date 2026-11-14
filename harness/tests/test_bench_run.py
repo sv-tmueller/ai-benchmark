@@ -297,19 +297,34 @@ class MetaTest(RepoCase):
         self.assertEqual(meta["outputs"], {"deliverable": "results/gx-dir/gx_claude_fable_5_2_high.html"})
         self.assertNotIn("playability", json.dumps(meta))
 
-    def test_meta_note_names_the_toml_sampling_values_and_the_system_context(self):
+    def test_meta_note_states_session_defaults_and_ignores_stray_sampling_keys(self):
         self.write_deliverable()
         self.invoke("meta", "game-x", "claude-fable-5-2")
         meta = json.loads((self.root / "results/gx-dir/gx_claude_fable_5_2_high.meta.json").read_text())
         note = meta["params"]["note"]
-        self.assertIn("temperature 0.7", note)
-        self.assertIn("max_tokens 4096", note)
-        self.assertIn("alongside the TOML system text", note)
+        self.assertEqual(
+            note,
+            "Session defaults applied; sampling settings cannot be set in-session. "
+            "reasoning_effort is the CLAUDE_EFFORT level in effect when the run started. "
+            "The Claude Code system context was present alongside the TOML system text. "
+            "finish_reason and usage are not observable in-session.")
+        for absent in ("temperature", "max_tokens", "0.7", "4096", "from the TOML"):
+            self.assertNotIn(absent, note)
+        self.assertEqual(meta["params"], {
+            "temperature": None,
+            "max_tokens_requested_initial": None,
+            "reasoning_effort": "high",
+            "note": note,
+        })
         self.write_deliverable("results/ay-dir/ay_claude_fable_5_2_high.md")
         self.invoke("meta", "app-y", "claude-fable-5-2")
         meta = json.loads((self.root / "results/ay-dir/ay_claude_fable_5_2_high.meta.json").read_text())
-        self.assertIn("temperature not set in the TOML", meta["params"]["note"])
-        self.assertIn("The TOML has no system text", meta["params"]["note"])
+        self.assertEqual(
+            meta["params"]["note"],
+            "Session defaults applied; sampling settings cannot be set in-session. "
+            "reasoning_effort is the CLAUDE_EFFORT level in effect when the run started. "
+            "The TOML has no system text; the Claude Code system context was present. "
+            "finish_reason and usage are not observable in-session.")
 
     def test_meta_stops_when_the_meta_already_exists(self):
         self.write_deliverable()
@@ -345,7 +360,7 @@ class PromptTest(RepoCase):
         tomls = [p for p in sorted((REPO / "prompts").glob("*.toml"))
                  if not p.name.endswith(".fixtures.toml")
                  and not (REPO / "prompts" / (p.stem + ".fixtures.toml")).exists()]
-        self.assertEqual(len(tomls), 15)
+        self.assertEqual(len(tomls), 14)
         for path in tomls:
             with self.subTest(prompt=path.name):
                 pid = tomllib.loads(path.read_text(encoding="utf-8"))["id"]
@@ -416,8 +431,11 @@ class PrBodyTest(RepoCase):
         self.assertIn("results/gx-dir/gx_claude_fable_5_2_high.html", text)
         self.assertIn("results/gx-dir/gx_claude_fable_5_2_high.meta.json", text)
         self.assertIn("no [grading] rule; no playability verdict written; review pending", text)
-        self.assertIn("temperature", text)
-        self.assertIn("max_tokens", text)
+        self.assertNotIn("temperature", text)
+        self.assertNotIn("max_tokens", text)
+        self.assertIn(
+            "Generated in-session by Claude Code: session defaults applied (sampling settings "
+            "cannot be set in-session), and finish_reason and usage are not observable.", text)
         self.assertIn("usage", text)
         self.assertNotIn("_grading.json", text)
 
@@ -571,6 +589,35 @@ class MergeGateAcceptsRenderedNamesTest(unittest.TestCase):
         reasons = merge_results.gate(pr, [], set(), prompts, "claude-fable-5-2",
                                      merge_results.model_tag("claude-fable-5-2"))
         self.assertTrue([r for r in reasons if "branch" in r])
+
+
+class PromptCorpusTest(unittest.TestCase):
+    """The real prompts/ folder, not a fixture."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.prompts = {}
+        for path in sorted((REPO / "prompts").glob("*.toml")):
+            with open(path, "rb") as fh:
+                cls.prompts[path.stem] = tomllib.load(fh)
+
+    def test_every_id_equals_its_file_stem(self):
+        for stem, prompt in self.prompts.items():
+            self.assertEqual(prompt["id"], stem)
+
+    def test_no_prompt_carries_temperature_or_max_tokens(self):
+        for stem, prompt in self.prompts.items():
+            for key in ("temperature", "max_tokens"):
+                self.assertNotIn(key, prompt, "%s still has %s" % (stem, key))
+
+    def test_the_scenes_are_scene_generation_and_keep_their_result_folders(self):
+        for pid, prefix in (("scene-sunset-ocean", "sunset-ocean"),
+                            ("scene-meridian-launch", "meridian-launch")):
+            prompt = self.prompts[pid]
+            self.assertEqual(prompt["category"], "scene-generation")
+            self.assertEqual(prompt["file_prefix"], prefix)
+            plan = br.resolve(REPO, pid, "claude-fable-5-2", "high")
+            self.assertEqual(plan.folder, prefix)
 
 
 class GitignoreTest(unittest.TestCase):
