@@ -11,11 +11,13 @@ Commands are written `python3`; use `python` only where `python3` is missing.
 
 The model under test is **you**. The model id is the exact one stated in your system prompt (for example `claude-fable-5-2`). If you do not know it with certainty, stop and ask the user; never guess.
 
+The effort level is this session's own. The resolver reads it from `CLAUDE_EFFORT` and puts it into the file names and titles; never pass, retype or change it. If the resolver stops because `CLAUDE_EFFORT` is unset or unknown, relay the stop and end.
+
 ## Batch mode
 
 Applies only when `$ARGUMENTS` is empty or exactly `--dry-run`. The one-shot rules and the Steps below govern `/bench-run <prompt-id>` and each child session the helper starts, not this batch session. This session generates nothing: `harness/bench_run_all.py` starts one fresh headless `claude -p "/bench-run <prompt-id>"` child per prompt of the arm (same model and effort as this session, a narrow tool allowlist, no merge rights) and then runs the merge step.
 
-1. Pass the exact model id from your system prompt as `--model`. If you do not know it with certainty, stop and ask the user; the helper rejects bare aliases such as `fable` or `opus`. The effort level is read from `CLAUDE_EFFORT` by the helper; never retype it.
+1. Pass the exact model id from your system prompt as `--model`. If you do not know it with certainty, stop and ask the user; the helper rejects bare aliases such as `fable` or `opus`. The effort level is read from `CLAUDE_EFFORT` by the helper; never retype it. It is part of every result file name, so the skip check and the report are for this session's effort level only.
 2. Run `python3 harness/bench_run_all.py --model <model-id> --dry-run` in the foreground and relay its output as printed. If the arguments were `--dry-run`, end here. If any line starts with `STOP:` or any check says FAIL, relay it and end.
 3. Otherwise run `python3 harness/bench_run_all.py --model <model-id>` with the Bash tool's `run_in_background: true` (fifteen generations far exceed the 10-minute limit of a foreground call) and wait for it to exit.
 4. Relay the helper's report exactly as printed: one line per prompt, the counts, the log folder and the merge-step result. Re-typing `/bench-run` later skips every prompt that already has a result on `origin/main` or in an open PR and reaches the merge step again.
@@ -48,7 +50,7 @@ Each command below is one Bash call on one line, exactly as shown, with no `&&`,
    - `git fetch origin main`, then `git rev-parse HEAD origin/main`: the two lines must be equal; otherwise tell the user to switch and pull.
    - `git status --porcelain --untracked-files=no` must print nothing, and `git status --porcelain --untracked-files=all` must list no untracked file under `results/` or `prompts/`.
    - `gh auth status` must succeed.
-4. **Plan.** `python3 harness/bench_run.py plan <prompt-id> <model-id>` from the repo root (the resolver, below). It stops with a `STOP:` line if the prompt, folder, extension or model tag cannot be resolved, or if any target already exists locally, on `origin/main` or in an open PR. Relay a stop to the user and end. With `--dry-run`, show the plan output and end here: no writes, no issue, no branch, no PR (the resolver makes only read-only `git` and `gh` calls).
+4. **Plan.** `python3 harness/bench_run.py plan <prompt-id> <model-id>` from the repo root (the resolver, below). It stops with a `STOP:` line if the prompt, folder, extension, effort level or model tag cannot be resolved, or if any target already exists locally, on `origin/main` or in an open PR. Relay a stop to the user and end. With `--dry-run`, show the plan output and end here: no writes, no issue, no branch, no PR (the resolver makes only read-only `git` and `gh` calls).
 5. **Print the prompt verbatim:** `python3 harness/bench_run.py prompt <prompt-id> <model-id>` prints the `[system]` text, a `-----` line, the `[user]` text and one `image: prompts/<file>` line per `[images].files` entry. Read exactly those image files (read-only).
 6. **Generate** the deliverable and Write it to the planned target path (one Write, see the one-shot rules).
 7. **Meta.** `python3 harness/bench_run.py meta <prompt-id> <model-id>`. It requires the deliverable to exist and be non-empty and writes the sidecar shown in the plan preview, with `generated_utc` stamped now.
@@ -57,26 +59,26 @@ Each command below is one Bash call on one line, exactly as shown, with no `&&`,
 10. **Issue.** `python3 harness/bench_run.py issue-body <prompt-id> <model-id>` writes the body and prints its path. Then `gh issue create --title "<issue_title>" --body-file <issue-body-path>` with the plan's `issue_title`; note the number `N`.
 11. **Branch.** `git switch -c <branch>`; the untracked new files carry over.
 12. **Commit.** `git add results/<folder>/<file>` once per run path, where `<folder>/<file>` is the part of the plan's `target`, `meta` or `grading_sidecar` path after `results/`. `git diff --cached --name-only` must equal exactly the run's own paths, with nothing under `prompts/`. Then `git commit -m "<commit>" --trailer "<trailer line>"` with the plan's `commit` line, and one `--trailer` for each attribution trailer your session's own rules require (none if they require none; this skill prescribes no attribution).
-13. **Push.** `git push -u origin feat/<N>-<prefix>-<tag->-result`, the branch from the Naming section.
+13. **Push.** `git push -u origin feat/<N>-<prefix>-<tag->-result`, the branch from the Naming section (the plan's `branch` with `<N>` filled in).
 14. **PR.** `python3 harness/bench_run.py pr-body <prompt-id> <model-id> <N> --footer "<PR ending>"` writes the body, containing `Closes #N`, and prints its path; add `--footer` only if your session's own rules require a PR ending, with that exact line. Then `gh pr create --title "<pr_title>" --body-file <pr-body-path>` with the plan's `pr_title`. Never merge the PR and never enable auto-merge.
 15. **Return.** `git switch main`, or whatever branch you started on. Report the issue and PR URLs, the paths, the grading result and the next step: for HTML results, browser verification on a stronger machine, whose verdict is added later in its own commit outside this skill; for the ServiceNow update set, importing it into a Personal Developer Instance.
 
 ## Naming
 
-`<tag->` is the model tag with `_` replaced by `-`; `<prefix>`, `<tag>` and the paths come from the plan output.
+`<tag>` is the plan's `model_tag`: the model tag, `_` and the effort level (`claude_fable_5_2_high`). `<tag->` is that with `_` replaced by `-`; `<prefix>`, `<tag>`, `<effort>` and the paths come from the plan output.
 
-- **Issue title:** `<prompt-id>: <model-id> one-shot result`. Body (rendered by `issue-body`): what runs (`prompts/<toml>`, plain one-shot through /bench-run, no orchestrator or agents), the target paths and the deliverable kind.
+- **Issue title:** `<prompt-id>: <model-id> (<effort>) one-shot result`. Body (rendered by `issue-body`): what runs (`prompts/<toml>`, plain one-shot through /bench-run, no orchestrator or agents), the target paths and the deliverable kind.
 - **Branch:** `feat/<N>-<prefix>-<tag->-result`.
-- **Commit:** `feat(results): add <prefix> <model-id> one-shot result (#N)`.
-- **PR title:** `<prefix> (<model-id>, one-shot): result`. Body (rendered by `pr-body`) sections: summary (with the one-shot statement), files, grading (the grade.py output, or "no [grading] rule; no playability verdict written; review pending"), in-session caveats (temperature, max_tokens, usage not observable), and `Closes #N`.
+- **Commit:** `feat(results): add <prefix> <model-id> <effort> one-shot result (#N)`.
+- **PR title:** `<prefix> (<model-id>, <effort>, one-shot): result`. Body (rendered by `pr-body`) sections: summary (with the one-shot statement), files, grading (the grade.py output, or "no [grading] rule; no playability verdict written; review pending"), in-session caveats (temperature, max_tokens, usage not observable), and `Closes #N`.
 
 ## Resolver
 
 `harness/bench_run.py` is the resolver. Run it from the repo root, one mode per call, ids unquoted, one line each: `python3 harness/bench_run.py <mode> <prompt-id> <model-id>`. It needs Python 3.11+ and read-only `git` and `gh`.
 
-- `plan` and `meta`: resolve the prompt, results folder (the folder of the prompt's existing results, else its `file_prefix`), extension, model tag and paths, and check that no target exists on disk, on `origin/main` or in an open PR. `plan` prints only `key: value` lines and a sidecar preview, never any content from a result file; `meta` writes the sidecar.
+- `plan` and `meta`: resolve the prompt, results folder (the folder of the prompt's existing results, else its `file_prefix`), extension, effort level, model tag and paths (`results/<folder>/<prefix>_<model_tag>_<effort>.<ext>`), and check that no target exists on disk, on `origin/main` or in an open PR. `plan` prints only `key: value` lines and a sidecar preview, never any content from a result file; `meta` writes the sidecar.
 - `prompt`: prints the prompt exactly as step 5 describes.
 - `issue-body` and `pr-body <N> [--footer "<line>"]`: write the issue or PR body to `.bench-run/<prefix>_<tag>.issue.md` or `.pr.md` (a git-ignored folder) and print that path. For a graded prompt `pr-body` stops with a `STOP:` line unless `grade` saved its output.
 - `grade`: runs `harness/grade.py --prompt <prompt-id>`, prints its output and saves it to `.bench-run/<prefix>_<tag>.grade.txt`; on failure it deletes only this run's own grading sidecar.
 
-The sidecar's `reasoning_effort` is the `CLAUDE_EFFORT` level in effect when the run started. The sidecar never contains `playability_verification` or `playability` keys; `grade.py` then skips a game result instead of failing it. A later browser check, outside this skill, adds them in its own commit.
+The sidecar's `reasoning_effort` is the `CLAUDE_EFFORT` level in effect when the run started, the same level as in the file name. The sidecar never contains `playability_verification` or `playability` keys; `grade.py` then skips a game result instead of failing it. A later browser check, outside this skill, adds them in its own commit.

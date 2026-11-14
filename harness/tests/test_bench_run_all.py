@@ -451,9 +451,16 @@ class FakeGit:
 
 
 def readme_ledger():
-    """(prompt id, target path) rows of the README Fable 5.2 ledger table."""
+    """(prompt id, target path) rows of the README Fable 5.2 ledger table.
+
+    Every path must carry the ``<effort>`` placeholder; it is filled in with
+    ``high``, the effort level of the test session.
+    """
     text = (REPO / "README.md").read_text(encoding="utf-8")
-    return re.findall(r"^\| `([a-z0-9-]+)` \|[^\n]*\| `(results/[^`]+)` \|", text, re.M)
+    rows = re.findall(r"^\| `([a-z0-9-]+)` \|[^\n]*\| `(results/[^`]+)` \|", text, re.M)
+    for _, path in rows:
+        assert path.count("_<effort>.") == 1, path
+    return [(pid, path.replace("<effort>", "high")) for pid, path in rows]
 
 
 class BatchCase(FakeClaudeCase):
@@ -513,7 +520,7 @@ class ArmDataTest(unittest.TestCase):
     def test_ledger_target_names_match_prefix_tag_and_extension(self):
         for pid, target in readme_ledger():
             with self.subTest(pid=pid):
-                name = bra.expected_name(REPO, pid, "claude-fable-5-2")
+                name = bra.expected_name(REPO, pid, "claude-fable-5-2", "high")
                 self.assertEqual(Path(target).name, name)
 
 
@@ -600,17 +607,29 @@ class BatchLoopTest(BatchCase):
 
     def test_prompt_on_origin_main_is_skipped(self):
         st = self.git.state()
-        st["main_files"] = ["results/melon-jelly/melon-jelly_claude_fable_5_2.html"]
+        st["main_files"] = ["results/melon-jelly/melon-jelly_claude_fable_5_2_high.html"]
         self.git.save(st)
         code, out = self.batch()
         self.assertNotIn("game-melon-jelly", self.called_ids())
         self.assertEqual(len(self.calls()), 14)
         self.assertEqual(self.report_lines(out)["game-melon-jelly"][0], "skipped: on origin/main")
 
+    def test_a_result_at_another_effort_level_is_not_a_reason_to_skip(self):
+        st = self.git.state()
+        st["main_files"] = ["results/melon-jelly/melon-jelly_claude_fable_5_2_max.html"]
+        self.git.save(st)
+        _, out = self.batch()
+        self.assertIn("game-melon-jelly", self.called_ids())
+        self.assertEqual(len(self.calls()), 15)
+
+    def test_the_report_names_the_model_and_the_effort_level(self):
+        _, out = self.batch()
+        self.assertIn("\nreport: claude-fable-5-2 at effort high\n", out)
+
     def test_prompt_in_an_open_pr_is_skipped_with_its_url(self):
         st = self.git.state()
         st["prs"] = [{"number": 42, "url": "https://example.test/pull/42", "files": [
-            {"path": "results/lava-lamp/lava-lamp_claude_fable_5_2.html"}]}]
+            {"path": "results/lava-lamp/lava-lamp_claude_fable_5_2_high.html"}]}]
         st["next_pr"] = 43
         self.git.save(st)
         _, out = self.batch()
@@ -808,7 +827,7 @@ class DryRunTest(BatchCase):
 
     def test_dry_run_shows_run_and_skip_per_prompt(self):
         st = self.git.state()
-        st["main_files"] = ["results/melon-jelly/melon-jelly_claude_fable_5_2.html"]
+        st["main_files"] = ["results/melon-jelly/melon-jelly_claude_fable_5_2_high.html"]
         self.git.save(st)
         _, out = self.batch("--dry-run")
         self.assertRegex(out, r"(?m)^prompt game-melon-jelly: skip \(on origin/main\)")

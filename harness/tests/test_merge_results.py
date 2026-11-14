@@ -19,7 +19,8 @@ from pathlib import Path
 from harness import merge_results as mr
 
 MODEL_ID = "claude-fable-5-2"
-TAG = "claude_fable_5_2"
+TAG = "claude_fable_5_2"  # the model tag
+RUN = TAG + "_high"  # the run tag: model tag and effort level
 
 ALPHA_TOML = """\
 id          = "game-alpha"
@@ -103,12 +104,13 @@ def pr_files(*paths):
 
 
 def make_pr(prefix="alpha", number=7, ext="html", family=None, tag=TAG,
-            model_id=MODEL_ID, files=None, **overrides):
+            model_id=MODEL_ID, effort="high", files=None, **overrides):
     family = family or prefix
+    tag = "%s_%s" % (tag, effort)
     base = "results/%s/%s_%s" % (family, prefix, tag)
     pr = {
         "number": number,
-        "title": "%s (%s, one-shot): result" % (prefix, model_id),
+        "title": "%s (%s, %s, one-shot): result" % (prefix, model_id, effort),
         "headRefName": "feat/%d-%s-%s-result" % (number, prefix, tag.replace("_", "-")),
         "headRefOid": "a" * 40,
         "isDraft": False,
@@ -152,16 +154,18 @@ class ModelTagTests(unittest.TestCase):
 class ParseTitleTests(unittest.TestCase):
     def test_result_title(self):
         self.assertEqual(
-            mr.parse_title("melon-jelly (claude-fable-5-2, one-shot): result"),
-            ("melon-jelly", "claude-fable-5-2"),
+            mr.parse_title("melon-jelly (claude-fable-5-2, xhigh, one-shot): result"),
+            ("melon-jelly", "claude-fable-5-2", "xhigh"),
         )
 
     def test_other_titles_do_not_parse(self):
         for title in (
             "feat(results): add melon-jelly",
-            "melon-jelly (claude-fable-5-2, one-shot): result extra",
-            "melon-jelly (a, b, one-shot): result",
-            "melon jelly (claude-fable-5-2, one-shot): result",
+            "melon-jelly (claude-fable-5-2, high, one-shot): result extra",
+            "melon-jelly (a, b, high, one-shot): result",
+            "melon jelly (claude-fable-5-2, high, one-shot): result",
+            "melon-jelly (claude-fable-5-2, one-shot): result",
+            "melon-jelly (claude-fable-5-2, turbo, one-shot): result",
             "",
         ):
             with self.subTest(title=title):
@@ -179,7 +183,7 @@ class GateTests(unittest.TestCase):
         self.assertEqual(run_gate(make_pr()), [])
 
     def test_clean_pass_three_files_with_grading(self):
-        base = "results/beta/beta_%s" % TAG
+        base = "results/beta/beta_%s" % RUN
         pr = make_pr("beta", ext="md", files=pr_files(
             base + ".md", base + ".meta.json", base + "_grading.json"))
         self.assertEqual(run_gate(pr), [])
@@ -188,24 +192,24 @@ class GateTests(unittest.TestCase):
         self.assertEqual(run_gate(make_pr("game-gamma", family="gamma")), [])
 
     def test_grading_sidecar_without_grading_table_is_extra(self):
-        base = "results/alpha/alpha_%s" % TAG
+        base = "results/alpha/alpha_%s" % RUN
         pr = make_pr(files=pr_files(
             base + ".html", base + ".meta.json", base + "_grading.json"))
         self.assertReason(run_gate(pr), "extra file: " + base + "_grading.json")
 
     def test_extra_file(self):
-        base = "results/alpha/alpha_%s" % TAG
+        base = "results/alpha/alpha_%s" % RUN
         pr = make_pr(files=pr_files(
             base + ".html", base + ".meta.json", "results/alpha/notes.txt"))
         self.assertReason(run_gate(pr), "extra file: results/alpha/notes.txt")
 
     def test_missing_meta(self):
-        base = "results/alpha/alpha_%s" % TAG
+        base = "results/alpha/alpha_%s" % RUN
         pr = make_pr(files=pr_files(base + ".html"))
         self.assertReason(run_gate(pr), "missing: " + base + ".meta.json")
 
     def test_wrong_extension_is_extra_and_missing(self):
-        base = "results/alpha/alpha_%s" % TAG
+        base = "results/alpha/alpha_%s" % RUN
         pr = make_pr(files=pr_files(base + ".md", base + ".meta.json"))
         reasons = run_gate(pr)
         self.assertReason(reasons, "extra file: " + base + ".md")
@@ -217,13 +221,13 @@ class GateTests(unittest.TestCase):
 
     def test_two_folders(self):
         pr = make_pr(files=pr_files(
-            "results/alpha/alpha_%s.html" % TAG,
-            "results/beta/alpha_%s.meta.json" % TAG))
+            "results/alpha/alpha_%s.html" % RUN,
+            "results/beta/alpha_%s.meta.json" % RUN))
         self.assertReason(run_gate(pr), "wrong folder")
 
     def test_outside_results(self):
         pr = make_pr(files=pr_files(
-            "README.md", "results/alpha/alpha_%s.meta.json" % TAG))
+            "README.md", "results/alpha/alpha_%s.meta.json" % RUN))
         self.assertReason(run_gate(pr), "wrong folder")
 
     def test_prefix_with_two_folders_on_main_is_ambiguous(self):
@@ -254,7 +258,7 @@ class GateTests(unittest.TestCase):
         self.assertEqual(run_gate(make_pr(), checks=checks), [])
 
     def test_file_already_on_main(self):
-        main = MAIN_PATHS | {"results/alpha/alpha_%s.html" % TAG}
+        main = MAIN_PATHS | {"results/alpha/alpha_%s.html" % RUN}
         self.assertReason(run_gate(make_pr(), main_paths=main), "already on main")
 
     def test_deletions_are_refused(self):
@@ -280,9 +284,9 @@ class GateTests(unittest.TestCase):
         self.assertReason(reasons, "branch")
 
     def test_v2_files_with_matching_branch_are_extra_and_missing(self):
-        base = "results/alpha/alpha_%s-v2" % TAG
+        base = "results/alpha/alpha_%s-v2" % RUN
         pr = make_pr(files=pr_files(base + ".html", base + ".meta.json"))
-        want = "results/alpha/alpha_%s" % TAG
+        want = "results/alpha/alpha_%s" % RUN
         self.assertEqual(run_gate(pr), [
             "extra file: " + base + ".html",
             "extra file: " + base + ".meta.json",
@@ -299,8 +303,33 @@ class GateTests(unittest.TestCase):
         self.assertEqual(
             run_gate(pr, main_paths=main, prompts=PROMPTS + [eps]),
             ["derive_model disagrees with tag %s for results/eps/game_eps_%s.html"
-             % (TAG, TAG)],
+             % (RUN, RUN)],
         )
+
+    def test_files_at_another_effort_than_the_title_are_extra_and_missing(self):
+        base = "results/alpha/alpha_%s_max" % TAG
+        pr = make_pr(files=pr_files(base + ".html", base + ".meta.json"))
+        want = "results/alpha/alpha_%s" % RUN
+        self.assertEqual(run_gate(pr), [
+            "extra file: " + base + ".html",
+            "extra file: " + base + ".meta.json",
+            "missing: " + want + ".html",
+            "missing: " + want + ".meta.json",
+        ])
+
+    def test_branch_at_another_effort_than_the_title_is_refused(self):
+        pr = make_pr(headRefName="feat/7-alpha-%s-max-result" % TAG.replace("_", "-"))
+        self.assertReason(run_gate(pr), "branch")
+
+    def test_every_effort_level_passes_with_its_own_names(self):
+        for effort in mr.EFFORT_LEVELS:
+            with self.subTest(effort=effort):
+                self.assertEqual(run_gate(make_pr(effort=effort)), [])
+
+    def test_the_same_result_at_another_effort_on_main_does_not_block(self):
+        main = MAIN_PATHS | {"results/alpha/alpha_%s_max.html" % TAG,
+                             "results/alpha/alpha_%s_max.meta.json" % TAG}
+        self.assertEqual(run_gate(make_pr(), main_paths=main), [])
 
     def test_branch_mismatch(self):
         pr = make_pr(headRefName="feat/7-alpha-someone-else-result")
@@ -329,7 +358,7 @@ class GateTests(unittest.TestCase):
         self.assertReason(run_gate(make_pr(), prompts=prompts), "prompt")
 
     def test_title_for_another_model(self):
-        pr = make_pr(title="alpha (other-model, one-shot): result")
+        pr = make_pr(title="alpha (other-model, high, one-shot): result")
         self.assertReason(run_gate(pr), "title")
 
     def test_every_reason_is_collected(self):
@@ -344,27 +373,27 @@ Some prose with | pipes | in it.
 
 | Prompt | Deliverable | Target path | Status |
 |---|---|---|---|
-| `game-alpha` | HTML | `results/alpha/alpha_claude_fable_5_2.html` | not run |
-| `app-beta` | blueprint (md) | `results/beta/beta_claude_fable_5_2.md` | not run |
-| `game-gamma` | HTML | `results/gamma/game-gamma_claude_fable_5_2.html` | PLAYABLE_VERIFIED |
-| `game-alpha` | HTML | `results/alpha/alpha_fable_5_2.html` | not run |
-| `game-alpha` | HTML | `results/alpha/alpha_claude_opus_5_5.html` | not run |
-| `unknown-prompt` | HTML | `results/zzz/zzz_claude_fable_5_2.html` | not run |
+| `game-alpha` | HTML | `results/alpha/alpha_claude_fable_5_2_<effort>.html` | not run |
+| `app-beta` | blueprint (md) | `results/beta/beta_claude_fable_5_2_<effort>.md` | not run |
+| `game-gamma` | HTML | `results/gamma/game-gamma_claude_fable_5_2_<effort>.html` | PLAYABLE_VERIFIED |
+| `game-alpha` | HTML | `results/alpha/alpha_fable_5_2_<effort>.html` | not run |
+| `game-alpha` | HTML | `results/alpha/alpha_claude_opus_5_5_<effort>.html` | not run |
+| `unknown-prompt` | HTML | `results/zzz/zzz_claude_fable_5_2_<effort>.html` | not run |
 
 ## CI
 """
 
 ALPHA_DONE = {
-    "results/alpha/alpha_claude_fable_5_2.html",
-    "results/alpha/alpha_claude_fable_5_2.meta.json",
+    "results/alpha/alpha_claude_fable_5_2_high.html",
+    "results/alpha/alpha_claude_fable_5_2_high.meta.json",
 }
 BETA_DONE = {
-    "results/beta/beta_claude_fable_5_2.md",
-    "results/beta/beta_claude_fable_5_2.meta.json",
+    "results/beta/beta_claude_fable_5_2_high.md",
+    "results/beta/beta_claude_fable_5_2_high.meta.json",
 }
 GAMMA_DONE = {
-    "results/gamma/game-gamma_claude_fable_5_2.html",
-    "results/gamma/game-gamma_claude_fable_5_2.meta.json",
+    "results/gamma/game-gamma_claude_fable_5_2_high.html",
+    "results/gamma/game-gamma_claude_fable_5_2_high.meta.json",
 }
 BY_ID = mr.prompts_by_id(PROMPTS)
 
@@ -383,24 +412,24 @@ def status_cell(text, path):
 class LedgerTests(unittest.TestCase):
     def test_row_updated_when_both_files_on_main(self):
         new, updated, _ = rewrite()
-        self.assertEqual(status_cell(new, "results/alpha/alpha_claude_fable_5_2.html"),
-                         "generated, review pending")
-        self.assertEqual(status_cell(new, "results/beta/beta_claude_fable_5_2.md"),
-                         "generated, review pending")
+        self.assertEqual(status_cell(new, "results/alpha/alpha_claude_fable_5_2_<effort>.html"),
+                         "generated (high), review pending")
+        self.assertEqual(status_cell(new, "results/beta/beta_claude_fable_5_2_<effort>.md"),
+                         "generated (high), review pending")
         self.assertEqual([row["pid"] for row in updated], ["game-alpha", "app-beta"])
 
     def test_row_untouched_when_deliverable_not_on_main(self):
         new, updated, _ = rewrite(main_paths=MAIN_PATHS | BETA_DONE)
-        self.assertEqual(status_cell(new, "results/alpha/alpha_claude_fable_5_2.html"), "not run")
+        self.assertEqual(status_cell(new, "results/alpha/alpha_claude_fable_5_2_<effort>.html"), "not run")
         self.assertEqual([row["pid"] for row in updated], ["app-beta"])
 
     def test_row_with_missing_sidecar_is_untouched_and_reported(self):
-        paths = MAIN_PATHS | {"results/alpha/alpha_claude_fable_5_2.html"}
+        paths = MAIN_PATHS | {"results/alpha/alpha_claude_fable_5_2_high.html"}
         new, updated, skipped = rewrite(main_paths=paths)
         self.assertEqual(new, README)
         self.assertEqual(updated, [])
         self.assertEqual(len(skipped), 1)
-        self.assertIn("left as not run: sidecar missing", skipped[0])
+        self.assertIn("high not listed: sidecar missing", skipped[0])
         self.assertIn("game-alpha", skipped[0])
 
     def test_grading_sidecar_is_not_required(self):
@@ -410,24 +439,51 @@ class LedgerTests(unittest.TestCase):
     def test_row_with_a_verdict_is_never_overwritten(self):
         new, updated, _ = rewrite()
         self.assertEqual(
-            status_cell(new, "results/gamma/game-gamma_claude_fable_5_2.html"),
+            status_cell(new, "results/gamma/game-gamma_claude_fable_5_2_<effort>.html"),
             "PLAYABLE_VERIFIED")
         self.assertNotIn("game-gamma", [row["pid"] for row in updated])
 
     def test_other_models_tag_changes_nothing(self):
-        paths = MAIN_PATHS | {"results/alpha/alpha_claude_opus_5_5.html",
-                              "results/alpha/alpha_claude_opus_5_5.meta.json"}
+        paths = MAIN_PATHS | {"results/alpha/alpha_claude_opus_5_5_high.html",
+                              "results/alpha/alpha_claude_opus_5_5_high.meta.json"}
         new, updated, _ = rewrite(tag="claude_opus_5_5", main_paths=paths)
         self.assertEqual([row["path"] for row in updated],
-                         ["results/alpha/alpha_claude_opus_5_5.html"])
-        self.assertEqual(status_cell(new, "results/alpha/alpha_claude_fable_5_2.html"), "not run")
+                         ["results/alpha/alpha_claude_opus_5_5_<effort>.html"])
+        self.assertEqual(status_cell(new, "results/alpha/alpha_claude_fable_5_2_<effort>.html"), "not run")
 
     def test_suffix_match_is_not_enough(self):
         # `alpha_fable_5_2` ends with `_fable_5_2` but belongs to another tag.
-        paths = MAIN_PATHS | {"results/alpha/alpha_fable_5_2.html",
-                              "results/alpha/alpha_fable_5_2.meta.json"}
+        paths = MAIN_PATHS | {"results/alpha/alpha_fable_5_2_high.html",
+                              "results/alpha/alpha_fable_5_2_high.meta.json"}
         new, updated, _ = rewrite(tag="claude_fable_5_2", main_paths=paths)
-        self.assertEqual(status_cell(new, "results/alpha/alpha_fable_5_2.html"), "not run")
+        self.assertEqual(status_cell(new, "results/alpha/alpha_fable_5_2_<effort>.html"), "not run")
+
+    def test_status_lists_every_effort_on_main_in_level_order(self):
+        more = {"results/alpha/alpha_claude_fable_5_2_max.html",
+                "results/alpha/alpha_claude_fable_5_2_max.meta.json",
+                "results/alpha/alpha_claude_fable_5_2_low.html",
+                "results/alpha/alpha_claude_fable_5_2_low.meta.json"}
+        new, updated, _ = rewrite(main_paths=MAIN_PATHS | ALPHA_DONE | more)
+        self.assertEqual(status_cell(new, "results/alpha/alpha_claude_fable_5_2_<effort>.html"),
+                         "generated (low, high, max), review pending")
+        self.assertEqual(updated, [{"pid": "game-alpha",
+                                    "path": "results/alpha/alpha_claude_fable_5_2_<effort>.html",
+                                    "efforts": ["low", "high", "max"]}])
+
+    def test_a_later_effort_is_added_to_a_generated_row(self):
+        once, _, _ = rewrite(main_paths=MAIN_PATHS | ALPHA_DONE)
+        more = {"results/alpha/alpha_claude_fable_5_2_xhigh.html",
+                "results/alpha/alpha_claude_fable_5_2_xhigh.meta.json"}
+        twice, updated, _ = rewrite(text=once, main_paths=MAIN_PATHS | ALPHA_DONE | more)
+        self.assertEqual(status_cell(twice, "results/alpha/alpha_claude_fable_5_2_<effort>.html"),
+                         "generated (high, xhigh), review pending")
+        self.assertEqual([row["efforts"] for row in updated], [["high", "xhigh"]])
+
+    def test_a_row_without_the_effort_placeholder_is_not_a_ledger_row(self):
+        text = README.replace("alpha_claude_fable_5_2_<effort>.html", "alpha_claude_fable_5_2.html")
+        new, updated, _ = rewrite(text=text)
+        self.assertEqual(status_cell(new, "results/alpha/alpha_claude_fable_5_2.html"), "not run")
+        self.assertEqual([row["pid"] for row in updated], ["app-beta"])
 
     def test_rewrite_is_idempotent(self):
         once, _, _ = rewrite()
@@ -449,10 +505,10 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(changed, 2)
 
     def test_unknown_prompt_row_is_skipped(self):
-        paths = MAIN_PATHS | {"results/zzz/zzz_claude_fable_5_2.html",
-                              "results/zzz/zzz_claude_fable_5_2.meta.json"}
+        paths = MAIN_PATHS | {"results/zzz/zzz_claude_fable_5_2_high.html",
+                              "results/zzz/zzz_claude_fable_5_2_high.meta.json"}
         new, updated, _ = rewrite(main_paths=paths)
-        self.assertEqual(status_cell(new, "results/zzz/zzz_claude_fable_5_2.html"), "not run")
+        self.assertEqual(status_cell(new, "results/zzz/zzz_claude_fable_5_2_<effort>.html"), "not run")
 
     def test_real_readme_has_fifteen_rows_for_fable(self):
         text = (mr.REPO_ROOT / "README.md").read_text(encoding="utf-8")
@@ -704,8 +760,8 @@ class ApiAllowlistWiringTests(OrchestrationBase):
         self.fake = None  # the real tearDown, which runs next, now passes
 
 
-ALPHA_FILES = ["results/alpha/alpha_%s.html" % TAG, "results/alpha/alpha_%s.meta.json" % TAG]
-BETA_FILES = ["results/beta/beta_%s.md" % TAG, "results/beta/beta_%s.meta.json" % TAG]
+ALPHA_FILES = ["results/alpha/alpha_%s.html" % RUN, "results/alpha/alpha_%s.meta.json" % RUN]
+BETA_FILES = ["results/beta/beta_%s.md" % RUN, "results/beta/beta_%s.meta.json" % RUN]
 
 
 class NoOpTests(OrchestrationBase):
@@ -767,7 +823,7 @@ class MergeTests(OrchestrationBase):
         self.assertEqual(len(merge_call), 1)
         self.assertEqual(merge_call[0][0], (
             "gh", "pr", "merge", "7", "--squash", "--match-head-commit", "a" * 40,
-            "--subject", "feat(results): add alpha %s one-shot result (#7)" % MODEL_ID))
+            "--subject", "feat(results): add alpha %s high one-shot result (#7)" % MODEL_ID))
         branch = "docs/ledger-claude-fable-5-2-" + MAIN_SHA[:7]
         ref_call = self.fake.find("gh", "api", "--method", "POST")
         self.assertIn("repos/{owner}/{repo}/git/refs", ref_call[0][0])
@@ -780,10 +836,10 @@ class MergeTests(OrchestrationBase):
         self.assertEqual(body["sha"], README_BLOB)
         new_readme = base64.b64decode(body["content"]).decode("utf-8")
         self.assertEqual(
-            status_cell(new_readme, "results/alpha/alpha_claude_fable_5_2.html"),
-            "generated, review pending")
+            status_cell(new_readme, "results/alpha/alpha_claude_fable_5_2_<effort>.html"),
+            "generated (high), review pending")
         self.assertEqual(
-            status_cell(new_readme, "results/beta/beta_claude_fable_5_2.md"), "not run")
+            status_cell(new_readme, "results/beta/beta_claude_fable_5_2_<effort>.md"), "not run")
         create = self.fake.find("gh", "pr", "create")[0][0]
         self.assertEqual(create[create.index("--head") + 1], branch)
         self.assertEqual(create[create.index("--base") + 1], "main")
@@ -911,8 +967,8 @@ class BehindTests(OrchestrationBase):
 
 
 DONE_README = README.replace(
-    "alpha_claude_fable_5_2.html` | not run",
-    "alpha_claude_fable_5_2.html` | generated, review pending")
+    "alpha_claude_fable_5_2_<effort>.html` | not run",
+    "alpha_claude_fable_5_2_<effort>.html` | generated (high), review pending")
 A, B = "a" * 40, "b" * 40
 
 
@@ -1083,8 +1139,8 @@ class ResultStatusTests(OrchestrationBase):
         first = make_pr(number=7, isDraft=True)
         second = make_pr("beta", number=8, ext="md", headRefOid=B)
         readme = DONE_README.replace(
-            "beta_claude_fable_5_2.md` | not run",
-            "beta_claude_fable_5_2.md` | generated, review pending")
+            "beta_claude_fable_5_2_<effort>.md` | not run",
+            "beta_claude_fable_5_2_<effort>.md` | generated (high), review pending")
         self.fake = build_fake(prs=[first, second], readme=readme,
                                main_after=MAIN_PATHS | set(BETA_FILES), strict_api=True)
         script_status(self.fake, B)
@@ -1181,8 +1237,8 @@ class DocsPrTests(OrchestrationBase):
         self.assertEqual(self.fake.writes(), [])
 
     def test_rows_already_updated_need_no_docs_pr(self):
-        done = README.replace("alpha_claude_fable_5_2.html` | not run",
-                              "alpha_claude_fable_5_2.html` | generated, review pending")
+        done = README.replace("alpha_claude_fable_5_2_<effort>.html` | not run",
+                              "alpha_claude_fable_5_2_<effort>.html` | generated (high), review pending")
         self.fake = build_fake(main_before=MAIN_PATHS | set(ALPHA_FILES), readme=done)
         code, out, _ = run_main(self.fake)
         self.assertEqual(code, 0)
@@ -1193,7 +1249,7 @@ class DocsPrTests(OrchestrationBase):
         self.fake = build_fake(main_before=MAIN_PATHS | {ALPHA_FILES[0]})
         code, out, _ = run_main(self.fake)
         self.assertEqual(code, 0)
-        self.assertIn("left as not run: sidecar missing", out)
+        self.assertIn("high not listed: sidecar missing", out)
         self.assertEqual(self.fake.writes(), [])
 
     def test_ref_creation_failure_exits_1_naming_the_step(self):

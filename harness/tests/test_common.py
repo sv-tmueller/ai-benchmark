@@ -8,7 +8,7 @@ directory names diverge from prompt ids across the corpus.
 import unittest
 from pathlib import Path
 
-from harness.modes._common import derive_model, model_tag
+from harness.modes._common import EFFORT_LEVELS, derive_model, model_tag, run_tag, session_effort
 
 
 class DeriveModelTest(unittest.TestCase):
@@ -72,6 +72,34 @@ class ModelTagTest(unittest.TestCase):
             with self.subTest(bad=bad):
                 with self.assertRaises(ValueError):
                     model_tag(bad)
+
+
+class EffortTest(unittest.TestCase):
+    def test_session_effort_returns_every_known_level(self):
+        for level in EFFORT_LEVELS:
+            with self.subTest(level=level):
+                self.assertEqual(session_effort({"CLAUDE_EFFORT": level}), level)
+
+    def test_session_effort_never_defaults(self):
+        for environ in ({}, {"CLAUDE_EFFORT": ""}, {"CLAUDE_EFFORT": "ultra"}, {"CLAUDE_EFFORT": "High"}):
+            with self.subTest(environ=environ):
+                with self.assertRaises(ValueError) as caught:
+                    session_effort(environ)
+                self.assertIn("CLAUDE_EFFORT", str(caught.exception))
+
+    def test_run_tag_is_the_model_tag_then_the_effort(self):
+        self.assertEqual(run_tag("claude-fable-5-2[1m]", "xhigh"), "claude_fable_5_2_xhigh")
+
+    def test_run_tag_rejects_an_unknown_effort_or_model(self):
+        for model, effort in (("claude-fable-5-2", "ultra"), ("claude-fable-5-2", ""), ("---", "high")):
+            with self.subTest(model=model, effort=effort):
+                with self.assertRaises(ValueError):
+                    run_tag(model, effort)
+
+    def test_derive_model_gives_the_run_tag_back(self):
+        result = Path("results/melon-jelly/melon-jelly_%s.html" % run_tag("claude-fable-5-2", "high"))
+        self.assertEqual(derive_model(result, {"id": "game-melon-jelly", "file_prefix": "melon-jelly"}),
+                         "claude_fable_5_2_high")
 
 
 if __name__ == "__main__":

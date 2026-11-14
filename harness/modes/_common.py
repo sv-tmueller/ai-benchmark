@@ -9,6 +9,7 @@ import re
 from pathlib import Path
 
 META_SUFFIX = ".meta.json"
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 
 def pair_meta(result_path):
@@ -37,7 +38,9 @@ def derive_model(result_path, prompt=None):
        unknown.
 
     The remainder keeps embedded underscores and name suffixes intact
-    (``melon-jelly_claude_haiku_5_5-v2.html`` -> ``claude_haiku_5_5-v2``).
+    (``melon-jelly_claude_haiku_5_5-v2.html`` -> ``claude_haiku_5_5-v2``), so
+    for a ``/bench-run`` result it is the run tag, model and effort together
+    (``melon-jelly_claude_fable_5_2_high.html`` -> ``claude_fable_5_2_high``).
     Returns an empty string when no rule matches.
     """
     result_path = Path(result_path)
@@ -77,3 +80,30 @@ def model_tag(model_id):
     if not re.fullmatch(r"[a-z][a-z0-9_]*[a-z0-9]", tag):
         raise ValueError("model tag %r from %r is not usable" % (tag, model_id))
     return tag
+
+
+def session_effort(environ):
+    """Return the session's effort level, read from ``CLAUDE_EFFORT``.
+
+    The level is part of every result file name, so it is never typed in and
+    never defaulted. Raises ``ValueError`` when the variable is unset, empty
+    or not one of :data:`EFFORT_LEVELS`.
+    """
+    effort = environ.get("CLAUDE_EFFORT", "")
+    if not effort:
+        raise ValueError("CLAUDE_EFFORT is unset or empty; the effort level is part of the "
+                         "result file name and cannot be guessed")
+    if effort not in EFFORT_LEVELS:
+        raise ValueError("CLAUDE_EFFORT=%r is not one of %s" % (effort, ", ".join(EFFORT_LEVELS)))
+    return effort
+
+
+def run_tag(model_id, effort):
+    """Return the results-file tag of one run: model tag, ``_``, effort level.
+
+    ``("claude-fable-5-2", "high")`` -> ``claude_fable_5_2_high``. Raises
+    ``ValueError`` for an unusable model id or an unknown effort level.
+    """
+    if effort not in EFFORT_LEVELS:
+        raise ValueError("effort %r is not one of %s" % (effort, ", ".join(EFFORT_LEVELS)))
+    return "%s_%s" % (model_tag(model_id), effort)

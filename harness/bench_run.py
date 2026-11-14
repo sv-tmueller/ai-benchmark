@@ -15,6 +15,10 @@ text (issue body, PR body, grade output) goes through files under
 ``.bench-run/`` (git-ignored) that this script writes, so the skill's steps
 stay one-line commands.
 
+Every mode except ``prompt`` reads the session's effort level from
+``CLAUDE_EFFORT`` and stops if it is unset or unknown: the level is part of
+the result file name (``<prefix>_<model_tag>_<effort>.<ext>``).
+
 ``plan`` and ``meta`` print only ``key: value`` lines and a sidecar preview,
 never any content from a result file. Failures print one ``STOP: ...`` line
 on stdout and exit 1. Stdlib only; Python 3.11+.
@@ -36,7 +40,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from harness.modes._common import derive_model, model_tag  # noqa: E402
+from harness.modes._common import derive_model, run_tag, session_effort  # noqa: E402
 
 MODES = ("plan", "meta", "prompt", "issue-body", "pr-body", "grade")
 WORK_DIR = ".bench-run"
@@ -66,7 +70,8 @@ class Plan:
     ext: str
     kind: str
     model_id: str
-    tag: str
+    effort: str
+    tag: str  # the run tag: model tag, "_", effort
     target: str
     meta_path: str
     grade_path: str
@@ -94,7 +99,7 @@ def find_prompt(repo_root, arg):
     return path, data[path]
 
 
-def resolve(repo_root, arg, model):
+def resolve(repo_root, arg, model, effort):
     """Resolve prompt, results folder, extension and paths. No overwrite checks."""
     tpath, prompt = find_prompt(repo_root, arg)
     pid = prompt["id"]
@@ -123,15 +128,15 @@ def resolve(repo_root, arg, model):
 
     model_id = re.sub(r"\[[^\]]*\]$", "", model.strip()).strip()
     try:
-        tag = model_tag(model_id)
+        tag = run_tag(model_id, effort)
     except ValueError:
-        raise Stop("model tag from %r is not usable" % model) from None
+        raise Stop("run tag from model %r and effort %r is not usable" % (model, effort)) from None
     base = "results/%s/%s_%s" % (folder, prefix, tag)
     target = "%s.%s" % (base, ext)
     if derive_model(Path(target), prompt) != tag:
         raise Stop("harness derive_model disagrees with tag %s for %s" % (tag, target))
     gmode = (prompt.get("grading") or {}).get("mode")
-    return Plan(pid, tpath.name, prompt, folder, prefix, ext, kind, model_id, tag,
+    return Plan(pid, tpath.name, prompt, folder, prefix, ext, kind, model_id, effort, tag,
                 target, base + ".meta.json", base + "_grading.json", gmode)
 
 
@@ -186,9 +191,9 @@ def meta_text(plan, environ, meta_mode):
         "params": {
             "temperature": None,
             "max_tokens_requested_initial": None,
-            "reasoning_effort": environ.get("CLAUDE_EFFORT") or None,
+            "reasoning_effort": plan.effort,
             "note": "Sampling settings from the TOML (%s) could not be applied in-session; session defaults applied. "
-            "reasoning_effort is the CLAUDE_EFFORT level in effect when the run started (null if unset). "
+            "reasoning_effort is the CLAUDE_EFFORT level in effect when the run started. "
             "%s finish_reason and usage are not observable in-session." % (
                 given("temperature", "temperature") + "; " + given("max_tokens", "max_tokens"), ctx),
         },
@@ -217,16 +222,18 @@ def plan_fields(plan):
         ("prefix", plan.prefix),
         ("extension", plan.ext),
         ("kind", plan.kind),
+        ("effort", plan.effort),
         ("model_tag", plan.tag + " (harness derive_model agrees)"),
         ("target", plan.target),
         ("meta", plan.meta_path),
         ("grading_sidecar", plan.grade_path),
         ("grading_mode", plan.gmode or "none"),
         ("grade_command", grade_command(plan) if plan.gmode else "none (no [grading] rule)"),
-        ("issue_title", "%s: %s one-shot result" % (plan.pid, plan.model_id)),
+        ("issue_title", "%s: %s (%s) one-shot result" % (plan.pid, plan.model_id, plan.effort)),
         ("branch", "feat/<N>-%s-%s-result" % (plan.prefix, dash)),
-        ("commit", "feat(results): add %s %s one-shot result (#<N>)" % (plan.prefix, plan.model_id)),
-        ("pr_title", "%s (%s, one-shot): result" % (plan.prefix, plan.model_id)),
+        ("commit", "feat(results): add %s %s %s one-shot result (#<N>)" % (
+            plan.prefix, plan.model_id, plan.effort)),
+        ("pr_title", "%s (%s, %s, one-shot): result" % (plan.prefix, plan.model_id, plan.effort)),
     ]
 
 
@@ -273,7 +280,7 @@ def issue_body(plan):
         "A plain one-shot of `%s` through `/bench-run` (`prompts/%s`), with no orchestrator or agents "
         "and no repair round." % (plan.pid, plan.toml),
         "",
-        "Model: `%s`. Deliverable kind: %s." % (plan.model_id, plan.kind),
+        "Model: `%s`. Effort: `%s`. Deliverable kind: %s." % (plan.model_id, plan.effort, plan.kind),
         "",
         "Target paths:",
         "",
@@ -293,10 +300,10 @@ def pr_body(plan, number, footer, grade_text):
     lines = [
         "## Summary",
         "",
-        "One-shot result of `%s` on `%s` (`prompts/%s`): a plain in-session one-shot through "
+        "One-shot result of `%s` at effort `%s` on `%s` (`prompts/%s`): a plain in-session one-shot through "
         "`/bench-run`, no orchestrator, no agents, no repair round. The deliverable (%s) was "
         "written in one pass and is frozen; nothing was edited afterwards." % (
-            plan.model_id, plan.pid, plan.toml, plan.kind),
+            plan.model_id, plan.effort, plan.pid, plan.toml, plan.kind),
         "",
         "## Files",
         "",
@@ -387,7 +394,11 @@ def main(argv=None, environ=None, repo_root=REPO_ROOT, run=None, grade_script=No
         if mode == "prompt":
             mode_prompt(repo_root, arg)
             return 0
-        plan = resolve(repo_root, arg, model)
+        try:
+            effort = session_effort(environ)
+        except ValueError as exc:
+            raise Stop(str(exc)) from None
+        plan = resolve(repo_root, arg, model, effort)
         if mode in ("plan", "meta"):
             check_free(repo_root, plan, mode, run)
             mode_plan(repo_root, plan, environ, mode == "meta")
