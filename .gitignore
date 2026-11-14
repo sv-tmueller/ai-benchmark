@@ -23,3 +23,6 @@ venv/
 
 # bench-run issue and PR bodies written by harness/bench_run.py
 .bench-run/
+
+# local results dashboard written by harness/dashboard.py
+/dashboard.html
