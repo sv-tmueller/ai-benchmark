@@ -7,7 +7,9 @@ Usage::
 
 Open PRs titled ``<prefix> (<model-id>, <effort>, one-shot): result`` are
 checked, at every effort level of the model, against a gate (right prompt, right folder, exactly the result files, only new
-files, green checks). PRs that pass are squash-merged one at a time. GitHub
+files, green checks). The result files are the deliverable and its meta file,
+plus the grading sidecar for graded prompts and the ``.run.json`` run file that
+a batch run may add; the last two are optional. PRs that pass are squash-merged one at a time. GitHub
 has the last word: if it refuses a merge, the PR stays open and the refusal is
 reported. The command never uses ``--admin`` or ``--auto``.
 
@@ -64,6 +66,7 @@ from harness.modes._common import EFFORT_LEVELS, derive_model  # noqa: E402
 
 META_SUFFIX = ".meta.json"
 GRADING_SUFFIX = "_grading.json"
+RUN_SUFFIX = ".run.json"
 OK_BUCKETS = {"pass", "skipping"}
 
 _TITLE_RE = re.compile(
@@ -99,7 +102,9 @@ def gate(pr, checks, main_paths, prompts, model_id, tag):
     list, ``main_paths`` the result paths on ``origin/main`` and ``prompts``
     the entries from :func:`load_prompt_files`. ``tag`` is the model tag; the
     effort level comes from the PR title, and branch and file names must carry
-    both. No I/O happens here.
+    both. The file set is the deliverable and its meta file, optionally with
+    the ``_grading.json`` sidecar (graded prompts only) and the ``.run.json``
+    run file; any other file is an extra file. No I/O happens here.
     """
     reasons = []
     parsed = parse_title(pr.get("title", ""))
@@ -198,7 +203,8 @@ def _file_set_reasons(files, family, prefix, tag, prompt, reasons):
         return
     deliverable = "%s.%s" % (base, ext)
     wanted = {deliverable, base + META_SUFFIX}
-    allowed = set(wanted)
+    # The run file (batch runs, #315) is optional: allowed, never required.
+    allowed = wanted | {base + RUN_SUFFIX}
     if "grading" in prompt:
         allowed.add(base + GRADING_SUFFIX)
     paths = {entry["path"] for entry in files}

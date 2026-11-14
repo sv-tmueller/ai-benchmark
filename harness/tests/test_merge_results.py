@@ -191,6 +191,65 @@ class GateTests(unittest.TestCase):
     def test_clean_pass_prompt_without_file_prefix_uses_stem(self):
         self.assertEqual(run_gate(make_pr("game-gamma", family="gamma")), [])
 
+    def test_clean_pass_with_run_file(self):
+        base = "results/alpha/alpha_%s" % RUN
+        pr = make_pr(files=pr_files(
+            base + ".html", base + ".meta.json", base + ".run.json"))
+        self.assertEqual(run_gate(pr), [])
+
+    def test_clean_pass_graded_prompt_with_run_file(self):
+        base = "results/beta/beta_%s" % RUN
+        pr = make_pr("beta", ext="md", files=pr_files(
+            base + ".md", base + ".meta.json", base + "_grading.json",
+            base + ".run.json"))
+        self.assertEqual(run_gate(pr), [])
+
+    def test_run_file_of_another_effort_is_extra(self):
+        base = "results/alpha/alpha_%s" % RUN
+        other = "results/alpha/alpha_%s.run.json" % RUN.replace("high", "max")
+        self.assertNotEqual(base + ".run.json", other)
+        pr = make_pr(files=pr_files(
+            base + ".html", base + ".meta.json", other))
+        self.assertEqual(run_gate(pr), ["extra file: " + other])
+
+    def test_run_file_with_another_base_name_is_extra(self):
+        base = "results/alpha/alpha_%s" % RUN
+        pr = make_pr(files=pr_files(
+            base + ".html", base + ".meta.json", "results/alpha/other.run.json"))
+        self.assertEqual(run_gate(pr), ["extra file: results/alpha/other.run.json"])
+
+    def test_run_file_plus_other_extra_reports_only_the_other(self):
+        base = "results/alpha/alpha_%s" % RUN
+        pr = make_pr(files=pr_files(
+            base + ".html", base + ".meta.json", base + ".run.json",
+            "results/alpha/notes.txt"))
+        self.assertEqual(run_gate(pr), ["extra file: results/alpha/notes.txt"])
+
+    def test_run_file_without_deliverable_reports_it_missing(self):
+        base = "results/alpha/alpha_%s" % RUN
+        pr = make_pr(files=pr_files(base + ".meta.json", base + ".run.json"))
+        self.assertEqual(run_gate(pr), ["missing: " + base + ".html"])
+
+    def test_run_file_alone_does_not_satisfy_the_gate(self):
+        base = "results/alpha/alpha_%s" % RUN
+        pr = make_pr(files=pr_files(base + ".run.json"))
+        self.assertEqual(run_gate(pr), [
+            "missing: " + base + ".html", "missing: " + base + ".meta.json"])
+
+    def test_modified_run_file_is_refused(self):
+        base = "results/alpha/alpha_%s" % RUN
+        pr = make_pr(files=pr_files(
+            base + ".html", base + ".meta.json", base + ".run.json"))
+        pr["files"][2]["changeType"] = "MODIFIED"
+        self.assertReason(run_gate(pr), "not a new file (MODIFIED): " + base + ".run.json")
+
+    def test_run_file_already_on_main_is_refused(self):
+        base = "results/alpha/alpha_%s" % RUN
+        pr = make_pr(files=pr_files(
+            base + ".html", base + ".meta.json", base + ".run.json"))
+        main = MAIN_PATHS | {base + ".run.json"}
+        self.assertReason(run_gate(pr, main_paths=main), "already on main: " + base + ".run.json")
+
     def test_grading_sidecar_without_grading_table_is_extra(self):
         base = "results/alpha/alpha_%s" % RUN
         pr = make_pr(files=pr_files(
