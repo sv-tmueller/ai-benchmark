@@ -5,8 +5,8 @@ Usage::
 
     python3 harness/merge_results.py --model <model-id> [--post-statuses] [--dry-run]
 
-Open PRs titled ``<prefix> (<model-id>, one-shot): result`` are checked
-against a gate (right prompt, right folder, exactly the result files, only new
+Open PRs titled ``<prefix> (<model-id>, <effort>, one-shot): result`` are
+checked, at every effort level of the model, against a gate (right prompt, right folder, exactly the result files, only new
 files, green checks). PRs that pass are squash-merged one at a time. GitHub
 has the last word: if it refuses a merge, the PR stays open and the refusal is
 reported. The command never uses ``--admin`` or ``--auto``.
@@ -21,10 +21,12 @@ the gate runs again and only the new head is vouched for, and a last read of the
 PR must still show the gated head before anything is posted. A failed post
 leaves the PR open; nothing is retried.
 
-Afterwards the README ledger rows for the model whose files are on ``main``
-are moved from ``not run`` to ``generated, review pending`` through a
-docs PR, opened with the GitHub API so the working tree is untouched. Without
-``--post-statuses`` that PR is never merged here. With it, the docs PR (the one
+Afterwards the README ledger rows of the model are brought up to date through
+a docs PR: a row's status lists the effort levels whose files are on ``main``
+(``not run`` becomes ``generated (high), review pending``, later
+``generated (high, max), review pending``). The docs PR is opened with the
+GitHub API so the working tree is untouched. Without ``--post-statuses`` that
+PR is never merged here. With it, the docs PR (the one
 just opened, or exactly one left by an earlier run) is merged only after proof
 that its diff is the rewrite this run computed: one commit on top of
 ``origin/main`` that changes only ``README.md`` to exactly the new text, whose
@@ -58,14 +60,15 @@ PROMPTS_DIR = REPO_ROOT / "prompts"
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from harness.modes._common import derive_model  # noqa: E402
+from harness.modes._common import EFFORT_LEVELS, derive_model  # noqa: E402
 
 META_SUFFIX = ".meta.json"
 GRADING_SUFFIX = "_grading.json"
 OK_BUCKETS = {"pass", "skipping"}
 
 _TITLE_RE = re.compile(
-    r"^(?P<prefix>[^\s()]+) \((?P<model>[^,()]+), one-shot\): result$"
+    r"^(?P<prefix>[^\s()]+) \((?P<model>[^,()]+), (?P<effort>%s), one-shot\): result$"
+    % "|".join(EFFORT_LEVELS)
 )
 _TAG_RE = re.compile(r"[a-z][a-z0-9_]*[a-z0-9]")
 
@@ -84,9 +87,9 @@ def model_tag(model_id):
 
 
 def parse_title(title):
-    """Return ``(prefix, model)`` for a result PR title, else ``None``."""
+    """Return ``(prefix, model, effort)`` for a result PR title, else ``None``."""
     match = _TITLE_RE.match(title)
-    return (match.group("prefix"), match.group("model")) if match else None
+    return match.group("prefix", "model", "effort") if match else None
 
 
 def gate(pr, checks, main_paths, prompts, model_id, tag):
@@ -94,7 +97,9 @@ def gate(pr, checks, main_paths, prompts, model_id, tag):
 
     ``pr`` is the ``gh pr view`` payload, ``checks`` the ``gh pr checks``
     list, ``main_paths`` the result paths on ``origin/main`` and ``prompts``
-    the entries from :func:`load_prompt_files`. No I/O happens here.
+    the entries from :func:`load_prompt_files`. ``tag`` is the model tag; the
+    effort level comes from the PR title, and branch and file names must carry
+    both. No I/O happens here.
     """
     reasons = []
     parsed = parse_title(pr.get("title", ""))
@@ -108,6 +113,7 @@ def gate(pr, checks, main_paths, prompts, model_id, tag):
     if parsed is None:
         return reasons
     prefix = parsed[0]
+    tag = "%s_%s" % (tag, parsed[2])
 
     prompt = _find_prompt(prompts, prefix, reasons)
     branch_re = r"feat/\d+-%s-%s-result" % (
@@ -230,15 +236,23 @@ LEDGER_ROW_RE = re.compile(
     re.MULTILINE,
 )
 NOT_RUN = "not run"
-GENERATED = "generated, review pending"
+EFFORT_SLOT = "<effort>"
+_GENERATED_RE = re.compile(r"generated \((?:%s)(?:, (?:%s))*\), review pending" % (
+    ("|".join(EFFORT_LEVELS),) * 2))
+
+
+def generated_status(efforts):
+    """Return the status cell for a row whose ``efforts`` are on ``main``."""
+    return "generated (%s), review pending" % ", ".join(efforts)
 
 
 def ledger_rows(text, tag, prompts):
     """Return the ledger rows of ``text`` that belong to model ``tag``.
 
-    A row belongs to the tag only when ``derive_model`` on its path, using the
-    row's prompt, gives exactly ``tag``; a plain suffix match would confuse
-    ``fable_5_2`` with ``claude_fable_5_2``.
+    A row's path carries the placeholder ``<effort>`` where a result file has
+    its effort level. The row belongs to the tag only when ``derive_model`` on
+    that path, using the row's prompt, gives exactly ``<tag>_<effort>``; a
+    plain suffix match would confuse ``fable_5_2`` with ``claude_fable_5_2``.
     """
     rows = []
     for match in LEDGER_ROW_RE.finditer(text):
@@ -246,7 +260,7 @@ def ledger_rows(text, tag, prompts):
         if prompt is None:
             continue
         path = match.group("path")
-        if derive_model(Path(path), prompt) == tag:
+        if derive_model(Path(path), prompt) == "%s_%s" % (tag, EFFORT_SLOT):
             rows.append({"pid": match.group("pid"), "path": path,
                          "status": match.group("status"), "span": match.span("status")})
     return rows
@@ -255,22 +269,32 @@ def ledger_rows(text, tag, prompts):
 def rewrite_ledger(text, tag, prompts, main_paths):
     """Return ``(new_text, updated_rows, skipped_messages)`` for model ``tag``.
 
-    Only ``not run`` cells whose deliverable and ``.meta.json`` sidecar are both
-    in ``main_paths`` change, to :data:`GENERATED`. Everything else, including
-    any later verdict label, is left alone, so a second pass is a no-op.
+    A row's status cell lists, in :data:`EFFORT_LEVELS` order, the effort
+    levels whose deliverable and ``.meta.json`` sidecar are both in
+    ``main_paths``. Only a ``not run`` cell or an earlier ``generated (...),
+    review pending`` cell is rewritten; anything else, including any later
+    verdict label, is left alone, and a second pass is a no-op.
     """
     updated, skipped, edits = [], [], []
     for row in ledger_rows(text, tag, prompts):
-        if row["status"] != NOT_RUN or row["path"] not in main_paths:
+        if row["status"] != NOT_RUN and not _GENERATED_RE.fullmatch(row["status"]):
             continue
-        meta = str(Path(row["path"]).with_suffix("")) + META_SUFFIX
-        if meta not in main_paths:
-            skipped.append("%s: left as not run: sidecar missing (%s)" % (row["pid"], meta))
+        efforts = []
+        for effort in EFFORT_LEVELS:
+            path = row["path"].replace(EFFORT_SLOT, effort)
+            if path not in main_paths:
+                continue
+            meta = str(Path(path).with_suffix("")) + META_SUFFIX
+            if meta not in main_paths:
+                skipped.append("%s: %s not listed: sidecar missing (%s)" % (row["pid"], effort, meta))
+                continue
+            efforts.append(effort)
+        if not efforts or generated_status(efforts) == row["status"]:
             continue
-        updated.append({"pid": row["pid"], "path": row["path"]})
-        edits.append(row["span"])
-    for start, end in reversed(edits):
-        text = text[:start] + GENERATED + text[end:]
+        updated.append({"pid": row["pid"], "path": row["path"], "efforts": efforts})
+        edits.append((row["span"], generated_status(efforts)))
+    for (start, end), status in reversed(edits):
+        text = text[:start] + status + text[end:]
     return text, updated, skipped
 
 
@@ -546,12 +570,12 @@ class Merger:
         return fresh
 
     def merge(self, number, view, status):
-        prefix = parse_title(view["title"])[0]
+        prefix, _, effort = parse_title(view["title"])
         sha = view["headRefOid"]
         proc = self.run((
             "gh", "pr", "merge", str(number), "--squash", "--match-head-commit", sha,
-            "--subject", "feat(results): add %s %s one-shot result (#%d)" % (
-                prefix, self.model_id, number)))
+            "--subject", "feat(results): add %s %s %s one-shot result (#%d)" % (
+                prefix, self.model_id, effort, number)))
         if proc.returncode:
             return self.left_open(number, "refused by GitHub: %s (mergeStateStatus=%s)" % (
                 first_line(proc.stderr), status))
@@ -695,7 +719,8 @@ class Merger:
             return self.docs_failed("update README", proc, branch)
         body = ["Marks the %s ledger rows generated now that their result PRs are merged."
                 % self.model_id, "", "Rows:"]
-        body += ["- `%s`: `%s`" % (row["pid"], row["path"]) for row in rows]
+        body += ["- `%s`: `%s` (%s)" % (row["pid"], row["path"], ", ".join(row["efforts"]))
+                 for row in rows]
         if self.merged:
             body += ["", "Merged result PRs: " + ", ".join("#%d" % n for n in self.merged)]
         proc = self.run(("gh", "pr", "create", "--base", "main", "--head", branch,
@@ -722,13 +747,15 @@ class Merger:
 
 
 def describe_rows(rows):
-    return ", ".join("%s (%s)" % (row["pid"], row["path"]) for row in rows) or "none"
+    return ", ".join("%s (%s: %s)" % (row["pid"], row["path"], ", ".join(row["efforts"]))
+                     for row in rows) or "none"
 
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(
         prog="merge_results.py",
-        description="Merge gated result PRs for one model, then update the README ledger.",
+        description="Merge gated result PRs for one model, at every effort level, "
+                    "then update the README ledger.",
     )
     parser.add_argument("--model", required=True, metavar="ID",
                         help="session model id, e.g. claude-fable-5-2")

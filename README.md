@@ -72,12 +72,16 @@ the `[system]`/`[user]` texts are plain prose and need no preprocessing.
 Outputs are grouped under `results/<file_prefix>/`, one folder per prompt:
 
 ```
-results/<file_prefix>/<file_prefix>_<model_tag>.<save_as>      the deliverable
-results/<file_prefix>/<file_prefix>_<model_tag>.meta.json      the sidecar
+results/<file_prefix>/<file_prefix>_<model_tag>_<effort>.<save_as>      the deliverable
+results/<file_prefix>/<file_prefix>_<model_tag>_<effort>.meta.json      the sidecar
 ```
 
 The model tag is the model id in lower case with every run of
 non-alphanumerics replaced by `_` (`claude-fable-5-2` → `claude_fable_5_2`).
+The effort is the effort level of the session that generated the result
+(`low`, `medium`, `high`, `xhigh` or `max`), so
+`stillwater_claude_fable_5_2_high.html` is Fable 5.2 at `high`, and results of
+one model at different effort levels sit side by side.
 The sidecar records the prompt, the model, how the result was generated and
 which sampling settings applied.
 
@@ -101,8 +105,12 @@ turns green it skips all 15 and reaches the final merge step again (the
 helper runs `harness/merge_results.py` when that file exists, otherwise it
 lists the open PRs). A single prompt still runs with `/bench-run <prompt-id>`,
 for example `/bench-run game-melon-jelly`. The prompt TOML under `prompts/` is
-used unmodified. Each sidecar's `reasoning_effort` records the session's
-`CLAUDE_EFFORT` level.
+used unmodified. The effort level is always the session's own
+(`CLAUDE_EFFORT`), never typed in: it goes into the file name, the issue, the
+commit and the PR title (`<prefix> (<model-id>, <effort>, one-shot): result`),
+and into the sidecar's `reasoning_effort`. A run stops if the level is unset
+or unknown. The skip check is per effort level, so running the arm again at
+another level generates a second set of results.
 
 **In-session generation caveats.** The generation happens inside a Claude
 Code session, so:
@@ -126,36 +134,39 @@ brace/paren balance, and console capture across 10 s. The result is labelled
 own. A result has no playability verdict until this check has run; generation
 alone does not earn one.
 
-**Status.** A row moves from `not run` to `generated, review pending`
-when its result and sidecar are on `main`.
+**Status.** `<effort>` in a target path stands for the effort level of a
+run. A row moves from `not run` to `generated (<effort>), review pending` when
+a result and its sidecar are on `main`, and lists every level that is there,
+for example `generated (high, max), review pending`.
 
 | Prompt | Deliverable | Target path | Status |
 |---|---|---|---|
-| `game-melon-jelly` | HTML | `results/melon-jelly/melon-jelly_claude_fable_5_2.html` | not run |
-| `game-lava-lamp` | HTML | `results/lava-lamp/lava-lamp_claude_fable_5_2.html` | not run |
-| `game-minecraft` | HTML | `results/minecraft/minecraft_claude_fable_5_2.html` | not run |
-| `game-meridian-launch` | HTML | `results/meridian-launch/meridian-launch_claude_fable_5_2.html` | not run |
-| `game-sunset-ocean` | HTML | `results/sunset-ocean/sunset-ocean_claude_fable_5_2.html` | not run |
-| `game-horror-house` | HTML | `results/horror-house/horror-house_claude_fable_5_2.html` | not run |
-| `game-last-flight` | HTML | `results/last-flight/last-flight_claude_fable_5_2.html` | not run |
-| `game-cities-skylines` | HTML | `results/cities-skylines/cities-skylines_claude_fable_5_2.html` | not run |
-| `game-mario-kart` | HTML | `results/mario-kart/mario-kart_claude_fable_5_2.html` | not run |
-| `app-stillwater` | HTML | `results/stillwater/stillwater_claude_fable_5_2.html` | not run |
-| `game-weichensteller` | HTML | `results/weichensteller/weichensteller_claude_fable_5_2.html` | not run |
-| `game-rubiks-cube` | HTML | `results/rubiks-cube/rubiks-cube_claude_fable_5_2.html` | not run |
-| `creative-water-bottle` | HTML | `results/creative-water-bottle/creative-water-bottle_claude_fable_5_2.html` | not run |
-| `reasoning-seating-puzzle` | HTML | `results/reasoning-seating-puzzle/reasoning-seating-puzzle_claude_fable_5_2.html` | not run |
-| `servicenow-loaner-request` | XML | `results/servicenow-loaner-request/servicenow-loaner-request_claude_fable_5_2.xml` | not run |
+| `game-melon-jelly` | HTML | `results/melon-jelly/melon-jelly_claude_fable_5_2_<effort>.html` | not run |
+| `game-lava-lamp` | HTML | `results/lava-lamp/lava-lamp_claude_fable_5_2_<effort>.html` | not run |
+| `game-minecraft` | HTML | `results/minecraft/minecraft_claude_fable_5_2_<effort>.html` | not run |
+| `game-meridian-launch` | HTML | `results/meridian-launch/meridian-launch_claude_fable_5_2_<effort>.html` | not run |
+| `game-sunset-ocean` | HTML | `results/sunset-ocean/sunset-ocean_claude_fable_5_2_<effort>.html` | not run |
+| `game-horror-house` | HTML | `results/horror-house/horror-house_claude_fable_5_2_<effort>.html` | not run |
+| `game-last-flight` | HTML | `results/last-flight/last-flight_claude_fable_5_2_<effort>.html` | not run |
+| `game-cities-skylines` | HTML | `results/cities-skylines/cities-skylines_claude_fable_5_2_<effort>.html` | not run |
+| `game-mario-kart` | HTML | `results/mario-kart/mario-kart_claude_fable_5_2_<effort>.html` | not run |
+| `app-stillwater` | HTML | `results/stillwater/stillwater_claude_fable_5_2_<effort>.html` | not run |
+| `game-weichensteller` | HTML | `results/weichensteller/weichensteller_claude_fable_5_2_<effort>.html` | not run |
+| `game-rubiks-cube` | HTML | `results/rubiks-cube/rubiks-cube_claude_fable_5_2_<effort>.html` | not run |
+| `creative-water-bottle` | HTML | `results/creative-water-bottle/creative-water-bottle_claude_fable_5_2_<effort>.html` | not run |
+| `reasoning-seating-puzzle` | HTML | `results/reasoning-seating-puzzle/reasoning-seating-puzzle_claude_fable_5_2_<effort>.html` | not run |
+| `servicenow-loaner-request` | XML | `results/servicenow-loaner-request/servicenow-loaner-request_claude_fable_5_2_<effort>.xml` | not run |
 
 **Merging results.** `python3 harness/merge_results.py --model <model-id>`
 (add `--dry-run` to only read and report) squash-merges the open
-`<prefix> (<model-id>, one-shot): result` PRs that pass a gate: the prompt
-exists, the branch and folder match, the PR adds exactly the deliverable and
+`<prefix> (<model-id>, <effort>, one-shot): result` PRs of the model, at every
+effort level, that pass a gate: the prompt exists, the branch and folder match
+the model and the effort in the title, the PR adds exactly the deliverable and
 its `.meta.json` (plus `_grading.json` only for graded prompts) as new files,
 and the checks are green. A PR that fails the gate, or that GitHub refuses to
 merge, stays open with the reason printed; the command never uses `--admin`
-or `--auto`. Afterwards it opens one docs PR that moves the model's `not run`
-rows whose files are now on `main` to `generated, review pending`;
+or `--auto`. Afterwards it opens one docs PR that brings the model's ledger rows up to
+date with the effort levels whose files are now on `main`;
 that PR is left for you to merge unless the opt-in below is used. Exit codes:
 0 done, 1 something stayed open, 2 bad model id or failed preflight.
 
@@ -237,7 +248,8 @@ expected = "42"
 }
 ```
 
-`model` is the filename remainder after `<file_prefix>_`; `detail` is free
+`model` is the filename remainder after `<file_prefix>_` (for a `/bench-run`
+result that includes the effort, e.g. `claude_fable_5_2_high`); `detail` is free
 text explaining the outcome.
 
 ## CI
