@@ -323,7 +323,9 @@ class ChildSummary:
     """What the helper keeps of a child: never the result text, only markers.
 
     ``metrics`` is the six run-file values (see ``run_metrics``), or ``None``
-    when the child's output carries no usable usage data.
+    when the child's output carries no usable usage data. ``metrics_error`` is
+    the class name of an unexpected exception raised while deriving them
+    (``metrics`` is then ``None``), else ``None``.
     """
 
     exit_code: int
@@ -337,6 +339,7 @@ class ChildSummary:
     model_usage: list = field(default_factory=list)
     model_ok: bool | None = None
     metrics: dict | None = None
+    metrics_error: str | None = None
 
 
 def _result_object(raw):
@@ -359,16 +362,24 @@ _TOKEN_FIELDS = (("input_tokens", "input_tokens"),
                  ("cache_write_tokens", "cache_creation_input_tokens"))
 
 
+def _finite(value):
+    """Whether ``value`` is a finite number; one too big for a float (``OverflowError``) is not."""
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 def _count(value):
-    """``value`` if it is a non-negative ``int`` (never a ``bool``), else ``None``."""
-    ok = isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    """``value`` if it is a non-negative finite ``int`` (never a ``bool``), else ``None``."""
+    ok = isinstance(value, int) and not isinstance(value, bool) and value >= 0 and _finite(value)
     return value if ok else None
 
 
 def _amount(value):
     """``value`` if it is a non-negative finite ``int`` or ``float`` (never a ``bool``), else ``None``."""
     ok = (isinstance(value, (int, float)) and not isinstance(value, bool)
-          and math.isfinite(value) and value >= 0)
+          and _finite(value) and value >= 0)
     return value if ok else None
 
 
@@ -377,7 +388,8 @@ def run_metrics(data):
 
     ``data`` is the parsed result. Usable means: ``usage`` is a dict whose four
     token fields are non-negative ints, ``duration_ms`` and ``total_cost_usd``
-    are non-negative finite numbers (no bools anywhere), and the four token
+    are non-negative finite numbers (no bools anywhere; a number too big to be
+    checked as a float is not finite), and the four token
     counts add up to more than zero, which excludes an API error before any
     model call. Anything else gives ``None``, never a partial result. Other
     fields, ``is_error`` and ``subtype`` do not matter.
@@ -398,7 +410,9 @@ def summarize(run, model):
     Only a ``STOP:`` line or a ``run void`` line is ever taken from the result
     text; the rest of it and every ``permission_denials[].tool_input`` (which
     can contain the deliverable) are dropped here. The usage numbers become
-    ``metrics``, except for a child that timed out.
+    ``metrics``, except for a child that timed out. An unexpected exception
+    while deriving them leaves ``metrics`` unset and its class name in
+    ``metrics_error``; the rest of the summary is not affected.
     """
     out = ChildSummary(run.exit_code, run.timed_out)
     data = _result_object(run.stdout)
@@ -425,7 +439,10 @@ def summarize(run, model):
         out.model_usage = sorted(usage)
         out.model_ok = model in usage
     if not run.timed_out:
-        out.metrics = run_metrics(data)
+        try:
+            out.metrics = run_metrics(data)
+        except Exception as exc:  # the metrics must never stop the batch
+            out.metrics, out.metrics_error = None, type(exc).__name__
     return out
 
 
@@ -978,37 +995,49 @@ def record_metrics(wt, log_dir, pid, model, effort, number, metrics):
     updates the PR description's marked "Run metrics" section. ``metrics`` of
     ``None`` writes no file and says "unavailable" in the description. Any
     failure leaves the PR as the child opened it, plus at most the one added
-    file, and becomes a note; nothing is raised and nothing is printed. A PR
-    body and result text are never printed.
+    file, and becomes a note; nothing is raised and nothing is printed. An
+    unexpected exception becomes a note with its class name as the reason
+    (``KeyboardInterrupt`` and ``SystemExit`` still propagate). A PR body and
+    result text are never printed.
     """
     usable = metrics is not None
+    not_added = "run file not added: %s" if usable else "run metrics unavailable, PR description not updated: %s"
     not_updated = ("run file added, PR description not updated: %s" if usable
                    else "run metrics unavailable, PR description not updated: %s")
+    stage = not_added
     try:
-        base, ext = expected_base(wt, pid, model, effort)
-        prefix = _prompt_data(wt, pid)["file_prefix"]
-    except (LookupError, ValueError, OSError) as exc:
-        return "run file not added: " + _reason(str(exc), "prompt file unreadable")
-    try:
-        head, body, run_path = _read_result_pr(wt, number, prefix, base, "%s.%s" % (base, ext), model, effort)
-    except _MetricsStop as exc:
-        return ("run file not added: %s" if usable else "run metrics unavailable, PR description not updated: %s") % exc
-    if usable:
-        content = base64.b64encode((json.dumps(metrics, indent=2) + "\n").encode("utf-8")).decode("ascii")
         try:
-            _gh(wt, "api", "--method", "PUT", "repos/{owner}/{repo}/contents/" + run_path,
-                "-f", "message=feat(results): add %s %s %s run metrics" % (prefix, model, effort),
-                "-f", "content=" + content, "-f", "branch=" + head)
+            base, ext = expected_base(wt, pid, model, effort)
+            prefix = _prompt_data(wt, pid)["file_prefix"]
+        except (LookupError, ValueError, OSError) as exc:
+            return "run file not added: " + _reason(str(exc), "prompt file unreadable")
+        try:
+            head, body, run_path = _read_result_pr(wt, number, prefix, base, "%s.%s" % (base, ext),
+                                                   model, effort)
         except _MetricsStop as exc:
-            return "run file not added: %s" % exc
-    body_file = Path(log_dir) / (pid + ".pr-body.md")
-    try:
-        body_file.write_text(splice_section(body, metrics_section(metrics, run_path)), encoding="utf-8")
-        _gh(wt, "pr", "edit", str(number), "--body-file", str(body_file))
-    except OSError as exc:
-        return not_updated % _reason("cannot write the PR description file: %s" % exc.strerror, "write failed")
-    except _MetricsStop as exc:
-        return not_updated % exc
+            return not_added % exc
+        if usable:
+            content = base64.b64encode((json.dumps(metrics, indent=2) + "\n").encode("utf-8")).decode("ascii")
+            try:
+                _gh(wt, "api", "--method", "PUT", "repos/{owner}/{repo}/contents/" + run_path,
+                    "-f", "message=feat(results): add %s %s %s run metrics" % (prefix, model, effort),
+                    "-f", "content=" + content, "-f", "branch=" + head)
+            except _MetricsStop as exc:
+                return not_added % exc
+        stage = not_updated
+        body_file = Path(log_dir) / (pid + ".pr-body.md")
+        try:
+            body_file.write_text(splice_section(body, metrics_section(metrics, run_path)), encoding="utf-8")
+            _gh(wt, "pr", "edit", str(number), "--body-file", str(body_file))
+        except UnicodeEncodeError:  # e.g. a lone surrogate; the body is never altered to fit
+            return not_updated % "PR description is not valid UTF-8 text"
+        except OSError as exc:
+            return not_updated % _reason("cannot write the PR description file: %s" % exc.strerror,
+                                         "write failed")
+        except _MetricsStop as exc:
+            return not_updated % exc
+    except Exception as exc:  # the metrics step must never stop the batch
+        return stage % type(exc).__name__
     return None if usable else "run metrics unavailable"
 
 
@@ -1088,6 +1117,8 @@ def run_batch(args, environ, wt, log_dir, lock_fd, prompts):
             after = None
         pr = after if after and after[0] == "pr" else None
         note = record_metrics(wt, log_dir, pid, args.model, effort, pr[1], summary.metrics) if pr else None
+        if pr and summary.metrics_error and note == "run metrics unavailable":
+            note += ": " + summary.metrics_error
         outcome, url = describe(summary, pr, note)
         rows.append((pid, outcome, url))
         _say("[%d/%d] %s  %s" % (i, total, pid, outcome))

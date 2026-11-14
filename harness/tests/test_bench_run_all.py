@@ -91,6 +91,8 @@ sys.exit(beh.get("exit", 0))
 '''
 
 
+GH_HANGS = "<hang>"  # as a gh_fail message: the call runs into its timeout
+
 USAGE = {"input_tokens": 28, "output_tokens": 77902,
          "cache_read_input_tokens": 1082945, "cache_creation_input_tokens": 109699}
 
@@ -297,6 +299,27 @@ class SummarizeTest(unittest.TestCase):
     def test_unparseable_output_has_no_metrics(self):
         self.assertIsNone(self.summarize(None, stdout="not json").metrics)
 
+    def test_an_unexpected_error_in_deriving_the_metrics_leaves_the_rest_of_the_summary_intact(self):
+        text = "STOP: nothing to do\nrun void: x"
+        denial = [{"tool_name": "Read", "tool_input": {"x": "SECRET"}}]
+        with mock.patch.object(bra, "run_metrics", side_effect=RuntimeError("SECRET")):
+            out = self.summarize(result_json(text, permission_denials=denial, modelUsage={"other": {}}))
+        self.assertIsNone(out.metrics)
+        self.assertEqual(out.metrics_error, "RuntimeError")
+        self.assertEqual((out.stop_line, out.void_line, out.denied_tools, out.model_ok),
+                         ("STOP: nothing to do", "run void: x", ["Read"], False))
+        self.assertNotIn("SECRET", repr(out))
+
+    def test_no_metrics_error_when_the_metrics_are_unusable_or_fine(self):
+        self.assertIsNone(self.summarize(result_json(usage=None)).metrics_error)
+        self.assertIsNone(self.summarize(result_json()).metrics_error)
+
+    def test_interrupts_in_deriving_the_metrics_still_propagate(self):
+        for exc in (KeyboardInterrupt, SystemExit):
+            with self.subTest(exc.__name__), mock.patch.object(bra, "run_metrics", side_effect=exc):
+                with self.assertRaises(exc):
+                    self.summarize(result_json())
+
     def test_unparseable_output_gives_no_json_and_no_text(self):
         out = self.summarize(None, stdout="not json SECRET")
         self.assertFalse(out.parsed)
@@ -368,6 +391,9 @@ class RunMetricsTest(unittest.TestCase):
             "negative cost": result_json(total_cost_usd=-0.01),
             "nan cost": result_json(total_cost_usd=float("nan")),
             "inf cost": result_json(total_cost_usd=float("inf")),
+            "duration too big for a float": result_json(duration_ms=10**400),
+            "cost too big for a float": result_json(total_cost_usd=10**400),
+            "token count too big for a float": with_usage(output_tokens=10**400),
             "all-zero usage (API error before any model call)": result_json(
                 usage={"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0,
                        "cache_creation_input_tokens": 0}, total_cost_usd=0, is_error=True),
@@ -774,6 +800,8 @@ class FakeGit:
     def failure(st, name):
         """The stderr to fail ``name`` with, or ``None``; set with ``set_shared(gh_fail={...})``."""
         message = st["gh_fail"].get(name)
+        if message == GH_HANGS:
+            raise subprocess.TimeoutExpired(["gh"], bra.GH_TIMEOUT)
         return None if message is None else FakeGit.done(rc=1, err=message)
 
     def pr_view(self, cmd, st):
@@ -1973,6 +2001,142 @@ class RunMetricsBatchTest(BatchCase):
         self.assertNotIn("  ", note)
         self.assertLessEqual(len(note), len("pr-opened #1 (run file not added: )") + 200)
         self.assertIn("pr-opened #1 (run file not added: HTTP 422: word word", note)
+
+    def test_a_number_too_big_for_a_float_means_unavailable_and_the_batch_goes_on(self):
+        clean_code, _ = self.batch()
+        for field, value in (("duration_ms", 10**400), ("total_cost_usd", 10**400)):
+            with self.subTest(field):
+                self.setUp()
+                self.set_children(default={"json": result_json("done", **{field: value})})
+                code, out = self.batch()
+                self.assertEqual(code, clean_code)
+                self.assertEqual(self.called_ids(), list(bra.ARM_PROMPTS))
+                self.assertEqual(self.puts(), [])
+                self.assertEqual(len(self.edits()), 14)
+                for edit in self.edits():
+                    self.assertIn("Unavailable:", edit["body"])
+                rep = self.report_lines(out)
+                for pid in bra.ARM_PROMPTS:
+                    self.assertRegex(rep[pid][0], r"^pr-opened #\d+ \(run metrics unavailable\)$")
+                self.assertIn("worktree: removed", out)
+
+    def test_a_pr_body_that_cannot_be_written_as_utf8_is_a_failed_description_update(self):
+        clean_code, _ = self.batch()
+        self.setUp()
+        lone = {"effects": {"open_pr": True, "pr_extra": {"body": "text \ud800 SECRET\n\nCloses #1\n"}}}
+        self.set_children(by_prompt={"game-melon-jelly": lone})
+        code, out = self.batch()
+        self.assertEqual(code, clean_code)
+        self.assertEqual(self.called_ids(), list(bra.ARM_PROMPTS))
+        self.assertEqual(len(self.puts()), 14)
+        self.assertEqual(len(self.edits()), 13)
+        prs = self.git.state()["prs"]
+        self.assertEqual(prs[0]["body"], "text \ud800 SECRET\n\nCloses #1\n")  # never altered to fit
+        rep = self.report_lines(out)
+        self.assertEqual(rep["game-melon-jelly"][0],
+                         "pr-opened #1 (run file added, PR description not updated: "
+                         "PR description is not valid UTF-8 text)")
+        self.assertRegex(rep["game-lava-lamp"][0], r"^pr-opened #\d+$")
+        self.assertNotIn("SECRET", out)
+        self.assertIn("worktree: removed", out)
+
+    def test_a_pr_body_that_cannot_be_written_as_utf8_without_usage_says_both(self):
+        self.set_children(default={"json": result_json("done", usage=None)},
+                          by_prompt={"game-melon-jelly": {"effects": {
+                              "open_pr": True, "pr_extra": {"body": "\ud800"}}}})
+        _, out = self.run_one()
+        self.assertEqual((self.puts(), self.edits()), ([], []))
+        self.assertEqual(self.one_note(out), "pr-opened #1 (run metrics unavailable, PR description "
+                                             "not updated: PR description is not valid UTF-8 text)")
+
+    def test_an_unexpected_error_in_the_description_stage_becomes_a_note_with_the_class_name(self):
+        clean_code, _ = self.batch()
+        self.setUp()
+        with mock.patch.object(bra, "metrics_section", side_effect=RuntimeError("SECRET body")):
+            code, out = self.batch()
+        self.assertEqual(code, clean_code)
+        self.assertEqual(self.called_ids(), list(bra.ARM_PROMPTS))
+        self.assertEqual(len(self.puts()), 14)
+        self.assertEqual(self.edits(), [])
+        self.assertEqual(self.one_note(out), "pr-opened #1 (run file added, PR description not updated: "
+                                             "RuntimeError)")
+        self.assertNotIn("SECRET", out)
+        self.assertIn("worktree: removed", out)
+
+    def test_an_unexpected_error_before_any_write_becomes_a_note_with_the_class_name(self):
+        with mock.patch.object(bra, "_read_result_pr", side_effect=ValueError("SECRET")):
+            _, out = self.run_one()
+        self.assertEqual((self.puts(), self.edits()), ([], []))
+        self.assertEqual(self.one_note(out), "pr-opened #1 (run file not added: ValueError)")
+        self.setUp()
+        self.set_children(default={"json": result_json("done", usage=None)})
+        with mock.patch.object(bra, "_read_result_pr", side_effect=ValueError("SECRET")):
+            _, out = self.run_one()
+        self.assertEqual(self.one_note(out), "pr-opened #1 (run metrics unavailable, "
+                                             "PR description not updated: ValueError)")
+        self.assertNotIn("SECRET", out)
+
+    def test_an_unexpected_error_at_the_put_becomes_a_note_with_the_class_name(self):
+        real = bra._gh
+
+        def gh(wt, *args):
+            if args[0] == "api":
+                raise RuntimeError("SECRET")
+            return real(wt, *args)
+
+        with mock.patch.object(bra, "_gh", gh):
+            _, out = self.run_one()
+        self.assertEqual((self.puts(), self.edits()), ([], []))
+        self.assertEqual(self.one_note(out), "pr-opened #1 (run file not added: RuntimeError)")
+
+    def test_an_unexpected_error_in_deriving_the_metrics_is_a_note_and_the_rest_of_the_line_stays(self):
+        clean_code, _ = self.batch()
+        self.setUp()
+        stop = result_json("STOP: odd\ndone", permission_denials=[{"tool_name": "Read"}])
+        self.set_children(default={"json": stop})
+        with mock.patch.object(bra, "run_metrics", side_effect=RuntimeError("SECRET")):
+            code, out = self.batch()
+        self.assertEqual(code, clean_code)
+        self.assertEqual(self.called_ids(), list(bra.ARM_PROMPTS))
+        self.assertEqual(self.puts(), [])
+        self.assertEqual(len(self.edits()), 14)
+        self.assertEqual(self.one_note(out), "pr-opened #1 (STOP: odd; denied: Read; "
+                                             "run metrics unavailable: RuntimeError)")
+        self.assertNotIn("SECRET", out)
+
+    def test_interrupts_in_the_metrics_step_are_not_swallowed(self):
+        for exc in (KeyboardInterrupt, SystemExit):
+            with self.subTest(exc.__name__):
+                self.setUp()
+                with mock.patch.object(bra, "metrics_section", side_effect=exc):
+                    with self.assertRaises(exc):
+                        self.run_one()
+
+    def test_a_gh_timeout_at_each_of_the_three_calls_gives_the_planned_note(self):
+        cases = (("view", "run file not added: gh timed out after 120 s", 0, 0),
+                 ("put", "run file not added: gh timed out after 120 s", 0, 0),
+                 ("edit", "run file added, PR description not updated: gh timed out after 120 s", 1, 0))
+        clean_code, _ = self.batch()
+        for name, note, puts, edits in cases:
+            with self.subTest(name):
+                self.setUp()
+                self.git.set_shared(gh_fail={name: GH_HANGS})
+                code, out = self.batch()
+                self.assertEqual(code, clean_code)
+                self.assertEqual(self.called_ids(), list(bra.ARM_PROMPTS))
+                self.assertEqual(self.one_note(out), "pr-opened #1 (%s)" % note)
+                self.assertEqual((len(self.puts()), len(self.edits())), (14 * puts, 14 * edits))
+                self.assertIn("worktree: removed", out)
+
+    def test_a_gh_timeout_without_usage_gives_the_unavailable_variant(self):
+        note = "run metrics unavailable, PR description not updated: gh timed out after 120 s"
+        for name in ("view", "edit"):
+            with self.subTest(name):
+                self.setUp()
+                self.set_children(default={"json": result_json("done", usage=None)})
+                self.git.set_shared(gh_fail={name: GH_HANGS})
+                _, out = self.run_one()
+                self.assertEqual(self.one_note(out), "pr-opened #1 (%s)" % note)
 
     def test_a_failed_pr_read_changes_nothing(self):
         self.git.set_shared(gh_fail={"view": "HTTP 404: gone"})
