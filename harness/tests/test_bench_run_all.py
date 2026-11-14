@@ -1841,6 +1841,28 @@ def skill_steps():
 INTERACTIVE_ONLY = ("python3 harness/bench_run.py grade ", "git restore ")
 
 
+def skill_text():
+    return (REPO / ".claude" / "skills" / "bench-run" / "SKILL.md").read_text(encoding="utf-8")
+
+
+def batch_mode():
+    return skill_text().split("## Batch mode\n", 1)[1].split("\n## One-shot rules\n", 1)[0]
+
+
+def batch_helper_commands():
+    """argv (after the script name) of every helper command in Batch mode, placeholders filled in."""
+    import shlex
+    fills = {"<model-id>": "claude-fable-5-2", "<selection>": "game-melon-jelly,game-lava-lamp",
+             "<answer>": "1,3-5"}
+    found = []
+    for span in re.findall(r"`(python3 harness/bench_run_all\.py [^`\n]+)`", batch_mode()):
+        for placeholder, value in fills.items():
+            span = span.replace(placeholder, value)
+        assert "<" not in span, span
+        found.append(shlex.split(span)[2:])
+    return found
+
+
 def step_commands():
     """Every inline-code span in the Steps that is a shell command."""
     spans = re.findall(r"`([^`\n]+)`", skill_steps())
@@ -1914,6 +1936,67 @@ class SkillStepCommandsTest(unittest.TestCase):
         for fragment in (".claude/worktrees/", "detached at `origin/main`", "never switched or written to",
                          "the batch worktree"):
             self.assertIn(fragment, batch)
+
+    def test_the_argument_hint_offers_a_prompt_id_or_all(self):
+        self.assertIn("\nargument-hint: [<prompt-id> | all] [--dry-run]\n", skill_text())
+
+    def test_the_description_says_it_asks_and_adds_no_yaml_special_characters(self):
+        line = [ln for ln in skill_text().splitlines() if ln.startswith("description: ")][0]
+        self.assertIn("lists the Fable 5.2 arm's prompts", line)
+        self.assertIn("asks which to run", line)
+        self.assertIn("with all as the argument it runs the whole arm without asking", line)
+        self.assertEqual(line.count(": "), 2)  # the key's own and the one that was already there
+        self.assertNotIn(" #", line)
+
+    def test_routing_and_batch_mode_name_the_empty_or_all_rule(self):
+        text = skill_text()
+        phrase = "apart from an optional `--dry-run`, is empty or exactly `all`"
+        self.assertEqual(text.count(phrase), 2)
+        routing = [ln for ln in text.splitlines() if ln.startswith("You are reading this")][0]
+        self.assertIn(phrase, routing)
+        self.assertIn(phrase, batch_mode())
+
+    def test_batch_mode_names_the_selection_flags_and_the_invalid_line(self):
+        batch = batch_mode()
+        for fragment in ("--list", "--select", "--prompts", "INVALID:", "STOP:", "per selected prompt",
+                         "Which prompts should run?"):
+            self.assertIn(fragment, batch)
+
+    def test_batch_mode_ends_its_turn_after_asking_and_never_interprets_the_answer(self):
+        batch = batch_mode()
+        self.assertIn("end your turn", batch)
+        self.assertIn("verbatim", batch)
+        self.assertIn("Never interpret, fix or complete it", batch)
+        self.assertIn("--select='<answer>'", batch)
+
+    def test_every_batch_helper_command_in_the_skill_parses_with_the_helper(self):
+        cmds = batch_helper_commands()
+        flags = {a for c in cmds for a in c if a.startswith("--")}
+        self.assertTrue({"--dry-run", "--list"} <= flags, cmds)
+        self.assertTrue([c for c in cmds if any(a.startswith("--select=") for a in c)], cmds)
+        for argv in cmds:
+            with self.subTest(argv=argv):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    args = bra.parse_args(argv)
+                self.assertEqual(args.model, "claude-fable-5-2")
+
+    def test_the_two_run_commands_take_the_selection_as_an_appended_prompts_flag(self):
+        self.assertEqual(batch_mode().count("with `--prompts <selection>` appended when step 2 produced one"), 2)
+        runs = [c for c in batch_helper_commands() if "--list" not in c and not any(a.startswith("--select") for a in c)]
+        self.assertEqual(len(runs), 2)
+        for argv in runs:
+            with self.subTest(argv=argv):
+                args = bra.parse_args(argv + ["--prompts", "game-melon-jelly,game-lava-lamp"])
+                self.assertEqual(bra.resolve_prompts(args.prompts), arm(1, 2))
+
+    def test_the_select_command_takes_the_answer_in_the_equals_form(self):
+        (cmd,) = [c for c in batch_helper_commands() if any(a.startswith("--select") for a in c)]
+        self.assertEqual([a for a in cmd if a.startswith("--select")], ["--select=1,3-5"])
+        self.assertEqual(bra.parse_args(cmd).select, "1,3-5")
+
+    def test_the_steps_run_no_helper_command_so_a_child_never_needs_one(self):
+        self.assertNotIn("bench_run_all", skill_steps())
+        self.assertIn("No arguments, `all`, or either with `--dry-run` means batch mode", skill_steps())
 
     def test_steps_open_with_the_one_line_command_instruction(self):
         head = skill_steps().strip().split("\n", 1)[0]
