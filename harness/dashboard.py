@@ -24,6 +24,7 @@ import hashlib
 import html
 import json
 import math
+import re
 import sys
 import urllib.parse
 from dataclasses import dataclass
@@ -41,6 +42,8 @@ from harness.modes._common import EFFORT_LEVELS, derive_model, pair_meta  # noqa
 
 RUN_SUFFIX = ".run.json"
 GENERATED_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+GENERATED_SHAPE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+SURROGATES = re.compile("[\ud800-\udfff]")
 DASH = "—"
 
 
@@ -61,15 +64,32 @@ class Row:
     cost: float | None
 
 
+def _clean(value):
+    """Replace lone surrogates with U+FFFD so ``value`` encodes as UTF-8.
+
+    A file name that is not valid UTF-8 reaches Python with its bad bytes as
+    surrogates, and a JSON ``\\udcff`` escape produces one too; neither can be
+    written to the page or printed.
+    """
+    return SURROGATES.sub("�", value)
+
+
 def _text(value):
-    """Return ``value`` when it is a non-empty string, else ``None``."""
-    return value if isinstance(value, str) and value else None
+    """Return ``value`` (cleaned) when it is a non-empty string, else ``None``."""
+    return _clean(value) if isinstance(value, str) and value else None
 
 
 def _is_number(value):
-    """True for a finite, non-negative int or float (not a bool)."""
-    return (isinstance(value, (int, float)) and not isinstance(value, bool)
-            and math.isfinite(value) and value >= 0)
+    """True for a finite, non-negative int or float (not a bool).
+
+    An int too large for a float is not a valid value either.
+    """
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value) and value >= 0
+    except OverflowError:
+        return False
 
 
 def _effort_rank(effort):
@@ -87,7 +107,7 @@ def _split_tag(tag):
 
 def _parse_generated(value):
     """Return ``value`` when it is a ``generated_utc`` timestamp, else ``None``."""
-    if not isinstance(value, str):
+    if not isinstance(value, str) or not GENERATED_SHAPE.fullmatch(value):
         return None
     try:
         datetime.datetime.strptime(value, GENERATED_FORMAT)
@@ -114,6 +134,8 @@ def _read_run_file(run_path, relpath, warnings):
         if key in data and not _is_number(value):
             warnings.append("%s: %s is not a non-negative number" % (relpath, key))
             value = None
+        elif value is not None:
+            value = abs(value)  # -0.0 is zero
         values.append(value)
     return tuple(values)
 
@@ -123,7 +145,10 @@ def collect_rows(repo_root):
 
     A file is a row exactly when it has a paired ``.meta.json``. Warnings are
     ``"<path relative to the repo>: <reason>"`` strings for unreadable
-    sidecars and run files; those results still appear.
+    sidecars and run files, and for names that are not valid UTF-8; those
+    results still appear. ``Row.relpath`` keeps the name's raw (surrogate)
+    characters so the link can reproduce its bytes; every text meant for
+    display or printing is cleaned.
     """
     repo_root = Path(repo_root)
     results_dir = repo_root / "results"
@@ -138,20 +163,23 @@ def collect_rows(repo_root):
         if meta_path is None:
             continue
         relpath = path.relative_to(repo_root).as_posix()
+        if SURROGATES.search(relpath):
+            warnings.append("%s: name is not valid UTF-8" % relpath)
         meta = read_meta(path)
         if meta is None:
             warnings.append("%s: cannot read meta file" % meta_path.relative_to(repo_root).as_posix())
             meta = {}
         params = meta.get("params")
         meta_effort = _text(params.get("reasoning_effort")) if isinstance(params, dict) else None
-        tag_model, tag_effort = _split_tag(derive_model(path, {"file_prefix": path.parent.name}))
+        tag_model, tag_effort = _split_tag(
+            _clean(derive_model(path, {"file_prefix": path.parent.name})))
         run_path = path.with_name(path.stem + RUN_SUFFIX)
         duration, output_tokens, cost = _read_run_file(
             run_path, run_path.relative_to(repo_root).as_posix(), warnings)
         pending.append(dict(
             relpath=relpath,
-            file=path.name,
-            prompt=_text(meta.get("prompt_id")) or path.parent.name,
+            file=_clean(path.name),
+            prompt=_text(meta.get("prompt_id")) or _clean(path.parent.name),
             title=_text(meta.get("title")),
             model=_text(meta.get("model")) or tag_model,
             effort=meta_effort or tag_effort,
@@ -167,7 +195,7 @@ def collect_rows(repo_root):
         r["file"],
     ))
     rows = [Row(index=i, **fields) for i, fields in enumerate(pending)]
-    return rows, warnings
+    return rows, [_clean(warning) for warning in warnings]
 
 
 def format_duration(seconds):
@@ -416,7 +444,7 @@ def _number_cell(value, formatter):
 def _row_html(row):
     effort = row.effort
     effort_sort = str(EFFORT_LEVELS.index(effort)) if effort in EFFORT_LEVELS else None
-    href = urllib.parse.quote(row.relpath, safe="/")
+    href = urllib.parse.quote(row.relpath, safe="/", errors="surrogateescape")
     link = ('<a href="%s" target="_blank" rel="noopener noreferrer">%s</a>'
             % (_esc(href), _esc(row.file)))
     cells = [
@@ -506,9 +534,9 @@ def main(argv=None, repo_root=REPO_ROOT, out=None, err=None):
             print("warning: %s" % warning, file=err)
         target.write_text(render(rows), encoding="utf-8")
     except OSError as exc:
-        print("error: %s" % exc, file=err)
+        print("error: %s" % _clean(str(exc)), file=err)
         return 1
-    print(target, file=out)
+    print(_clean(str(target)), file=out)
     return 0
 
 

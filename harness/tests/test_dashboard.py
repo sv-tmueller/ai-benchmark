@@ -13,6 +13,8 @@ import html
 import html.parser
 import io
 import json
+import math
+import os
 import re
 import shutil
 import subprocess
@@ -151,6 +153,27 @@ class CollectRowsTest(TempRootCase):
         self.assertEqual(len(warnings), 2)
         self.assertTrue(warnings[0].startswith("results/alpha/alpha_m_low.meta.json: "))
 
+    def test_generated_utc_counts_only_in_the_zero_padded_form(self):
+        cases = {
+            "2026-11-14T18:00:00Z": "2026-11-14T18:00:00Z",
+            "2026-1-1T1:2:3Z": None,
+            "2026-9-1T00:00:00Z": None,
+            "2026-11-14T18:00:00": None,
+            "2026-11-14T18:00:00Z\n": None,
+            "2026-02-30T00:00:00Z": None,
+            "٢026-11-14T18:00:00Z": None,
+            " 2026-11-14T18:00:00Z": None,
+            20261114: None,
+        }
+        for value, expected in cases.items():
+            with self.subTest(value=value):
+                if (self.root / "results").exists():
+                    shutil.rmtree(self.root / "results")
+                _add_result(self.root, "alpha", "alpha_m_low.html",
+                            meta={"generated_utc": value})
+                rows, _ = dashboard.collect_rows(self.root)
+                self.assertEqual(rows[0].generated, expected)
+
     def test_starting_order_is_prompt_model_effort_then_file_name(self):
         for name in ("b_zeta_low.html", "b_alpha_high.html", "b_alpha_low.html",
                      "b_alpha.html", "a_zeta_low.html"):
@@ -209,6 +232,26 @@ class RunFileTest(TempRootCase):
         row, warnings = self._row({"duration_seconds": 0, "cost_usd": 0})
         self.assertEqual((row.duration, row.output_tokens, row.cost), (0, None, 0))
         self.assertEqual(warnings, [])
+
+    def test_integer_too_large_for_a_float_blanks_its_cell_with_a_warning(self):
+        text = '{"duration_seconds": 1%s, "output_tokens": 5}' % ("0" * 400)
+        row, warnings = self._row(text)
+        self.assertEqual((row.duration, row.output_tokens, row.cost), (None, 5, None))
+        self.assertEqual(len(warnings), 1)
+        self.assertTrue(warnings[0].startswith("results/alpha/alpha_m_low.run.json: "))
+        self.assertIn("duration_seconds", warnings[0])
+
+    def test_negative_zero_is_treated_as_zero_for_every_metric(self):
+        row, warnings = self._row(
+            '{"duration_seconds": -0.0, "output_tokens": -0.0, "cost_usd": -0.0}')
+        self.assertEqual(warnings, [])
+        for value in (row.duration, row.output_tokens, row.cost):
+            self.assertEqual(value, 0)
+            self.assertEqual(math.copysign(1, value), 1.0)
+        page = dashboard.render([row])
+        self.assertIn('<td class="num" data-sort="0.0">$0.00</td>', page)
+        self.assertNotIn('data-sort="-', page)
+        self.assertNotIn("$-", page)
 
     def test_other_run_keys_are_not_read(self):
         row, warnings = self._row({"input_tokens": "junk", "cache_read_tokens": -5})
@@ -611,6 +654,61 @@ class MainTest(TempRootCase):
             sorted(["warning: results/alpha/alpha_m_low.meta.json: cannot read meta file",
                     "warning: results/alpha/alpha_m_low.run.json: run file is not a JSON object"]),
         )
+
+    def test_huge_run_file_integer_warns_and_still_writes_the_row(self):
+        _add_result(self.root, "alpha", "alpha_m_low.html", meta={},
+                    run='{"duration_seconds": 1%s, "output_tokens": 5}' % ("0" * 400))
+        code, _, err = self._main()
+        self.assertEqual(code, 0)
+        self.assertEqual(len(err.splitlines()), 1)
+        self.assertTrue(err.startswith("warning: results/alpha/alpha_m_low.run.json: "))
+        row = _parse((self.root / "dashboard.html").read_text(encoding="utf-8")).rows[0]
+        self.assertEqual([c["text"] for c in row["cells"]][4:6], [DASH, "5"])
+
+    def test_non_utf8_names_still_get_one_row_each_and_never_a_traceback(self):
+        root_b = os.fsencode(self.root)
+        deliverables = (
+            (b"bad\xffdir", b"bad\xffdir_claude_low"),
+            (b"good", b"g\xff_claude_low"),
+        )
+        try:
+            for directory, stem in deliverables:
+                os.makedirs(os.path.join(root_b, b"results", directory), exist_ok=True)
+                for suffix, content in ((b".html", b"<html></html>"), (b".meta.json", b"{}")):
+                    with open(os.path.join(root_b, b"results", directory, stem + suffix), "wb") as f:
+                        f.write(content)
+        except (OSError, UnicodeError) as exc:
+            self.skipTest("filesystem refuses non-UTF-8 names: %s" % exc)
+
+        # Strict encoders: a surrogate reaching stdout or stderr would raise.
+        out = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", errors="strict")
+        err = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", errors="strict")
+        code = dashboard.main([], repo_root=self.root, out=out, err=err)
+        out.flush()
+        err.flush()
+        err_text = err.buffer.getvalue().decode("utf-8")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(len(err_text.splitlines()), 2, err_text)
+        for line in err_text.splitlines():
+            self.assertTrue(line.startswith("warning: results/"), line)
+        page = (self.root / "dashboard.html").read_bytes().decode("utf-8")
+        parsed = _parse(page)
+        self.assertEqual(len(parsed.rows), 2)
+        shown = {}
+        for row in parsed.rows:
+            cells = row["cells"]
+            link = cells[7]["links"][0]
+            self.assertRegex(link["href"], r"^[A-Za-z0-9_.~%/-]+$")
+            raw = urllib.parse.unquote_to_bytes(link["href"])
+            self.assertTrue(os.path.isfile(os.path.join(root_b, raw)), link["href"])
+            shown[raw] = [c["text"] for c in cells[:3]] + [cells[7]["text"]]
+        self.assertEqual(
+            shown[b"results/bad\xffdir/bad\xffdir_claude_low.html"],
+            ["bad�dir", "claude", "low", "bad�dir_claude_low.html"])
+        self.assertEqual(
+            shown[b"results/good/g\xff_claude_low.html"],
+            ["good", "claude", "low", "g�_claude_low.html"])
 
     def test_unwritable_target_exits_one_with_one_line_on_stderr(self):
         (self.root / "dashboard.html").mkdir()
