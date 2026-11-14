@@ -669,6 +669,355 @@ class ArmDataTest(unittest.TestCase):
                 self.assertEqual(Path(target).name, name)
 
 
+    def test_no_prompt_is_called_all_so_the_skill_argument_all_cannot_collide(self):
+        import tomllib
+        self.assertNotIn("all", bra.ARM_PROMPTS)
+        for path in sorted((REPO / "prompts").glob("*.toml")):
+            if path.name.endswith(".fixtures.toml"):
+                continue
+            with self.subTest(file=path.name):
+                data = tomllib.loads(path.read_text(encoding="utf-8"))
+                self.assertNotEqual(path.stem.casefold(), "all")
+                self.assertNotEqual(str(data.get("id", "")).casefold(), "all")
+
+
+def arm(*numbers):
+    """The arm prompt ids at the given 1-based positions."""
+    return tuple(bra.ARM_PROMPTS[n - 1] for n in numbers)
+
+
+class SelectionParseTest(unittest.TestCase):
+    def test_all_in_any_case_selects_the_whole_arm(self):
+        for text in ("all", "ALL", "All", "  all  "):
+            with self.subTest(text=text):
+                self.assertEqual(bra.parse_selection(text), bra.ARM_PROMPTS)
+
+    def test_a_single_number_a_list_and_a_range(self):
+        for text, want in (("2", arm(2)), ("1,4,7", arm(1, 4, 7)), ("3-6", arm(3, 4, 5, 6)),
+                           ("1,3-5", arm(1, 3, 4, 5)), ("15", arm(15)), ("1-15", bra.ARM_PROMPTS)):
+            with self.subTest(text=text):
+                self.assertEqual(bra.parse_selection(text), want)
+
+    def test_spaces_around_items_and_around_the_dash_are_allowed(self):
+        self.assertEqual(bra.parse_selection(" 1 , 3 - 5 ,7"), arm(1, 3, 4, 5, 7))
+
+    def test_repeats_and_overlaps_collapse_and_the_result_is_in_arm_order(self):
+        self.assertEqual(bra.parse_selection("5,1,5,2-3"), arm(1, 2, 3, 5))
+        self.assertEqual(bra.parse_selection("4-6,5,3-5"), arm(3, 4, 5, 6))
+
+    def test_a_degenerate_range_selects_one_prompt(self):
+        self.assertEqual(bra.parse_selection("4-4"), arm(4))
+
+    def test_every_malformed_or_out_of_range_answer_is_rejected(self):
+        for text in ("", "   ", "0", "16", "3-16", "0-3", "6-3", "1,,2", "1,", ",1", "-3", "3-",
+                     "1-2-3", "all,3", "3,all", "1 3", "1.5", "x", "game-melon-jelly",
+                     "first three", "٣", "1-٣", "１", "99999999999999999999",
+                     "1" * 5000, "all all", "1;2", "1-"):
+            with self.subTest(text=text[:20]):
+                with self.assertRaises(bra.SelectionError):
+                    bra.parse_selection(text)
+
+    def test_a_selection_error_is_a_value_error_with_a_reason(self):
+        with self.assertRaises(ValueError) as ctx:
+            bra.parse_selection("16")
+        self.assertIsInstance(ctx.exception, bra.SelectionError)
+        self.assertIn("16", str(ctx.exception))
+
+
+class SelectModeTest(BatchCase):
+    def assert_read_only(self):
+        self.assertEqual(self.git.calls, [])
+        self.assertEqual(self.calls(), [])
+        self.assertFalse((self.repo / ".claude").exists())
+        self.assertFalse((self.dir / "logs").exists())
+
+    def test_a_valid_answer_prints_the_prompts_line_in_arm_order_and_starts_nothing(self):
+        code, out = self.batch("--select", "1,3-5")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out, "prompts: game-melon-jelly,game-minecraft,game-meridian-launch,"
+                              "game-sunset-ocean\n")
+        self.assert_read_only()
+
+    def test_a_scrambled_answer_comes_back_sorted_and_without_repeats(self):
+        _, out = self.batch("--select", "3,1,3")
+        self.assertEqual(out, "prompts: game-melon-jelly,game-minecraft\n")
+
+    def test_selecting_everything_prints_prompts_all(self):
+        for answer in ("all", "ALL", "1-15", "15,1-14"):
+            with self.subTest(answer=answer):
+                code, out = self.batch("--select", answer)
+                self.assertEqual((code, out), (0, "prompts: all\n"))
+        self.assert_read_only()
+
+    def test_an_empty_or_unparseable_answer_is_invalid_with_exit_3(self):
+        for answer in ("", "x", "16", "first three"):
+            with self.subTest(answer=answer):
+                code, out = self.batch("--select", answer)
+                self.assertEqual(code, 3, out)
+                self.assertRegex(out, r"^INVALID: .+\n$")
+                self.assertNotIn("prompts:", out)
+        self.assert_read_only()
+
+    def test_an_answer_that_looks_like_a_flag_is_read_with_the_equals_form(self):
+        code, out = self.batch("--select=-3")
+        self.assertEqual(code, 3, out)
+        self.assertRegex(out, r"^INVALID: ")
+        self.assert_read_only()
+
+    def test_it_needs_neither_the_effort_level_nor_a_usable_binary(self):
+        env = {k: v for k, v in self.env.items() if k != "CLAUDE_EFFORT"}
+        code, out = self.batch("--select", "2", env=env)
+        self.assertEqual((code, out), (0, "prompts: game-lava-lamp\n"))
+        self.assert_read_only()
+
+
+class ListModeTest(BatchCase):
+    def rows(self, out):
+        return [m.groups() for m in re.finditer(r"(?m)^ ?(\d+)\. (\S+)  (.+)$", out)]
+
+    def set_files(self, main_files=(), prs=()):
+        st = self.git.state()
+        st["main_files"] = list(main_files)
+        st["prs"] = [{"number": n, "url": "https://example.test/pull/%d" % n, "files": [{"path": p}]}
+                     for n, p in prs]
+        self.git.save(st)
+
+    def test_it_prints_a_header_and_fifteen_numbered_prompts_in_arm_order(self):
+        code, out = self.batch("--list")
+        self.assertEqual(code, 0, out)
+        lines = out.splitlines()
+        self.assertEqual(lines[0], "arm: 15 prompts for claude-fable-5-2 at effort high")
+        self.assertEqual(len(lines), 16)
+        self.assertEqual(self.rows(out), [(str(i), pid, "no result")
+                                          for i, pid in enumerate(bra.ARM_PROMPTS, 1)])
+        self.assertEqual(lines[1], " 1. game-melon-jelly  no result")
+        self.assertEqual(lines[10], "10. app-stillwater  no result")
+
+    def test_a_result_on_origin_main_and_one_in_an_open_pr_are_marked(self):
+        self.set_files(main_files=["results/lava-lamp/lava-lamp_claude_fable_5_2_high.html"],
+                       prs=[(12, "results/minecraft/minecraft_claude_fable_5_2_high.html")])
+        _, out = self.batch("--list")
+        marks = {pid: mark for _, pid, mark in self.rows(out)}
+        self.assertEqual(marks["game-lava-lamp"], "has result (on origin/main)")
+        self.assertEqual(marks["game-minecraft"], "has result (open PR #12)")
+        self.assertEqual(marks["game-melon-jelly"], "no result")
+        self.assertIn(" 2. game-lava-lamp  has result (on origin/main)", out)
+        self.assertIn(" 3. game-minecraft  has result (open PR #12)", out)
+
+    def test_a_result_at_another_effort_or_for_another_model_shows_no_result(self):
+        self.set_files(main_files=["results/melon-jelly/melon-jelly_claude_fable_5_2_max.html",
+                                   "results/lava-lamp/lava-lamp_claude_opus_4_8_high.html"])
+        _, out = self.batch("--list")
+        self.assertEqual({m for _, _, m in self.rows(out)}, {"no result"})
+
+    def test_only_fetch_ls_tree_and_gh_pr_list_run_and_nothing_is_created(self):
+        code, out = self.batch("--list")
+        self.assertEqual(code, 0, out)
+        self.assertEqual([c[:3] for c in self.git.calls],
+                         [["git", "fetch", "origin"], ["git", "ls-tree", "-r"], ["gh", "pr", "list"]])
+        self.assertEqual(self.git.calls[0], ["git", "fetch", "origin", "main"])
+        self.assertEqual(self.calls(), [])
+        self.assertFalse((self.repo / ".claude").exists())
+        self.assertFalse(bra.lock_path(self.wt).exists())
+        self.assertFalse((self.dir / "logs").exists())
+
+    def test_it_does_not_run_the_binary_to_check_for_the_effort_flag(self):
+        self.set_children(help_text="Usage: claude\n  --model <m>\n")
+        code, out = self.batch("--list")
+        self.assertEqual(code, 0, out)
+
+    def test_a_missing_or_unknown_effort_or_an_alias_stops_before_any_git_call(self):
+        no_effort = {k: v for k, v in self.env.items() if k != "CLAUDE_EFFORT"}
+        for label, kw in (("unset", dict(env=no_effort)),
+                          ("empty", dict(env=dict(self.env, CLAUDE_EFFORT=""))),
+                          ("unknown", dict(env=dict(self.env, CLAUDE_EFFORT="ultra"))),
+                          ("alias", dict(model="opus"))):
+            with self.subTest(case=label):
+                code, out = self.batch("--list", **kw)
+                self.assertEqual(code, 2, out)
+                self.assertRegex(out, r"(?m)^STOP: ")
+                self.assertEqual(self.rows(out), [])
+        self.assertEqual(self.git.calls, [])
+
+    def test_a_failed_fetch_stops(self):
+        def failing(cmd, **kw):
+            if cmd[:2] == ["git", "fetch"]:
+                return FakeGit.done(rc=1, err="fatal: no network\nmore")
+            return self.git(cmd, **kw)
+        code, out = self.batch("--list", runner=failing)
+        self.assertEqual(code, 2)
+        self.assertRegex(out, r"(?m)^STOP: .*fetch.*no network")
+        self.assertEqual(self.rows(out), [])
+
+    def test_a_failing_gh_pr_list_stops_instead_of_printing_a_misleading_list(self):
+        def failing(cmd, **kw):
+            if cmd[:3] == ["gh", "pr", "list"]:
+                return FakeGit.done(rc=1, err="gh: not logged in")
+            return self.git(cmd, **kw)
+        code, out = self.batch("--list", runner=failing)
+        self.assertEqual(code, 2)
+        self.assertRegex(out, r"(?m)^STOP: .*gh pr list")
+        self.assertEqual(self.rows(out), [])
+
+    def test_a_broken_prompt_file_stops(self):
+        (self.repo / "prompts" / "game-melon-jelly.toml").write_text("this is [not toml")
+        code, out = self.batch("--list")
+        self.assertEqual(code, 2, out)
+        self.assertRegex(out, r"(?m)^STOP: ")
+        self.assertEqual(self.git.calls, [])
+
+
+class SubsetRunTest(BatchCase):
+    CHOSEN = "game-minecraft,game-melon-jelly"
+
+    def test_the_selected_prompts_run_in_arm_order_with_progress_within_the_selection(self):
+        code, out = self.batch("--prompts", self.CHOSEN)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.called_ids(), ["game-melon-jelly", "game-minecraft"])
+        self.assertIn("[1/2] game-melon-jelly  running ...", out)
+        self.assertIn("[2/2] game-minecraft  pr-opened #2", out)
+        self.assertNotIn("/15]", out)
+
+    def test_the_report_lists_only_the_selected_prompts_and_counts_them(self):
+        _, out = self.batch("--prompts", self.CHOSEN)
+        self.assertEqual(list(self.report_lines(out)), ["game-melon-jelly", "game-minecraft"])
+        self.assertRegex(out, r"(?m)^pr-opened: 2$")
+        self.assertIn("\nreport: claude-fable-5-2 at effort high\n", out)
+
+    def test_a_selected_prompt_that_already_has_a_result_is_skipped_and_reported(self):
+        st = self.git.state()
+        st["main_files"] = ["results/melon-jelly/melon-jelly_claude_fable_5_2_high.html"]
+        self.git.save(st)
+        code, out = self.batch("--prompts", self.CHOSEN)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.called_ids(), ["game-minecraft"])
+        self.assertEqual(self.report_lines(out)["game-melon-jelly"][0], "skipped: on origin/main")
+        self.assertIn("[1/2] game-melon-jelly  skipped: on origin/main", out)
+
+    def test_an_unselected_prompt_with_a_result_is_not_mentioned(self):
+        st = self.git.state()
+        st["main_files"] = ["results/lava-lamp/lava-lamp_claude_fable_5_2_high.html"]
+        self.git.save(st)
+        _, out = self.batch("--prompts", self.CHOSEN)
+        self.assertNotIn("game-lava-lamp", out)
+
+    def test_the_merge_step_still_runs_after_a_subset(self):
+        (self.repo / "harness").mkdir(exist_ok=True)
+        (self.repo / "harness" / "merge_results.py").write_text(
+            "import sys\nprint('merge args:', ' '.join(sys.argv[1:]))\n")
+        code, out = self.batch("--prompts", "game-melon-jelly")
+        self.assertRegex(out, r"(?m)^merge args: --model claude-fable-5-2 --post-statuses$")
+        self.assertRegex(out, r"(?m)^merge step: ran harness/merge_results.py, exit 0$")
+        self.assertEqual(code, 0)
+
+    def test_prompts_all_is_the_whole_arm(self):
+        code, out = self.batch("--prompts", "all")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.called_ids(), list(bra.ARM_PROMPTS))
+        self.assertIn("[15/15] servicenow-loaner-request", out)
+
+    def test_a_repeated_id_starts_one_child(self):
+        self.batch("--prompts", "game-melon-jelly,game-melon-jelly")
+        self.assertEqual(self.called_ids(), ["game-melon-jelly"])
+
+    def test_after_a_halt_only_the_remaining_selected_prompts_are_not_started(self):
+        self.set_children(by_prompt={"game-lava-lamp": {
+            "effects": {"write": ["results/lava-lamp/stray.txt"]}}})
+        code, out = self.batch("--prompts", "game-sunset-ocean,game-melon-jelly,game-lava-lamp,game-minecraft")
+        self.assertEqual(self.called_ids(), ["game-melon-jelly", "game-lava-lamp"])
+        rep = self.report_lines(out)
+        self.assertEqual(list(rep), ["game-melon-jelly", "game-lava-lamp", "game-minecraft", "game-sunset-ocean"])
+        self.assertEqual(rep["game-minecraft"][0], "not-started: tree dirty after game-lava-lamp")
+        self.assertEqual(rep["game-sunset-ocean"][0], "not-started: tree dirty after game-lava-lamp")
+        self.assertRegex(out, r"(?m)^not-started: 2$")
+        self.assertNotEqual(code, 0)
+
+    def test_the_dry_run_shows_only_the_selected_prompts_and_creates_nothing(self):
+        code, out = self.batch("--dry-run", "--prompts", "game-lava-lamp")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(re.findall(r"(?m)^prompt .*$", out),
+                         ["prompt game-lava-lamp: run  " + Path(self.targets["game-lava-lamp"]).name])
+        self.assertEqual(out.count("child command:"), 1)
+        self.assertIn("merge step: would list open PRs", out)
+        self.assertEqual(self.calls(), [])
+        self.assertFalse((self.repo / ".claude").exists())
+
+    def test_the_dry_run_marks_a_selected_prompt_that_would_be_skipped(self):
+        st = self.git.state()
+        st["main_files"] = ["results/lava-lamp/lava-lamp_claude_fable_5_2_high.html"]
+        self.git.save(st)
+        _, out = self.batch("--dry-run", "--prompts", "game-melon-jelly,game-lava-lamp")
+        self.assertRegex(out, r"(?m)^prompt game-melon-jelly: run")
+        self.assertRegex(out, r"(?m)^prompt game-lava-lamp: skip \(on origin/main\)")
+
+    def test_the_dry_run_with_prompts_all_shows_the_whole_arm(self):
+        _, out = self.batch("--dry-run", "--prompts", "all")
+        self.assertEqual(len(re.findall(r"(?m)^prompt ", out)), 15)
+
+
+class RejectedPromptsTest(BatchCase):
+    def test_a_bad_value_stops_with_no_git_call_and_no_child_with_or_without_dry_run(self):
+        for value in ("game-unknown", "", "a,,b", "3", "game-melon-jelly,", "game-melon-jelly,x", "ALL",
+                      "all,game-melon-jelly"):
+            for extra in ((), ("--dry-run",)):
+                with self.subTest(value=value, extra=extra):
+                    code, out = self.batch("--prompts", value, *extra)
+                    self.assertEqual(code, 2, out)
+                    self.assertRegex(out, r"(?m)^STOP: ")
+                    self.assertEqual(self.git.calls, [])
+                    self.assertEqual(self.calls(), [])
+                    self.assertFalse((self.repo / ".claude").exists())
+
+    def test_an_unknown_id_is_named_in_the_stop_line(self):
+        _, out = self.batch("--prompts", "game-melon-jelly,game-unknown")
+        self.assertIn("STOP: game-unknown is not one of the 15 arm prompts", out)
+
+    def test_an_empty_value_does_not_quietly_mean_the_whole_arm(self):
+        code, out = self.batch("--prompts", "")
+        self.assertEqual(code, 2)
+        self.assertEqual(self.calls(), [])
+
+    def test_the_resolver_collapses_repeats_and_keeps_arm_order(self):
+        self.assertEqual(bra.resolve_prompts("game-lava-lamp,game-melon-jelly,game-lava-lamp"),
+                         arm(1, 2))
+        self.assertEqual(bra.resolve_prompts(None), bra.ARM_PROMPTS)
+        self.assertEqual(bra.resolve_prompts("all"), bra.ARM_PROMPTS)
+
+
+class ModeConflictTest(unittest.TestCase):
+    def parse(self, *argv):
+        with contextlib.redirect_stderr(io.StringIO()):
+            return bra.parse_args(["--model", "claude-fable-5-2", *argv])
+
+    def test_list_select_and_smoke_exclude_each_other(self):
+        for argv in (("--list", "--smoke", "x"), ("--select", "1", "--list"),
+                     ("--select", "1", "--smoke", "x"), ("--smoke", "", "--list")):
+            with self.subTest(argv=argv):
+                with self.assertRaises(SystemExit):
+                    self.parse(*argv)
+
+    def test_prompts_cannot_be_combined_with_any_of_them(self):
+        for argv in (("--prompts", "x", "--smoke", "y"), ("--prompts", "x", "--list"),
+                     ("--prompts", "x", "--select", "1"), ("--prompts", "", "--list"),
+                     ("--prompts", "x", "--smoke", "")):
+            with self.subTest(argv=argv):
+                with self.assertRaises(SystemExit):
+                    self.parse(*argv)
+
+    def test_an_empty_select_or_prompts_value_is_kept_as_given(self):
+        self.assertEqual(self.parse("--select", "").select, "")
+        self.assertEqual(self.parse("--prompts", "").prompts, "")
+        args = self.parse()
+        self.assertIsNone(args.select)
+        self.assertIsNone(args.prompts)
+        self.assertFalse(args.list)
+
+    def test_dry_run_goes_with_prompts(self):
+        args = self.parse("--dry-run", "--prompts", "game-melon-jelly")
+        self.assertTrue(args.dry_run)
+        self.assertEqual(args.prompts, "game-melon-jelly")
+
+
 class BatchPreflightTest(BatchCase):
     def assert_no_child(self, code, out):
         self.assertEqual(code, 2)

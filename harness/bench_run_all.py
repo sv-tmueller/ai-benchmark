@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Run the whole one-shot arm, one headless child per prompt.
+"""Run the one-shot arm, or a chosen part of it, one headless child per prompt.
 
-``/bench-run`` with no arguments calls this helper. For each prompt in
-``ARM_PROMPTS`` it starts a fresh headless ``claude -p "/bench-run <id>"``
-child with the same model and effort as the calling session, a narrow tool
-allowlist and ``--permission-mode dontAsk``, so every generation is one
-isolated one-shot session. The helper reads no result content: it looks at
-file names, git and ``gh pr list`` only, and never merges anything itself.
+``/bench-run`` in batch mode calls this helper. For each selected prompt of
+``ARM_PROMPTS`` (all of them unless ``--prompts`` narrows it) it starts a fresh
+headless ``claude -p "/bench-run <id>"`` child with the same model and effort
+as the calling session, a narrow tool allowlist and
+``--permission-mode dontAsk``, so every generation is one isolated one-shot
+session. The helper reads no result content: it looks at file names, git and
+``gh pr list`` only, and never merges anything itself.
 
 A batch runs in a private git worktree for its model and effort level,
 ``.claude/worktrees/bench-run-<model_tag>_<effort>``, detached at
@@ -22,19 +23,34 @@ not on ``origin/main``. ``--smoke`` and
 
 Usage (from the repo root)::
 
-    python3 harness/bench_run_all.py --model <exact-model-id> [--dry-run]
+    python3 harness/bench_run_all.py --model <exact-model-id> [--prompts IDS] [--dry-run]
+    python3 harness/bench_run_all.py --model <id> --list
+    python3 harness/bench_run_all.py --model <id> --select ANSWER
     python3 harness/bench_run_all.py --model <id> --smoke <prompt-id>
 
-``--smoke`` starts exactly one child running ``/bench-run <id> --dry-run``,
-which generates nothing and runs in the main checkout. Stdlib only; Python
-3.11+. Git and ``gh`` go through ``_run``, the one seam the unit tests patch;
-the real-git tests exercise the worktree helpers with it unpatched.
+``--prompts`` takes comma-separated arm prompt ids, or ``all`` (the same as
+leaving it out), and runs only those, in arm order. ``--list`` prints the arm's
+prompts numbered, each marked with whether it already has a result on
+``origin/main`` or in an open PR, using ``git fetch``, ``git ls-tree`` and
+``gh pr list`` only. ``--select`` turns the user's raw answer to "which
+prompts?" (``all``, ``2``, ``1,4,7``, ``3-6``) into a ``prompts: <ids>`` line
+(``prompts: all`` for the whole arm) and calls no git, gh or claude. ``--smoke``
+starts exactly one child running ``/bench-run <id> --dry-run``, which generates
+nothing and runs in the main checkout; ``--smoke``, ``--list`` and ``--select``
+exclude each other and ``--prompts``.
+
+Exit codes: 0 clean, 1 something failed or was left undone, 2 a ``STOP:`` before
+anything started (including a ``--prompts`` id that is not in the arm), 3 an
+``INVALID:`` answer to ``--select`` (the caller asks again). Stdlib only;
+Python 3.11+. Git and ``gh`` go through ``_run``, the one seam the unit tests
+patch; the real-git tests exercise the worktree helpers with it unpatched.
 """
 
 import argparse
 import fcntl
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -73,6 +89,70 @@ ARM_PROMPTS = (
     "reasoning-seating-puzzle",
     "servicenow-loaner-request",
 )
+
+
+
+class SelectionError(ValueError):
+    """A prompt selection that cannot be read; the message says why."""
+
+
+_SELECTION_ITEM = re.compile(r"([0-9]+)(?:\s*-\s*([0-9]+))?")
+_MAX_DIGITS = 6  # far above the arm size; also keeps int() away from its digit limit
+
+
+def _position(digits):
+    if len(digits) > _MAX_DIGITS or not 1 <= int(digits) <= len(ARM_PROMPTS):
+        raise SelectionError("%s is not a prompt number from 1 to %d" % (digits[:20], len(ARM_PROMPTS)))
+    return int(digits)
+
+
+def parse_selection(text):
+    """Turn the user's answer into arm prompt ids, in arm order, repeats collapsed.
+
+    Accepted: ``all`` on its own (any case), or comma-separated items that are
+    each ``N`` or ``N-M`` (ASCII digits, spaces allowed around items and around
+    the dash). Anything else raises ``SelectionError``: the answer is never
+    guessed at.
+    """
+    text = (text or "").strip()
+    if not text:
+        raise SelectionError("the answer is empty")
+    if text.lower() == "all":
+        return ARM_PROMPTS
+    chosen = set()
+    for item in text.split(","):
+        item = item.strip()
+        match = _SELECTION_ITEM.fullmatch(item)
+        if not match:
+            raise SelectionError("%r is not a number or a range such as 3-6" % item[:20])
+        first = _position(match.group(1))
+        last = first if match.group(2) is None else _position(match.group(2))
+        if last < first:
+            raise SelectionError("the range %s is backwards" % item)
+        chosen.update(range(first, last + 1))
+    return tuple(pid for i, pid in enumerate(ARM_PROMPTS, 1) if i in chosen)
+
+
+def resolve_prompts(value):
+    """Arm prompt ids for ``--prompts``: ``None`` or ``all`` is the whole arm.
+
+    Otherwise comma-separated arm ids, returned in arm order with repeats
+    collapsed. Anything else raises ``SelectionError``; there is no fallback to
+    the whole arm.
+    """
+    if value is None or value == "all":
+        return ARM_PROMPTS
+    if value == "":
+        raise SelectionError("--prompts is empty; pass arm prompt ids or all")
+    wanted = set()
+    for pid in value.split(","):
+        if not pid:
+            raise SelectionError("--prompts has an empty item")
+        if pid not in ARM_PROMPTS:
+            raise SelectionError("%s is not one of the %d arm prompts" % (pid[:60], len(ARM_PROMPTS)))
+        wanted.add(pid)
+    return tuple(pid for pid in ARM_PROMPTS if pid in wanted)
+
 
 MODEL_ALIASES = ("fable", "opus", "sonnet", "haiku")
 DEFAULT_TIMEOUT = 3600
@@ -744,16 +824,18 @@ def describe(summary, pr):
     return outcome, (pr[2] if pr else "-")
 
 
-def run_batch(args, environ, wt, log_dir, lock_fd=None):
-    """The loop in the worktree ``wt``: skip check, child, outcome, cleanup.
+def run_batch(args, environ, wt, log_dir, lock_fd, prompts):
+    """The loop over ``prompts`` in the worktree ``wt``: skip check, child, outcome, cleanup.
 
-    Returns (rows, halt reason). ``lock_fd`` is handed to every child.
+    Returns (rows, halt reason): one row per selected prompt. ``lock_fd`` is
+    handed to every child (``None`` hands none). ``prompts`` has no default, so
+    no caller can run the whole arm by leaving it out.
     """
     repo_root = wt
     rows, halt = [], None
-    total = len(ARM_PROMPTS)
+    total = len(prompts)
     effort = environ["CLAUDE_EFFORT"]
-    for i, pid in enumerate(ARM_PROMPTS, 1):
+    for i, pid in enumerate(prompts, 1):
         if halt:
             rows.append((pid, "not-started: " + halt, "-"))
             continue
@@ -855,7 +937,7 @@ def report(rows, log_dir, model, effort, worktree_line=None):
         _say(worktree_line)
 
 
-def run_dry(args, environ, repo_root, checks):
+def run_dry(args, environ, repo_root, checks, prompts):
     _say("dry-run: no child will be started")
     for c in checks:
         _say("check %s: %s%s" % ("ok" if c.ok else "FAIL", c.name, (" - " + c.detail) if c.detail else ""))
@@ -870,7 +952,7 @@ def run_dry(args, environ, repo_root, checks):
             snap = None
             checks.append(Check("skip lookup", False, str(exc)))
         if snap is not None:
-            for pid in ARM_PROMPTS:
+            for pid in prompts:
                 name = expected_name(repo_root, pid, args.model, environ["CLAUDE_EFFORT"])
                 hit = lookup(snap, name)
                 what = "run" if not hit else (
@@ -887,11 +969,16 @@ def run_dry(args, environ, repo_root, checks):
 
 
 def run_all(args, environ, repo_root):
+    try:
+        prompts = resolve_prompts(args.prompts)
+    except SelectionError as exc:
+        _say("STOP: %s" % exc)
+        return 2
     checks = preflight(args, environ, repo_root)
     if args.dry_run:
         usable = all(c.ok for c in checks if c.name in ("model", "effort"))
         checks.append(check_worktree(args, environ, repo_root, usable))
-        return run_dry(args, environ, repo_root, checks)
+        return run_dry(args, environ, repo_root, checks, prompts)
     failed = [c for c in checks if not c.ok]
     if failed:
         for c in failed:
@@ -910,13 +997,70 @@ def run_all(args, environ, repo_root):
             _say("STOP: worktree: %s" % exc)
             return 2
         log_dir = make_log_dir(args.log_dir, run_tag(args.model, effort))
-        rows, halt = run_batch(args, environ, wt, log_dir, lock_fd)
+        rows, halt = run_batch(args, environ, wt, log_dir, lock_fd, prompts)
         merge_ok = merge_step(args, environ, wt, halt)
         report(rows, log_dir, args.model, effort, finish_worktree(repo_root, wt, halt))
     finally:
         os.close(lock_fd)
     clean = all(o.startswith(("pr-opened", "skipped")) for _, o, _ in rows)
     return 0 if clean and merge_ok and not halt else 1
+
+
+# --- list and select --------------------------------------------------------
+
+
+def run_list(args, environ, repo_root):
+    """Print the arm's prompts numbered, each marked with its result state.
+
+    Read-only: one ``git fetch origin main`` and the ``snapshot`` calls, no
+    worktree, lock, log folder or child. The effort level comes from
+    ``session_effort``, not ``check_effort``: the binary is checked later, by
+    the run itself.
+    """
+    stops, effort = [], None
+    err = check_model(args.model)
+    if err:
+        stops.append(err)
+    try:
+        effort = session_effort(environ)
+    except ValueError as exc:
+        stops.append(str(exc))
+    if stops:
+        for msg in stops:
+            _say("STOP: " + msg)
+        return 2
+    try:
+        names = [expected_name(repo_root, pid, args.model, effort) for pid in ARM_PROMPTS]
+    except (LookupError, ValueError, OSError) as exc:
+        _say("STOP: prompts: %s" % exc)
+        return 2
+    fetch = _run(["git", "fetch", "origin", "main"], cwd=repo_root)
+    if fetch.returncode:
+        _say("STOP: git fetch failed: " + _first_line(fetch.stderr))
+        return 2
+    try:
+        snap = snapshot(repo_root)
+    except GitError as exc:
+        _say("STOP: %s" % exc)
+        return 2
+    _say("arm: %d prompts for %s at effort %s" % (len(ARM_PROMPTS), args.model, effort))
+    for i, (pid, name) in enumerate(zip(ARM_PROMPTS, names), 1):
+        hit = lookup(snap, name)
+        mark = "no result" if not hit else (
+            "has result (on origin/main)" if hit[0] == "origin/main" else "has result (open PR #%d)" % hit[1])
+        _say("%2d. %s  %s" % (i, pid, mark))
+    return 0
+
+
+def run_select(args):
+    """Turn the raw answer in ``--select`` into a ``prompts:`` line. Calls no git, gh or claude."""
+    try:
+        chosen = parse_selection(args.select)
+    except SelectionError as exc:
+        _say("INVALID: %s" % exc)
+        return 3
+    _say("prompts: " + ("all" if chosen == ARM_PROMPTS else ",".join(chosen)))
+    return 0
 
 
 # --- command line -----------------------------------------------------------
@@ -926,17 +1070,31 @@ def parse_args(argv):
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--model", required=True, help="exact model id of the calling session")
     p.add_argument("--dry-run", action="store_true", help="show the checks and the plan; start no child")
-    p.add_argument("--smoke", metavar="PROMPT_ID", help="start one /bench-run <id> --dry-run child")
+    modes = p.add_mutually_exclusive_group()
+    modes.add_argument("--smoke", metavar="PROMPT_ID", help="start one /bench-run <id> --dry-run child")
+    modes.add_argument("--list", action="store_true",
+                       help="print the arm's prompts numbered, marked with their result state; start nothing")
+    modes.add_argument("--select", metavar="ANSWER",
+                       help="turn the user's answer (all, 2, 1,4,7, 3-6) into a prompts: line; start nothing")
+    p.add_argument("--prompts", metavar="IDS",
+                   help="run only these comma-separated arm prompt ids, or all (default: all)")
     p.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT, help="seconds per child (default 3600)")
     p.add_argument("--claude", default="claude", help="path to the claude binary")
     p.add_argument("--log-dir", help="log folder (default: ~/.cache/bench-run/<UTC>_<run tag>/)")
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    if args.prompts is not None and (args.list or args.select is not None or args.smoke is not None):
+        p.error("--prompts cannot be combined with --smoke, --list or --select")
+    return args
 
 
 def main(argv=None, environ=None, repo_root=REPO_ROOT):
     args = parse_args(argv)
     environ = os.environ if environ is None else environ
     repo_root = Path(repo_root)
+    if args.list:
+        return run_list(args, environ, repo_root)
+    if args.select is not None:
+        return run_select(args)
     if args.smoke:
         return run_smoke(args, environ, repo_root)
     return run_all(args, environ, repo_root)
