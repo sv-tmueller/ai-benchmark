@@ -133,7 +133,7 @@ class RepoCase(unittest.TestCase):
                            repo_root=self.root, run=self.fake_run, grade_script=grade_script)
         return code, out.getvalue(), err.getvalue()
 
-    def write_deliverable(self, rel="results/gx-dir/gx_claude_fable_5_2.html", text="<!DOCTYPE html>x"):
+    def write_deliverable(self, rel="results/gx-dir/gx_claude_fable_5_2_high.html", text="<!DOCTYPE html>x"):
         path = self.root / rel
         path.write_text(text)
         return path
@@ -145,15 +145,15 @@ class PlanTest(RepoCase):
         self.assertEqual(code, 0)
         for line in ("prompt_id: game-x", "toml: game-x.toml", "folder: results/gx-dir",
                      "prefix: gx", "extension: html", "kind: single HTML file",
-                     "model_tag: claude_fable_5_2 (harness derive_model agrees)",
-                     "target: results/gx-dir/gx_claude_fable_5_2.html",
-                     "meta: results/gx-dir/gx_claude_fable_5_2.meta.json",
-                     "grading_sidecar: results/gx-dir/gx_claude_fable_5_2_grading.json",
+                     "model_tag: claude_fable_5_2_high (harness derive_model agrees)",
+                     "target: results/gx-dir/gx_claude_fable_5_2_high.html",
+                     "meta: results/gx-dir/gx_claude_fable_5_2_high.meta.json",
+                     "grading_sidecar: results/gx-dir/gx_claude_fable_5_2_high_grading.json",
                      "grading_mode: none", "grade_command: none (no [grading] rule)",
-                     "issue_title: game-x: claude-fable-5-2 one-shot result",
-                     "branch: feat/<N>-gx-claude-fable-5-2-result",
-                     "commit: feat(results): add gx claude-fable-5-2 one-shot result (#<N>)",
-                     "pr_title: gx (claude-fable-5-2, one-shot): result", "meta_preview:"):
+                     "issue_title: game-x: claude-fable-5-2 (high) one-shot result",
+                     "branch: feat/<N>-gx-claude-fable-5-2-high-result",
+                     "commit: feat(results): add gx claude-fable-5-2 high one-shot result (#<N>)",
+                     "pr_title: gx (claude-fable-5-2, high, one-shot): result", "meta_preview:"):
             self.assertIn(line + "\n", out)
         preview = json.loads(out.split("meta_preview:\n", 1)[1])
         self.assertEqual(preview["model"], "claude-fable-5-2")
@@ -174,18 +174,42 @@ class PlanTest(RepoCase):
         toml.write_text(toml.read_text().replace('save_as = "md"', 'save_as = "xml"'))
         _, out, _ = self.invoke("plan", "app-y", "claude-fable-5-2")
         self.assertIn("kind: single XML file\n", out)
-        self.assertIn("target: results/ay-dir/ay_claude_fable_5_2.xml\n", out)
+        self.assertIn("target: results/ay-dir/ay_claude_fable_5_2_high.xml\n", out)
 
     def test_folder_falls_back_to_the_prefix_when_the_prompt_has_no_results_yet(self):
         for meta in (self.root / "results" / "ay-dir").glob("*.meta.json"):
             meta.unlink()
         _, out, _ = self.invoke("plan", "app-y", "claude-fable-5-2")
         self.assertIn("folder: results/ay\n", out)
-        self.assertIn("target: results/ay/ay_claude_fable_5_2.md\n", out)
+        self.assertIn("target: results/ay/ay_claude_fable_5_2_high.md\n", out)
 
-    def test_reasoning_effort_is_null_when_the_variable_is_unset(self):
-        _, out, _ = self.invoke("plan", "game-x", "claude-fable-5-2", environ={})
-        self.assertIsNone(json.loads(out.split("meta_preview:\n", 1)[1])["params"]["reasoning_effort"])
+    def test_stops_when_the_effort_is_unset_or_unknown(self):
+        for mode in ("plan", "meta", "issue-body", "grade"):
+            for environ, fragment in (({}, "CLAUDE_EFFORT is unset or empty"),
+                                      ({"CLAUDE_EFFORT": ""}, "CLAUDE_EFFORT is unset or empty"),
+                                      ({"CLAUDE_EFFORT": "turbo"}, "CLAUDE_EFFORT='turbo' is not one of")):
+                with self.subTest(mode=mode, environ=environ):
+                    code, out, _ = self.invoke(mode, "game-x", "claude-fable-5-2", environ=environ)
+                    self.assertEqual(code, 1)
+                    self.assertIn("STOP: " + fragment, out)
+        self.assertEqual(self.calls, [])
+
+    def test_the_effort_of_the_session_is_in_every_name(self):
+        _, out, _ = self.invoke("plan", "game-x", "claude-fable-5-2", environ={"CLAUDE_EFFORT": "max"})
+        for line in ("effort: max",
+                     "target: results/gx-dir/gx_claude_fable_5_2_max.html",
+                     "meta: results/gx-dir/gx_claude_fable_5_2_max.meta.json",
+                     "issue_title: game-x: claude-fable-5-2 (max) one-shot result",
+                     "branch: feat/<N>-gx-claude-fable-5-2-max-result",
+                     "commit: feat(results): add gx claude-fable-5-2 max one-shot result (#<N>)",
+                     "pr_title: gx (claude-fable-5-2, max, one-shot): result"):
+            self.assertIn(line + "\n", out)
+        self.assertEqual(json.loads(out.split("meta_preview:\n", 1)[1])["params"]["reasoning_effort"], "max")
+
+    def test_another_effort_of_the_same_model_does_not_block_the_run(self):
+        self.main_paths.add("results/gx-dir/gx_claude_fable_5_2_max.html")
+        code, out, _ = self.invoke("plan", "game-x", "claude-fable-5-2")
+        self.assertEqual(code, 0, out)
 
     def test_graded_prompt_shows_the_new_grade_command(self):
         _, out, _ = self.invoke("plan", "math-z", "claude-fable-5-2")
@@ -195,7 +219,7 @@ class PlanTest(RepoCase):
     def test_stem_lookup_and_context_suffix_strip(self):
         code, out, _ = self.invoke("plan", "game-x", "claude-fable-5-2[1m]")
         self.assertEqual(code, 0)
-        self.assertIn("issue_title: game-x: claude-fable-5-2 one-shot result\n", out)
+        self.assertIn("issue_title: game-x: claude-fable-5-2 (high) one-shot result\n", out)
 
     def assert_stop(self, argv, fragment):
         code, out, _ = self.invoke(*argv)
@@ -226,11 +250,11 @@ class PlanTest(RepoCase):
         self.assert_stop(("plan", "game-x", "claude-fable-5-2"), "already exists on disk")
 
     def test_stops_when_target_is_on_origin_main(self):
-        self.main_paths.add("results/gx-dir/gx_claude_fable_5_2.html")
+        self.main_paths.add("results/gx-dir/gx_claude_fable_5_2_high.html")
         self.assert_stop(("plan", "game-x", "claude-fable-5-2"), "already exists at origin/main")
 
     def test_stops_when_an_open_pr_touches_the_target(self):
-        self.open_prs = [{"number": 7, "files": [{"path": "results/gx-dir/gx_claude_fable_5_2.html"}]}]
+        self.open_prs = [{"number": 7, "files": [{"path": "results/gx-dir/gx_claude_fable_5_2_high.html"}]}]
         self.assert_stop(("plan", "game-x", "claude-fable-5-2"), "open PR #7")
 
     def test_stops_when_gh_fails(self):
@@ -238,7 +262,7 @@ class PlanTest(RepoCase):
         self.assert_stop(("plan", "game-x", "claude-fable-5-2"), "gh pr list failed")
 
     def test_stops_on_an_unusable_model_tag(self):
-        self.assert_stop(("plan", "game-x", "---"), "model tag")
+        self.assert_stop(("plan", "game-x", "---"), "run tag from model '---'")
 
     def test_other_models_results_do_not_block(self):
         code, _, _ = self.invoke("plan", "game-x", "claude-opus-5-6")
@@ -249,8 +273,8 @@ class MetaTest(RepoCase):
     def test_meta_requires_the_deliverable_and_writes_nothing_without_it(self):
         code, out, _ = self.invoke("meta", "game-x", "claude-fable-5-2")
         self.assertEqual(code, 1)
-        self.assertIn("STOP: results/gx-dir/gx_claude_fable_5_2.html is missing or empty", out)
-        self.assertFalse((self.root / "results/gx-dir/gx_claude_fable_5_2.meta.json").exists())
+        self.assertIn("STOP: results/gx-dir/gx_claude_fable_5_2_high.html is missing or empty", out)
+        self.assertFalse((self.root / "results/gx-dir/gx_claude_fable_5_2_high.meta.json").exists())
 
     def test_meta_rejects_an_empty_deliverable(self):
         self.write_deliverable(text="")
@@ -262,28 +286,28 @@ class MetaTest(RepoCase):
         self.write_deliverable()
         code, out, _ = self.invoke("meta", "game-x", "claude-fable-5-2")
         self.assertEqual(code, 0)
-        self.assertIn("written: results/gx-dir/gx_claude_fable_5_2.meta.json\n", out)
-        meta = json.loads((self.root / "results/gx-dir/gx_claude_fable_5_2.meta.json").read_text())
+        self.assertIn("written: results/gx-dir/gx_claude_fable_5_2_high.meta.json\n", out)
+        meta = json.loads((self.root / "results/gx-dir/gx_claude_fable_5_2_high.meta.json").read_text())
         self.assertRegex(meta["generated_utc"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
         self.assertEqual(meta["model"], "claude-fable-5-2")
         self.assertEqual(meta["prompt_id"], "game-x")
         self.assertEqual(meta["toml"], "game-x.toml")
         self.assertTrue(meta["one_shot"])
         self.assertEqual(meta["params"]["reasoning_effort"], "high")
-        self.assertEqual(meta["outputs"], {"deliverable": "results/gx-dir/gx_claude_fable_5_2.html"})
+        self.assertEqual(meta["outputs"], {"deliverable": "results/gx-dir/gx_claude_fable_5_2_high.html"})
         self.assertNotIn("playability", json.dumps(meta))
 
     def test_meta_note_names_the_toml_sampling_values_and_the_system_context(self):
         self.write_deliverable()
         self.invoke("meta", "game-x", "claude-fable-5-2")
-        meta = json.loads((self.root / "results/gx-dir/gx_claude_fable_5_2.meta.json").read_text())
+        meta = json.loads((self.root / "results/gx-dir/gx_claude_fable_5_2_high.meta.json").read_text())
         note = meta["params"]["note"]
         self.assertIn("temperature 0.7", note)
         self.assertIn("max_tokens 4096", note)
         self.assertIn("alongside the TOML system text", note)
-        self.write_deliverable("results/ay-dir/ay_claude_fable_5_2.md")
+        self.write_deliverable("results/ay-dir/ay_claude_fable_5_2_high.md")
         self.invoke("meta", "app-y", "claude-fable-5-2")
-        meta = json.loads((self.root / "results/ay-dir/ay_claude_fable_5_2.meta.json").read_text())
+        meta = json.loads((self.root / "results/ay-dir/ay_claude_fable_5_2_high.meta.json").read_text())
         self.assertIn("temperature not set in the TOML", meta["params"]["note"])
         self.assertIn("The TOML has no system text", meta["params"]["note"])
 
@@ -339,23 +363,24 @@ class IssueBodyTest(RepoCase):
     def test_issue_body_is_written_under_bench_run_and_its_path_printed(self):
         code, out, _ = self.invoke("issue-body", "game-x", "claude-fable-5-2")
         self.assertEqual(code, 0)
-        self.assertEqual(out, ".bench-run/gx_claude_fable_5_2.issue.md\n")
-        text = (self.root / ".bench-run/gx_claude_fable_5_2.issue.md").read_text()
+        self.assertEqual(out, ".bench-run/gx_claude_fable_5_2_high.issue.md\n")
+        text = (self.root / ".bench-run/gx_claude_fable_5_2_high.issue.md").read_text()
         self.assertIn("prompts/game-x.toml", text)
         self.assertIn("plain one-shot", text)
+        self.assertIn("Model: `claude-fable-5-2`. Effort: `high`.", text)
         self.assertIn("/bench-run", text)
         self.assertIn("no orchestrator or agents", text)
-        self.assertIn("results/gx-dir/gx_claude_fable_5_2.html", text)
-        self.assertIn("results/gx-dir/gx_claude_fable_5_2.meta.json", text)
+        self.assertIn("results/gx-dir/gx_claude_fable_5_2_high.html", text)
+        self.assertIn("results/gx-dir/gx_claude_fable_5_2_high.meta.json", text)
         self.assertIn("single HTML file", text)
         self.assertNotIn("Closes", text)
 
     def test_issue_body_lists_the_grading_sidecar_only_for_graded_prompts(self):
         self.invoke("issue-body", "math-z", "claude-fable-5-2")
-        graded = (self.root / ".bench-run/mz_claude_fable_5_2.issue.md").read_text()
-        self.assertIn("results/mz-dir/mz_claude_fable_5_2_grading.json", graded)
+        graded = (self.root / ".bench-run/mz_claude_fable_5_2_high.issue.md").read_text()
+        self.assertIn("results/mz-dir/mz_claude_fable_5_2_high_grading.json", graded)
         self.invoke("issue-body", "game-x", "claude-fable-5-2")
-        plain = (self.root / ".bench-run/gx_claude_fable_5_2.issue.md").read_text()
+        plain = (self.root / ".bench-run/gx_claude_fable_5_2_high.issue.md").read_text()
         self.assertNotIn("_grading.json", plain)
 
     def test_issue_body_works_after_the_deliverable_and_meta_exist(self):
@@ -381,14 +406,15 @@ class PrBodyTest(RepoCase):
         code, out, err = self.invoke("pr-body", pid, "claude-fable-5-2", n, *extra)
         self.assertEqual(code, 0, out + err)
         path = self.root / out.strip()
-        self.assertEqual(out.strip(), ".bench-run/%s_claude_fable_5_2.pr.md" % prefix)
+        self.assertEqual(out.strip(), ".bench-run/%s_claude_fable_5_2_high.pr.md" % prefix)
         return path.read_text(encoding="utf-8")
 
     def test_ungraded_body_has_the_sections_the_naming_section_requires(self):
         text = self.body()
         self.assertIn("one-shot", text)
-        self.assertIn("results/gx-dir/gx_claude_fable_5_2.html", text)
-        self.assertIn("results/gx-dir/gx_claude_fable_5_2.meta.json", text)
+        self.assertIn("`claude-fable-5-2` at effort `high`", text)
+        self.assertIn("results/gx-dir/gx_claude_fable_5_2_high.html", text)
+        self.assertIn("results/gx-dir/gx_claude_fable_5_2_high.meta.json", text)
         self.assertIn("no [grading] rule; no playability verdict written; review pending", text)
         self.assertIn("temperature", text)
         self.assertIn("max_tokens", text)
@@ -409,11 +435,11 @@ class PrBodyTest(RepoCase):
     def test_graded_body_embeds_the_saved_grade_output_and_lists_the_sidecar(self):
         bench = self.root / ".bench-run"
         bench.mkdir()
-        (bench / "mz_claude_fable_5_2.grade.txt").write_text("  PASS  contains  x\ngraded 1 result(s)\n")
+        (bench / "mz_claude_fable_5_2_high.grade.txt").write_text("  PASS  contains  x\ngraded 1 result(s)\n")
         text = self.body("math-z", "mz")
         self.assertIn("  PASS  contains  x", text)
         self.assertIn("graded 1 result(s)", text)
-        self.assertIn("results/mz-dir/mz_claude_fable_5_2_grading.json", text)
+        self.assertIn("results/mz-dir/mz_claude_fable_5_2_high_grading.json", text)
         self.assertNotIn("no [grading] rule", text)
 
     def test_graded_body_stops_when_grade_output_is_missing(self):
@@ -421,12 +447,12 @@ class PrBodyTest(RepoCase):
         self.assertEqual(code, 1)
         self.assertTrue(out.startswith("STOP: "))
         self.assertIn("grade", out)
-        self.assertFalse((self.root / ".bench-run/mz_claude_fable_5_2.pr.md").exists())
+        self.assertFalse((self.root / ".bench-run/mz_claude_fable_5_2_high.pr.md").exists())
 
     def test_graded_body_stops_when_grade_output_is_empty(self):
         bench = self.root / ".bench-run"
         bench.mkdir()
-        (bench / "mz_claude_fable_5_2.grade.txt").write_text("")
+        (bench / "mz_claude_fable_5_2_high.grade.txt").write_text("")
         code, out, _ = self.invoke("pr-body", "math-z", "claude-fable-5-2", "12")
         self.assertEqual(code, 1)
 
@@ -455,7 +481,7 @@ class FakeGradeCase(RepoCase):
             "sys.exit(%d)\n" % (stdout, stderr, list(touch), exit_code))
         return script
 
-    OWN = "results/mz-dir/mz_claude_fable_5_2_grading.json"
+    OWN = "results/mz-dir/mz_claude_fable_5_2_high_grading.json"
     OTHER = "results/mz-dir/mz_claude_opus_5_5_grading.json"
 
 
@@ -465,7 +491,7 @@ class GradeModeTest(FakeGradeCase):
         code, out, _ = self.invoke("grade", "math-z", "claude-fable-5-2", grade_script=script)
         self.assertEqual(code, 0)
         self.assertEqual(out, "  PASS  contains  x\n")
-        self.assertEqual((self.root / ".bench-run/mz_claude_fable_5_2.grade.txt").read_text(),
+        self.assertEqual((self.root / ".bench-run/mz_claude_fable_5_2_high.grade.txt").read_text(),
                          "  PASS  contains  x\n")
         self.assertTrue((self.root / self.OWN).exists())
 
@@ -482,16 +508,16 @@ class GradeModeTest(FakeGradeCase):
     def test_failure_leaves_no_saved_grade_output_so_pr_body_stops(self):
         script = self.make_grade(1)
         self.invoke("grade", "math-z", "claude-fable-5-2", grade_script=script)
-        self.assertFalse((self.root / ".bench-run/mz_claude_fable_5_2.grade.txt").exists())
+        self.assertFalse((self.root / ".bench-run/mz_claude_fable_5_2_high.grade.txt").exists())
         code, out, _ = self.invoke("pr-body", "math-z", "claude-fable-5-2", "5")
         self.assertEqual(code, 1)
 
     def test_failure_removes_a_stale_saved_grade_output(self):
         bench = self.root / ".bench-run"
         bench.mkdir()
-        (bench / "mz_claude_fable_5_2.grade.txt").write_text("old")
+        (bench / "mz_claude_fable_5_2_high.grade.txt").write_text("old")
         self.invoke("grade", "math-z", "claude-fable-5-2", grade_script=self.make_grade(1))
-        self.assertFalse((bench / "mz_claude_fable_5_2.grade.txt").exists())
+        self.assertFalse((bench / "mz_claude_fable_5_2_high.grade.txt").exists())
 
     def test_failure_with_no_own_sidecar_is_fine(self):
         code, _, _ = self.invoke("grade", "math-z", "claude-fable-5-2",
@@ -516,14 +542,14 @@ class MergeGateAcceptsRenderedNamesTest(unittest.TestCase):
 
     def plan_lines(self, pid):
         # resolve() carries no overwrite checks, so this keeps passing once the arm's results exist.
-        return dict(br.plan_fields(br.resolve(REPO, pid, "claude-fable-5-2")))
+        return dict(br.plan_fields(br.resolve(REPO, pid, "claude-fable-5-2", "high")))
 
     def test_parse_title_accepts_the_rendered_pr_title_for_every_arm_prompt(self):
         for pid in bra.ARM_PROMPTS:
             with self.subTest(pid=pid):
                 lines = self.plan_lines(pid)
                 parsed = merge_results.parse_title(lines["pr_title"])
-                self.assertEqual(parsed, (lines["prefix"], "claude-fable-5-2"))
+                self.assertEqual(parsed, (lines["prefix"], "claude-fable-5-2", "high"))
 
     def test_gate_branch_regex_accepts_the_rendered_branch_for_every_arm_prompt(self):
         prompts = merge_results.load_prompt_files(REPO / "prompts")

@@ -36,7 +36,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from harness.modes._common import model_tag  # noqa: E402
+from harness.modes._common import EFFORT_LEVELS, model_tag, run_tag, session_effort  # noqa: E402
 
 # The 15 prompts of the one-shot arm, in ledger order: every prompt under
 # prompts/. A unit test checks this against the README ledger table and the
@@ -59,7 +59,6 @@ ARM_PROMPTS = (
     "servicenow-loaner-request",
 )
 
-EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 MODEL_ALIASES = ("fable", "opus", "sonnet", "haiku")
 DEFAULT_TIMEOUT = 3600
 
@@ -141,11 +140,10 @@ def _claude_help(claude_bin, environ):
 
 def check_effort(claude_bin, environ):
     """Return an error string unless CLAUDE_EFFORT is a valid level the binary accepts."""
-    effort = environ.get("CLAUDE_EFFORT", "")
-    if not effort:
-        return "CLAUDE_EFFORT is unset or empty; the effort level cannot be recorded or passed on"
-    if effort not in EFFORT_LEVELS:
-        return "CLAUDE_EFFORT=%r is not one of %s" % (effort, ", ".join(EFFORT_LEVELS))
+    try:
+        session_effort(environ)
+    except ValueError as exc:
+        return str(exc)
     help_text = _claude_help(claude_bin, environ)
     if help_text is None:
         return "cannot run `%s --help` to check for --effort" % claude_bin
@@ -346,23 +344,23 @@ def _prompt_data(repo_root, pid):
     raise LookupError("no prompts/*.toml has id %r" % pid)
 
 
-def expected_base(repo_root, pid, model):
-    """``<file_prefix>_<tag>``, built from the prompt file alone."""
+def expected_base(repo_root, pid, model, effort):
+    """``<file_prefix>_<model_tag>_<effort>``, built from the prompt file alone."""
     data = _prompt_data(repo_root, pid)
     if not data.get("file_prefix") or not data.get("save_as"):
         raise LookupError("%s sets no file_prefix or save_as" % pid)
-    return "%s_%s" % (data["file_prefix"], model_tag(model)), data["save_as"]
+    return "%s_%s" % (data["file_prefix"], run_tag(model, effort)), data["save_as"]
 
 
-def expected_name(repo_root, pid, model):
-    """Deliverable file name the child would write, e.g. ``melon-jelly_claude_fable_5_2.html``."""
-    base, ext = expected_base(repo_root, pid, model)
+def expected_name(repo_root, pid, model, effort):
+    """Deliverable file name the child would write, e.g. ``melon-jelly_claude_fable_5_2_high.html``."""
+    base, ext = expected_base(repo_root, pid, model, effort)
     return "%s.%s" % (base, ext)
 
 
-def planned_names(repo_root, pid, model):
+def planned_names(repo_root, pid, model, effort):
     """The deliverable, meta and grading sidecar names of one run."""
-    base, ext = expected_base(repo_root, pid, model)
+    base, ext = expected_base(repo_root, pid, model, effort)
     return {"%s.%s" % (base, ext), base + ".meta.json", base + "_grading.json"}
 
 
@@ -418,7 +416,7 @@ def tree_state(repo_root):
     return Tree(branch.stdout.strip(), [ln for ln in status.stdout.splitlines() if ln.strip()])
 
 
-def settle(repo_root, log_dir, pid, model):
+def settle(repo_root, log_dir, pid, model, effort):
     """Leave a clean tree on main between children; return a halt reason or None.
 
     Only two leftovers are tolerated: this prompt's own planned paths, still
@@ -428,7 +426,7 @@ def settle(repo_root, log_dir, pid, model):
     halt = "tree dirty after %s" % pid
     tree = tree_state(repo_root)
     if tree.lines:
-        planned = planned_names(repo_root, pid, model)
+        planned = planned_names(repo_root, pid, model, effort)
         own = []
         for line in tree.lines:
             path = line[3:]
@@ -477,9 +475,10 @@ def preflight(args, environ, repo_root):
     checks.append(Check("effort", err is None, err or environ.get("CLAUDE_EFFORT", "")))
     problems = []
     if checks[0].ok:
+        # Any valid level will do here: this only proves every prompt file names a result.
         for pid in ARM_PROMPTS:
             try:
-                expected_name(repo_root, pid, args.model)
+                expected_name(repo_root, pid, args.model, EFFORT_LEVELS[0])
             except (LookupError, ValueError, OSError) as exc:
                 problems.append("%s: %s" % (pid, exc))
     checks.append(Check("prompts", not problems and checks[0].ok,
@@ -542,11 +541,12 @@ def run_batch(args, environ, repo_root, log_dir):
     """The loop: skip check, child, outcome, cleanup. Returns (rows, halt reason)."""
     rows, halt = [], None
     total = len(ARM_PROMPTS)
+    effort = environ["CLAUDE_EFFORT"]
     for i, pid in enumerate(ARM_PROMPTS, 1):
         if halt:
             rows.append((pid, "not-started: " + halt, "-"))
             continue
-        name = expected_name(repo_root, pid, args.model)
+        name = expected_name(repo_root, pid, args.model, effort)
         try:
             hit = lookup(snapshot(repo_root), name)
         except GitError as exc:
@@ -559,7 +559,7 @@ def run_batch(args, environ, repo_root, log_dir):
             _say("[%d/%d] %s  %s" % (i, total, pid, outcome))
             continue
         _say("[%d/%d] %s  running ..." % (i, total, pid))
-        run = launch(args.claude, "/bench-run " + pid, args.model, environ["CLAUDE_EFFORT"],
+        run = launch(args.claude, "/bench-run " + pid, args.model, effort,
                      args.timeout, repo_root, environ)
         write_child_log(log_dir, pid, run)
         summary = summarize(run, args.model)
@@ -572,13 +572,13 @@ def run_batch(args, environ, repo_root, log_dir):
         rows.append((pid, outcome, url))
         _say("[%d/%d] %s  %s" % (i, total, pid, outcome))
         try:
-            halt = settle(repo_root, log_dir, pid, args.model)
+            halt = settle(repo_root, log_dir, pid, args.model, effort)
         except GitError as exc:
             halt = "tree check failed after %s: %s" % (pid, exc)
     return rows, halt
 
 
-def merge_step(args, repo_root, halt):
+def merge_step(args, environ, repo_root, halt):
     """Run the gated merge command if it exists, else list the open PRs. Returns ok."""
     if halt:
         _say("merge step: skipped (%s)" % halt)
@@ -608,7 +608,8 @@ def merge_step(args, repo_root, halt):
     except GitError as exc:
         _say("  cannot list: %s" % exc)
         return False
-    by_name = {expected_name(repo_root, pid, args.model): pid for pid in ARM_PROMPTS}
+    by_name = {expected_name(repo_root, pid, args.model, environ["CLAUDE_EFFORT"]): pid
+               for pid in ARM_PROMPTS}
     found = [(n, u, by_name[nm]) for n, u, names in snap.prs for nm in sorted(names) if nm in by_name]
     for number, url, pid in found:
         _say("  #%d %s (%s)" % (number, url, pid))
@@ -620,9 +621,9 @@ def merge_step(args, repo_root, halt):
 CATEGORIES = ("pr-opened", "skipped", "timed-out", "failed", "ended without PR", "not-started")
 
 
-def report(rows, log_dir):
+def report(rows, log_dir, model, effort):
     _say()
-    _say("report")
+    _say("report: %s at effort %s" % (model, effort))
     for pid, outcome, url in rows:
         _say("%s  %s  %s" % (pid, outcome, url))
     _say()
@@ -640,7 +641,7 @@ def run_dry(args, environ, repo_root, checks):
     for c in checks:
         if not c.ok:
             _say("STOP: %s: %s" % (c.name, c.detail))
-    if all(c.ok for c in checks if c.name in ("model", "prompts")):
+    if all(c.ok for c in checks if c.name in ("model", "effort", "prompts")):
         try:
             snap = snapshot(repo_root)
         except GitError as exc:
@@ -649,7 +650,7 @@ def run_dry(args, environ, repo_root, checks):
             checks.append(Check("skip lookup", False, str(exc)))
         if snap is not None:
             for pid in ARM_PROMPTS:
-                name = expected_name(repo_root, pid, args.model)
+                name = expected_name(repo_root, pid, args.model, environ["CLAUDE_EFFORT"])
                 hit = lookup(snap, name)
                 what = "run" if not hit else (
                     "skip (on origin/main)" if hit[0] == "origin/main" else "skip (open PR #%d)" % hit[1])
@@ -675,8 +676,8 @@ def run_all(args, environ, repo_root):
         return 2
     log_dir = make_log_dir(args.log_dir)
     rows, halt = run_batch(args, environ, repo_root, log_dir)
-    merge_ok = merge_step(args, repo_root, halt)
-    report(rows, log_dir)
+    merge_ok = merge_step(args, environ, repo_root, halt)
+    report(rows, log_dir, args.model, environ["CLAUDE_EFFORT"])
     clean = all(o.startswith(("pr-opened", "skipped")) for _, o, _ in rows)
     return 0 if clean and merge_ok and not halt else 1
 
