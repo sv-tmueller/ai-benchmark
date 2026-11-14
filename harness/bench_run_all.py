@@ -895,8 +895,123 @@ def splice_section(body, section):
     return (head + "\n\n" if head else "") + section + "\n\n" + body[closes.start():]
 
 
-def describe(summary, pr):
-    """Outcome string and PR url for one finished child."""
+GH_TIMEOUT = 120
+RUN_SUFFIX = ".run.json"
+REASON_LIMIT = 200
+_FAMILY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+class _MetricsStop(Exception):
+    """One step of ``record_metrics`` failed; the message is the one-line reason."""
+
+
+def _reason(text, fallback):
+    """First line of ``text`` on one line with single spaces, at most ``REASON_LIMIT`` characters."""
+    line = " ".join(_first_line(text or "").split())[:REASON_LIMIT].rstrip()
+    return line or fallback
+
+
+def _gh(wt, *args):
+    """Run ``gh`` in ``wt``; return its stdout or raise ``_MetricsStop`` with a one-line reason.
+
+    The reason never includes the command line, which can carry the run file.
+    """
+    try:
+        done = _run(["gh", *args], cwd=wt, timeout=GH_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise _MetricsStop("gh timed out after %d s" % GH_TIMEOUT)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise _MetricsStop(_reason(str(exc), type(exc).__name__))
+    if done.returncode:
+        raise _MetricsStop(_reason(done.stderr, "gh exited %d" % done.returncode))
+    return done.stdout
+
+
+def _read_result_pr(wt, number, prefix, base, name, model, effort):
+    """Check PR ``number`` is this result's open, same-repo PR; return ``(head branch, body, run file path)``.
+
+    Raises ``_MetricsStop`` before anything is written when it is not: not
+    open, from a fork, on another branch, not holding exactly one file named
+    like the deliverable under ``results/<family>/``, or already holding the
+    run file.
+    """
+    out = _gh(wt, "pr", "view", str(number), "--json", "state,isCrossRepository,headRefName,body,files")
+    try:
+        info = json.loads(out)
+        state, fork, head, body, files = (info["state"], info["isCrossRepository"], info["headRefName"],
+                                          info["body"], info["files"])
+        paths = [f["path"] for f in files]
+        shaped = (isinstance(state, str) and isinstance(fork, bool) and isinstance(head, str)
+                  and (body is None or isinstance(body, str)) and all(isinstance(p, str) for p in paths))
+    except (ValueError, KeyError, TypeError):
+        shaped = False
+    if not shaped:
+        raise _MetricsStop("PR #%d could not be read: unexpected gh output" % number)
+    if state != "OPEN":
+        raise _MetricsStop("PR #%d is not open" % number)
+    if fork:
+        raise _MetricsStop("PR #%d comes from a fork" % number)
+    branch = r"feat/\d+-%s-%s-result" % (re.escape(prefix), re.escape(run_tag(model, effort).replace("_", "-")))
+    if not re.fullmatch(branch, head):
+        raise _MetricsStop(_reason("branch %s is not this result's branch" % head, ""))
+    named = [p for p in paths if p.rsplit("/", 1)[-1] == name]
+    parts = named[0].split("/") if len(named) == 1 else []
+    if not (len(parts) == 3 and parts[0] == "results" and _FAMILY.fullmatch(parts[1]) and parts[2] == name):
+        raise _MetricsStop("PR #%d does not have exactly one deliverable" % number)
+    run_path = "results/%s/%s%s" % (parts[1], base, RUN_SUFFIX)
+    if run_path in paths:
+        raise _MetricsStop("PR #%d already has the run file" % number)
+    return head, body or "", run_path
+
+
+def record_metrics(wt, log_dir, pid, model, effort, number, metrics):
+    """Document one result PR's run metrics; return a report note, or ``None`` when all went well.
+
+    Runs only for a PR this batch's child just opened. Checks the PR first,
+    then adds ``<deliverable stem>.run.json`` to the PR's head branch with one
+    contents-API PUT (a commit of its own; the worktree is never touched) and
+    updates the PR description's marked "Run metrics" section. ``metrics`` of
+    ``None`` writes no file and says "unavailable" in the description. Any
+    failure leaves the PR as the child opened it, plus at most the one added
+    file, and becomes a note; nothing is raised and nothing is printed. A PR
+    body and result text are never printed.
+    """
+    usable = metrics is not None
+    not_updated = ("run file added, PR description not updated: %s" if usable
+                   else "run metrics unavailable, PR description not updated: %s")
+    try:
+        base, ext = expected_base(wt, pid, model, effort)
+        prefix = _prompt_data(wt, pid)["file_prefix"]
+    except (LookupError, ValueError, OSError) as exc:
+        return "run file not added: " + _reason(str(exc), "prompt file unreadable")
+    try:
+        head, body, run_path = _read_result_pr(wt, number, prefix, base, "%s.%s" % (base, ext), model, effort)
+    except _MetricsStop as exc:
+        return ("run file not added: %s" if usable else "run metrics unavailable, PR description not updated: %s") % exc
+    if usable:
+        content = base64.b64encode((json.dumps(metrics, indent=2) + "\n").encode("utf-8")).decode("ascii")
+        try:
+            _gh(wt, "api", "--method", "PUT", "repos/{owner}/{repo}/contents/" + run_path,
+                "-f", "message=feat(results): add %s %s %s run metrics" % (prefix, model, effort),
+                "-f", "content=" + content, "-f", "branch=" + head)
+        except _MetricsStop as exc:
+            return "run file not added: %s" % exc
+    body_file = Path(log_dir) / (pid + ".pr-body.md")
+    try:
+        body_file.write_text(splice_section(body, metrics_section(metrics, run_path)), encoding="utf-8")
+        _gh(wt, "pr", "edit", str(number), "--body-file", str(body_file))
+    except OSError as exc:
+        return not_updated % _reason("cannot write the PR description file: %s" % exc.strerror, "write failed")
+    except _MetricsStop as exc:
+        return not_updated % exc
+    return None if usable else "run metrics unavailable"
+
+
+def describe(summary, pr, metrics_note=None):
+    """Outcome string and PR url for one finished child.
+
+    ``metrics_note`` (from ``record_metrics``) goes last inside the parentheses.
+    """
     if pr is not None:
         outcome = "pr-opened #%d" % pr[1]
     elif summary.timed_out:
@@ -918,6 +1033,8 @@ def describe(summary, pr):
         notes.append("model usage lacks the requested id, has: " + ", ".join(summary.model_usage))
     if not summary.parsed and not summary.timed_out:
         notes.append("no parseable JSON output")
+    if metrics_note:
+        notes.append(metrics_note)
     if notes:
         outcome += " (" + "; ".join(notes) + ")"
     return outcome, (pr[2] if pr else "-")
@@ -965,7 +1082,8 @@ def run_batch(args, environ, wt, log_dir, lock_fd, prompts):
         except GitError:
             after = None
         pr = after if after and after[0] == "pr" else None
-        outcome, url = describe(summary, pr)
+        note = record_metrics(wt, log_dir, pid, args.model, effort, pr[1], summary.metrics) if pr else None
+        outcome, url = describe(summary, pr, note)
         rows.append((pid, outcome, url))
         _say("[%d/%d] %s  %s" % (i, total, pid, outcome))
         try:
