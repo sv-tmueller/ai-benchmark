@@ -7,8 +7,8 @@ paired ``<stem>.meta.json``, in one of two accepted shapes:
 - older: ``meta["playability"]["label"]``
 
 ``PLAYABLE_VERIFIED`` is the only passing label; every other label
-(``BOOTS_ONLY``, ``BROKEN_AT_BOOT``, ``SCRIPT_TRUNCATED``, ...) fails. Existing labels are
-taken as ground truth — no re-verification happens here.
+(``BOOTS_ONLY``, ``BROKEN_AT_BOOT``, ``SCRIPT_TRUNCATED``, ...) fails. Existing
+labels are taken as ground truth — no re-verification happens here.
 """
 
 import json

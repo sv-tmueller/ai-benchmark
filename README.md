@@ -47,7 +47,7 @@ name) and a `[system]`/`[user]` text pair.
 
 | Prompt | Deliverable | Runtime needs |
 |---|---|---|
-| `app-stillwater.toml` | HTML: voice-first AI companion that remembers sessions, browser-only | A Chromium-based browser and a microphone (text fallback otherwise); the page loads nothing itself, but Chrome's speech recognition needs to be online |
+| `app-stillwater.toml` | HTML: voice-first AI companion that remembers sessions, browser-only | A Chromium-based browser and a microphone (text fallback otherwise); the page loads nothing itself, but Chrome's speech recognition and network voices need to be online |
 
 ### Text tasks
 
