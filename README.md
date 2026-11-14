@@ -636,10 +636,10 @@ generation alone does not earn one.
 | `game-meridian-launch` | HTML | `results/meridian-launch/meridian-launch_claude_fable_5_2.html` | generated, browser check pending |
 | `game-sunset-ocean` | HTML | `results/sunset-ocean/sunset-ocean_claude_fable_5_2.html` | generated, browser check pending |
 | `game-horror-house` | blueprint (md) | `results/horror-house/horror-house_claude_fable_5_2.md` | generated, browser check pending |
-| `game-last-flight` | blueprint (md) | `results/last-flight/last-flight_claude_fable_5_2.md` | not run |
-| `game-cities-skylines` | blueprint (md) | `results/cities-skylines/cities-skylines_claude_fable_5_2.md` | not run |
-| `game-mario-kart` | blueprint (md) | `results/mario-kart/mario-kart_claude_fable_5_2.md` | not run |
-| `app-stillwater` | blueprint (md) | `results/stillwater/stillwater_claude_fable_5_2.md` | not run |
+| `game-last-flight` | blueprint (md) | `results/last-flight/last-flight_claude_fable_5_2.md` | generated, browser check pending |
+| `game-cities-skylines` | blueprint (md) | `results/cities-skylines/cities-skylines_claude_fable_5_2.md` | generated, browser check pending |
+| `game-mario-kart` | blueprint (md) | `results/mario-kart/mario-kart_claude_fable_5_2.md` | generated, browser check pending |
+| `app-stillwater` | blueprint (md) | `results/stillwater/stillwater_claude_fable_5_2.md` | generated, browser check pending |
 | `game-weichensteller` | HTML | `results/weichensteller/weichensteller_claude_fable_5_2.html` | not run |
 
 **Merging results.** `python3 harness/merge_results.py --model <model-id>`
