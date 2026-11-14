@@ -92,11 +92,19 @@ pass, one file, no orchestrator, no agents and no repair round. The table
 below is the ledger for Claude Fable 5.2.
 
 **How to run.** Start the whole arm with `/bench-run` and no arguments from a
-clean checkout of `main`. The skill calls
+checkout of `main` that matches `origin/main` with no tracked changes
+(untracked files don't matter). The skill calls
 [`harness/bench_run_all.py`](harness/bench_run_all.py), which starts one fresh
 headless Claude Code session per prompt (`claude -p "/bench-run <prompt-id>"`)
 with the calling session's exact model id and effort level, a narrow tool
 allowlist and no merge rights, so each prompt is still one isolated one-shot.
+The sessions run in a private git worktree for that model and effort level
+(`.claude/worktrees/bench-run-<model-tag>_<effort>`, detached at `origin/main`),
+never in your checkout, so batches for other models or effort levels can run
+side by side from the same checkout; a second batch for the same model and
+effort stops while the first is running. After a run that ended without a halt
+the worktree is removed; after a halt it is kept, and the next run reuses it
+only if it is clean.
 `/bench-run --dry-run` prints the checks, which prompts would run or be
 skipped, and the exact child command, and starts nothing. A prompt that
 already has a result on `origin/main` or in an open PR is skipped, so

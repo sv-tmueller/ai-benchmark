@@ -6,6 +6,7 @@ through a fake ``claude`` executable written into a temp dir; ``git`` and
 """
 
 import contextlib
+import fcntl
 import io
 import json
 import os
@@ -37,9 +38,15 @@ slash = argv[argv.index("-p") + 1] if "-p" in argv else ""
 pid = slash.split()[1] if len(slash.split()) > 1 else ""
 beh = dict(sc.get("default", {}))
 beh.update(sc.get("by_prompt", {}).get(pid, {}))
+try:
+    st0 = json.load(open(os.path.join(d, "state.json")))
+    start_tree = st0["trees"].get(os.path.realpath(os.getcwd()))
+except FileNotFoundError:
+    start_tree = None
 with open(os.path.join(d, "calls.jsonl"), "a") as f:
     f.write(json.dumps({
         "argv": argv, "cwd": os.getcwd(), "env_names": sorted(os.environ),
+        "start_tree": start_tree,
         "effort": os.environ.get("CLAUDE_EFFORT"),
         "stdin_is_devnull": os.path.samestat(os.fstat(0), os.stat(os.devnull)),
         "sid": os.getpgrp() == os.getpid(),
@@ -325,6 +332,14 @@ class LaunchTest(FakeClaudeCase):
         self.assertTrue(run.timed_out)
         self.assertLess(time.monotonic() - start, 20)
 
+    def test_only_the_given_fds_are_passed_to_the_child(self):
+        fd = os.open(os.devnull, os.O_RDONLY)
+        self.addCleanup(os.close, fd)
+        with mock.patch.object(bra.subprocess, "Popen", wraps=subprocess.Popen) as popen:
+            self.launch()
+            self.launch(pass_fds=(fd,))
+        self.assertEqual([c.kwargs["pass_fds"] for c in popen.call_args_list], [(), (fd,)])
+
     def test_missing_binary_is_reported_not_raised(self):
         run = self.launch(claude_bin=str(self.dir / "nope"))
         self.assertIsNotNone(run.exit_code)
@@ -454,6 +469,9 @@ class FakeGit:
         """Register ``root`` as a worktree, as an earlier run would have left it."""
         root = Path(root).resolve()
         root.mkdir(parents=True, exist_ok=True)
+        for sub_dir in ("prompts", "harness"):  # the tracked files of a clean checkout
+            if (self.main_root / sub_dir).is_dir() and not (root / sub_dir).exists():
+                shutil.copytree(self.main_root / sub_dir, root / sub_dir)
         st = self.state()
         st["worktrees"].append(str(root))
         st["trees"][str(root)] = {"branch": branch, "head": head, "dirty_tracked": list(dirty_tracked)}
@@ -559,10 +577,6 @@ class FakeGit:
             return self.done("".join(line + "\n" for line in lines))
         if cmd[:4] == ["git", "ls-tree", "-r", "--name-only"]:
             return self.done("".join(p + "\n" for p in st["main_files"]))
-        if cmd == ["git", "switch", "main"]:
-            tree["branch"] = "main"
-            self.save(st)
-            return self.done()
         if cmd == ["git", "switch", "--detach", "origin/main"]:
             tree["branch"], tree["head"] = "", st["origin_main"]
             self.save(st)
@@ -599,7 +613,11 @@ class BatchCase(FakeClaudeCase):
         self.targets = dict(readme_ledger())
         self.git = FakeGit(self)
         self.git.init()
+        self.wt = self.wt_for("high")
         self.set_children()
+
+    def wt_for(self, effort, model="claude-fable-5-2"):
+        return self.repo / ".claude" / "worktrees" / ("bench-run-%s_%s" % (model.replace("-", "_"), effort))
 
     def set_children(self, by_prompt=None, default=None, help_text=EFFORT_HELP):
         base = {"json": result_json("done"), "effects": {"open_pr": True}}
@@ -607,11 +625,11 @@ class BatchCase(FakeClaudeCase):
         self.scenario({"help": help_text, "files": self.targets,
                        "default": base, "by_prompt": by_prompt or {}})
 
-    def batch(self, *extra, model="claude-fable-5-2", timeout="60", env=None):
+    def batch(self, *extra, model="claude-fable-5-2", timeout="60", env=None, runner=None):
         argv = ["--model", model, "--claude", str(self.bin), "--timeout", timeout,
                 "--log-dir", str(self.dir / "logs"), *extra]
         out = io.StringIO()
-        with contextlib.redirect_stdout(out), mock.patch.object(bra, "_run", self.git):
+        with contextlib.redirect_stdout(out), mock.patch.object(bra, "_run", runner or self.git):
             code = bra.main(argv, environ=env or self.env, repo_root=self.repo)
         return code, out.getvalue()
 
@@ -687,9 +705,13 @@ class BatchPreflightTest(BatchCase):
         self.git.set_shared(origin_main="def")
         self.assert_no_child(*self.batch())
 
-    def test_untracked_file_stops_before_any_child(self):
+    def test_untracked_files_in_the_main_checkout_do_not_stop_the_run(self):
+        (self.repo / "results" / "x").mkdir(parents=True)
+        (self.repo / "results" / "x" / "scratch.txt").write_text("x")
         (self.repo / "scratch.txt").write_text("x")
-        self.assert_no_child(*self.batch())
+        code, out = self.batch()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(self.calls()), 15)
 
     def test_modified_tracked_file_stops_before_any_child(self):
         self.git.set_main(dirty_tracked=["README.md"])
@@ -820,6 +842,11 @@ class BatchLoopTest(BatchCase):
         self.assertTrue(str(folder).startswith(str(self.dir / "cache" / "bench-run")))
         self.assertNotIn(self.repo, folder.parents)
 
+    def test_default_log_folder_name_has_the_utc_stamp_and_the_run_tag(self):
+        with mock.patch.dict(os.environ, {"XDG_CACHE_HOME": str(self.dir / "cache")}):
+            folder = bra.make_log_dir(None, "claude_fable_5_2_high")
+        self.assertRegex(folder.name, r"^\d{8}T\d{6}Z_claude_fable_5_2_high$")
+
     def test_child_that_ends_without_a_pr_is_reported_as_such(self):
         self.set_children(by_prompt={"game-melon-jelly": {"effects": {}}})
         _, out = self.batch()
@@ -833,18 +860,20 @@ class BatchCleanupTest(BatchCase):
             "effects": {"write": ["{target}"]}}})
         code, out = self.batch()
         self.assertEqual(len(self.calls()), 15)
-        self.assertFalse((self.repo / self.targets["game-melon-jelly"]).exists())
         name = Path(self.targets["game-melon-jelly"]).name
         moved = self.dir / "logs" / "leftovers" / "game-melon-jelly" / name
         self.assertTrue(moved.is_file())
         self.assertEqual(moved.read_text(), "SECRET-DELIVERABLE")
         self.assertNotIn("SECRET", out)
 
-    def test_a_clean_tree_on_another_branch_is_switched_back_to_main(self):
+    def test_a_clean_worktree_on_a_feature_branch_is_detached_at_origin_main_again(self):
         self.set_children(by_prompt={"game-melon-jelly": {"effects": {"branch": "feat/9-x"}}})
         self.batch()
-        self.assertIn(["git", "switch", "main"], self.git.calls)
         self.assertEqual(len(self.calls()), 15)
+        self.assertEqual(self.calls()[0]["start_tree"]["branch"], "")
+        self.assertEqual(self.calls()[1]["start_tree"]["branch"], "")  # after the feat/9-x child
+        self.assertIn(["git", "switch", "--detach", "origin/main"], self.git.calls_in(self.wt))
+        self.assertNotIn(["git", "switch", "main"], self.git.calls)
 
     def test_a_foreign_untracked_file_halts_the_batch_and_skips_the_merge_step(self):
         self.set_children(by_prompt={"game-lava-lamp": {
@@ -854,7 +883,7 @@ class BatchCleanupTest(BatchCase):
         rep = self.report_lines(out)
         self.assertEqual(rep["game-minecraft"][0], "not-started: tree dirty after game-lava-lamp")
         self.assertEqual(rep["game-weichensteller"][0], "not-started: tree dirty after game-lava-lamp")
-        self.assertTrue((self.repo / "results/lava-lamp/stray.txt").exists())  # never touched
+        self.assertTrue((self.wt / "results/lava-lamp/stray.txt").exists())  # never touched
         self.assertIn("merge step: skipped", out)
         self.assertNotEqual(code, 0)
 
@@ -868,8 +897,278 @@ class BatchCleanupTest(BatchCase):
         self.set_children(by_prompt={"game-melon-jelly": {
             "effects": {"branch": "feat/9-x", "write": ["results/melon-jelly/stray.txt"]}}})
         self.batch()
-        self.assertNotIn(["git", "switch", "main"], self.git.calls)
+        switches = [c for c in self.git.calls if c[:2] == ["git", "switch"]]
+        self.assertEqual(switches, [["git", "switch", "--detach", "origin/main"]])  # setup's own
         self.assertEqual(self.called_ids(), ["game-melon-jelly"])
+
+
+class WorktreeCreationTest(BatchCase):
+    def test_a_worktree_is_added_detached_at_origin_main_from_the_repo(self):
+        code, out = self.batch()
+        self.assertEqual(code, 0, out)
+        adds = [(c, w) for c, w in zip(self.git.calls, self.git.cwds) if c[:3] == ["git", "worktree", "add"]]
+        self.assertEqual(adds, [(["git", "worktree", "add", "--detach", str(self.wt), "origin/main"],
+                                 self.repo.resolve())])
+
+    def test_every_child_runs_in_the_worktree_named_after_the_run_tag(self):
+        self.batch()
+        self.assertEqual(self.wt.name, "bench-run-claude_fable_5_2_high")
+        self.assertEqual(len(self.calls()), 15)
+        for call in self.calls():
+            self.assertEqual(Path(call["cwd"]).resolve(), self.wt.resolve())
+
+    def test_another_effort_level_gets_another_worktree(self):
+        self.assertNotEqual(bra.worktree_path(self.repo, "claude-fable-5-2", "high"),
+                            bra.worktree_path(self.repo, "claude-fable-5-2", "max"))
+        self.assertNotEqual(bra.worktree_path(self.repo, "claude-fable-5-2", "high"),
+                            bra.worktree_path(self.repo, "claude-opus-4-8", "high"))
+        self.batch(env=dict(self.env, CLAUDE_EFFORT="max"))
+        (add,) = [c for c in self.git.calls if c[:3] == ["git", "worktree", "add"]]
+        self.assertEqual(add[4], str(self.wt_for("max")))
+
+    def test_the_skip_check_and_snapshot_run_in_the_worktree(self):
+        self.batch()
+        self.assertIn(["git", "ls-tree", "-r", "--name-only", "origin/main", "--", "results/"],
+                      self.git.calls_in(self.wt))
+
+
+class MainCheckoutUntouchedTest(BatchCase):
+    READ_ONLY_IN_REPO = (["git", "fetch"], ["git", "branch"], ["git", "rev-parse"], ["git", "status"],
+                         ["git", "worktree"], ["gh", "auth"])
+
+    def repo_files(self):
+        return sorted(p.relative_to(self.repo).as_posix() for p in self.repo.rglob("*")
+                      if p.is_file() and not p.relative_to(self.repo).as_posix().startswith(".claude/"))
+
+    def test_branch_head_files_and_output_of_the_main_checkout_do_not_change(self):
+        (self.repo / "scratch.txt").write_text("mine")
+        before_tree, before_files = self.git.tree(), self.repo_files()
+        self.set_children(by_prompt={
+            "game-melon-jelly": {"effects": {"open_pr": True, "branch": "feat/9-x"}},
+            "game-lava-lamp": {"effects": {"write": ["results/lava-lamp/stray.txt"]}}})
+        self.batch()
+        self.assertEqual(self.git.tree(), before_tree)
+        self.assertEqual(self.repo_files(), before_files)
+        self.assertTrue((self.wt / "results/lava-lamp/stray.txt").exists())
+        self.assertFalse((self.repo / "results").exists())
+
+    def test_only_read_only_git_runs_in_the_repo_besides_worktree_add_remove_prune(self):
+        self.set_children(by_prompt={"game-melon-jelly": {"effects": {"branch": "feat/9-x"}}})
+        self.batch()
+        in_repo = self.git.calls_in(self.repo)
+        self.assertTrue(in_repo)
+        for cmd in in_repo:
+            self.assertIn(cmd[:2], self.READ_ONLY_IN_REPO, cmd)
+            if cmd[:2] == ["git", "worktree"]:
+                self.assertIn(cmd[2], ("list", "add", "remove", "prune"))
+            if cmd[:2] == ["git", "status"]:
+                self.assertIn("--untracked-files=no", cmd)
+
+
+class WorktreeLockTest(BatchCase):
+    def hold(self, wt):
+        wt.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(bra.lock_path(wt)), os.O_RDWR | os.O_CREAT, 0o644)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        self.addCleanup(os.close, fd)
+
+    def test_a_second_run_for_the_same_model_and_effort_stops_with_a_stop_line(self):
+        self.hold(self.wt)
+        code, out = self.batch()
+        self.assertEqual(code, 2)
+        self.assertIn("STOP: worktree: %s is in use by another batch run for claude-fable-5-2 "
+                      "at effort high" % self.wt, out)
+        self.assertEqual(self.calls(), [])
+        self.assertEqual([c for c in self.git.calls if c[:2] == ["git", "worktree"]], [])
+        self.assertFalse(self.wt.exists())
+
+    def test_dry_run_reports_the_same_in_use_state_as_a_failed_check(self):
+        self.hold(self.wt)
+        code, out = self.batch("--dry-run")
+        self.assertNotEqual(code, 0)
+        self.assertRegex(out, r"(?m)^check FAIL: worktree - .*in use")
+        self.assertRegex(out, r"(?m)^STOP: worktree: .*in use")
+
+    def test_a_lock_held_for_another_effort_level_does_not_block(self):
+        self.hold(self.wt_for("max"))
+        code, out = self.batch()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(self.calls()), 15)
+
+    def test_the_lock_fd_is_passed_to_every_child(self):
+        with mock.patch.object(bra, "launch", wraps=bra.launch) as launch:
+            self.batch()
+        self.assertEqual(launch.call_count, 15)
+        for call in launch.call_args_list:
+            (fd,) = call.kwargs["pass_fds"]
+            self.assertIsInstance(fd, int)
+
+
+class LockTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.wt = Path(self.tmp.name) / ".claude" / "worktrees" / "bench-run-x"
+
+    def test_the_lock_is_exclusive_until_the_holder_lets_go(self):
+        first = bra.acquire_lock(self.wt)
+        self.assertIsNotNone(first)
+        self.assertIsNone(bra.acquire_lock(self.wt))
+        self.assertTrue(bra.lock_in_use(self.wt))
+        os.close(first)
+        self.assertFalse(bra.lock_in_use(self.wt))
+        again = bra.acquire_lock(self.wt)
+        self.assertIsNotNone(again)
+        os.close(again)
+
+    def test_the_lock_file_survives_and_is_a_sibling_outside_the_worktree(self):
+        os.close(bra.acquire_lock(self.wt))
+        self.assertTrue(bra.lock_path(self.wt).is_file())
+        self.assertEqual(bra.lock_path(self.wt).parent, self.wt.parent)
+        self.assertFalse(self.wt.exists())
+
+    def test_probing_never_creates_the_lock_or_its_folder(self):
+        self.assertFalse(bra.lock_in_use(self.wt))
+        self.assertFalse(self.wt.parent.exists())
+
+
+class WorktreeReuseTest(BatchCase):
+    def test_a_clean_worktree_left_on_a_feature_branch_is_reused_and_synced_first(self):
+        self.git.register(self.wt, branch="feat/9-x", head="old")
+        code, out = self.batch()
+        self.assertEqual(code, 0, out)
+        self.assertEqual([c for c in self.git.calls if c[:3] == ["git", "worktree", "add"]], [])
+        first = self.calls()[0]["start_tree"]
+        self.assertEqual((first["branch"], first["head"]), ("", "abc"))
+
+    def test_a_clean_worktree_left_detached_at_an_old_head_is_synced_to_origin_main(self):
+        self.git.register(self.wt, branch="", head="old")
+        self.batch()
+        self.assertEqual(self.calls()[0]["start_tree"]["head"], "abc")
+
+    def test_a_kept_dirty_worktree_stops_the_run_and_is_never_cleaned(self):
+        self.git.register(self.wt)
+        (self.wt / "results" / "x").mkdir(parents=True)
+        (self.wt / "results" / "x" / "stray.txt").write_text("left over")
+        code, out = self.batch()
+        self.assertEqual(code, 2)
+        self.assertIn("STOP: worktree: %s has 1 changed or untracked paths from an earlier run; "
+                      "inspect it, then git worktree remove --force %s" % (self.wt, self.wt), out)
+        self.assertEqual(self.calls(), [])
+        self.assertTrue((self.wt / "results" / "x" / "stray.txt").exists())
+        changing = [c for c in self.git.calls
+                    if c[:2] == ["git", "worktree"] and c[2] in ("remove", "add", "prune")]
+        self.assertEqual(changing, [])
+
+    def test_a_tracked_change_in_a_kept_worktree_also_stops_the_run(self):
+        self.git.register(self.wt, dirty_tracked=["README.md"])
+        code, out = self.batch()
+        self.assertEqual(code, 2)
+        self.assertIn("has 1 changed or untracked paths", out)
+
+    def test_a_folder_that_is_not_a_registered_worktree_stops_before_any_git_command_in_it(self):
+        self.wt.mkdir(parents=True)
+        (self.wt / "keep.txt").write_text("x")
+        code, out = self.batch()
+        self.assertEqual(code, 2)
+        self.assertIn("STOP: worktree: %s exists but is not a worktree of this checkout; "
+                      "remove it" % self.wt, out)
+        self.assertEqual(self.git.calls_in(self.wt), [])
+        self.assertEqual(self.calls(), [])
+        self.assertEqual([c for c in self.git.calls if c[:2] == ["git", "switch"]], [])
+
+    def test_a_registered_but_missing_worktree_is_pruned_then_added(self):
+        self.git.register(self.wt)
+        shutil.rmtree(self.wt)
+        code, out = self.batch()
+        self.assertEqual(code, 0, out)
+        verbs = [c[2] for c in self.git.calls if c[:2] == ["git", "worktree"] and c[2] in ("prune", "add")]
+        self.assertEqual(verbs, ["prune", "add"])
+
+
+class WorktreeFinishTest(BatchCase):
+    def remove_calls(self):
+        return [(c, w) for c, w in zip(self.git.calls, self.git.cwds) if c[:3] == ["git", "worktree", "remove"]]
+
+    def test_a_clean_finish_removes_the_worktree_without_force(self):
+        code, out = self.batch()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.remove_calls(), [(["git", "worktree", "remove", str(self.wt)], self.repo.resolve())])
+        self.assertIn("worktree: removed %s" % self.wt, out)
+        self.assertLess(out.index("log folder:"), out.index("worktree: removed"))
+        self.assertFalse(self.wt.exists())
+
+    def test_failed_children_and_a_failed_merge_step_still_remove_the_worktree(self):
+        (self.repo / "harness").mkdir(exist_ok=True)
+        (self.repo / "harness" / "merge_results.py").write_text("import sys\nsys.exit(3)\n")
+        self.set_children(by_prompt={"game-melon-jelly": {"exit": 1, "effects": {}}})
+        code, out = self.batch()
+        self.assertNotEqual(code, 0)
+        self.assertEqual(len(self.remove_calls()), 1)
+        self.assertIn("worktree: removed", out)
+        self.assertFalse(self.wt.exists())
+
+    def test_a_failed_removal_keeps_the_worktree_and_says_why_without_changing_the_exit_code(self):
+        def flaky(cmd, **kw):
+            if cmd[:3] == ["git", "worktree", "remove"]:
+                self.git.calls.append(list(cmd))
+                self.git.cwds.append(Path(kw["cwd"]).resolve())
+                return FakeGit.done(rc=128, err="fatal: it is locked\nsecond line")
+            return self.git(cmd, **kw)
+        code, out = self.batch(runner=flaky)
+        self.assertEqual(code, 0, out)
+        self.assertIn("worktree: kept %s (git worktree remove failed: fatal: it is locked)" % self.wt, out)
+        self.assertTrue(self.wt.exists())
+
+    def test_a_halt_keeps_the_worktree_and_prints_its_path(self):
+        self.set_children(by_prompt={"game-lava-lamp": {
+            "effects": {"write": ["results/lava-lamp/stray.txt"]}}})
+        code, out = self.batch()
+        self.assertNotEqual(code, 0)
+        self.assertEqual(self.remove_calls(), [])
+        self.assertIn("worktree: kept %s (halted; the next run reuses it only if it is clean)" % self.wt, out)
+        self.assertTrue((self.wt / "results/lava-lamp/stray.txt").exists())
+
+    def test_the_run_after_a_halt_stops_on_the_dirty_worktree(self):
+        self.set_children(by_prompt={"game-lava-lamp": {
+            "effects": {"write": ["results/lava-lamp/stray.txt"]}}})
+        self.batch()
+        before = len(self.calls())
+        code, out = self.batch()
+        self.assertEqual(code, 2)
+        self.assertEqual(len(self.calls()), before)
+        self.assertRegex(out, r"(?m)^STOP: worktree: .*bench-run-claude_fable_5_2_high has 1 changed or untracked")
+
+
+class WorktreeSettleTest(BatchCase):
+    def test_a_child_that_moves_origin_main_is_followed_by_a_child_that_starts_there(self):
+        self.set_children(by_prompt={"game-melon-jelly": {
+            "effects": {"open_pr": True, "origin_main": "new1"}}})
+        code, out = self.batch()
+        self.assertEqual(code, 0, out)
+        starts = [c["start_tree"] for c in self.calls()]
+        self.assertEqual(starts[0]["head"], "abc")
+        self.assertTrue(all(t["head"] == "new1" and t["branch"] == "" for t in starts[1:]))
+
+    def test_a_child_that_commits_while_detached_halts_and_the_worktree_is_kept(self):
+        self.set_children(by_prompt={"game-melon-jelly": {"effects": {"commit": True}}})
+        code, out = self.batch()
+        self.assertEqual(self.called_ids(), ["game-melon-jelly"])
+        self.assertIn("not-started: HEAD moved without a branch after game-melon-jelly", out)
+        self.assertIn("worktree: kept %s (halted" % self.wt, out)
+        self.assertTrue(self.wt.exists())
+        self.assertNotEqual(code, 0)
+
+    def test_a_failed_return_to_origin_main_halts(self):
+        def failing(cmd, **kw):
+            if cmd == ["git", "switch", "--detach", "origin/main"] and self.calls():
+                self.git.calls.append(list(cmd))
+                self.git.cwds.append(Path(kw["cwd"]).resolve())
+                return FakeGit.done(rc=1, err="fatal: nope")
+            return self.git(cmd, **kw)
+        _, out = self.batch(runner=failing)
+        self.assertEqual(self.called_ids(), ["game-melon-jelly"])
+        self.assertIn("could not return to origin/main after game-melon-jelly", out)
 
 
 class MergeStepTest(BatchCase):
@@ -903,7 +1202,7 @@ class MergeStepTest(BatchCase):
         self.assertNotIn("https://example.test/pull/5", out)
         self.assertEqual(code, 0)
 
-    def test_merge_script_runs_after_cleanup_returned_to_main(self):
+    def test_merge_script_runs_after_cleanup_returned_to_origin_main(self):
         self.add_merge_script("print('MERGE-RAN')\n")
         self.set_children(by_prompt={"game-weichensteller": {
             "effects": {"open_pr": True, "branch": "feat/z"}}})
@@ -941,8 +1240,10 @@ class DryRunTest(BatchCase):
         for cmd in self.git.calls:
             self.assertIn(cmd[:2], (["git", "fetch"], ["git", "branch"], ["git", "rev-parse"],
                                     ["git", "status"], ["git", "ls-tree"], ["gh", "auth"],
-                                    ["gh", "pr"]), cmd)
-        self.assertNotIn(["git", "switch", "main"], self.git.calls)
+                                    ["gh", "pr"], ["git", "worktree"]), cmd)
+            if cmd[:2] == ["git", "worktree"]:
+                self.assertEqual(cmd[:3], ["git", "worktree", "list"])
+        self.assertEqual([c for c in self.git.calls if c[:2] == ["git", "switch"]], [])
 
     def test_dry_run_shows_run_and_skip_per_prompt(self):
         st = self.git.state()
@@ -972,17 +1273,139 @@ class DryRunTest(BatchCase):
     def test_dry_run_shows_checks_as_ok_or_fail_and_exits_nonzero_on_failure(self):
         code, out = self.batch("--dry-run")
         self.assertRegex(out, r"(?m)^check ok: effort")
-        (self.repo / "scratch.txt").write_text("x")
+        self.git.set_main(dirty_tracked=["README.md"])
         code, out = self.batch("--dry-run")
         self.assertNotEqual(code, 0)
-        self.assertRegex(out, r"(?m)^check FAIL: clean tree")
+        self.assertRegex(out, r"(?m)^check FAIL: no tracked changes")
         self.assertEqual(self.calls(), [])
+
+    def test_dry_run_creates_no_worktree_folder_or_lock_and_says_where_one_would_go(self):
+        code, out = self.batch("--dry-run")
+        self.assertEqual(code, 0, out)
+        self.assertRegex(out, r"(?m)^check ok: worktree - would create %s$" % re.escape(str(self.wt)))
+        self.assertFalse((self.repo / ".claude").exists())
+
+    def test_dry_run_says_would_reuse_for_a_clean_kept_worktree_and_changes_nothing(self):
+        self.git.register(self.wt, branch="feat/9-x", head="old")
+        code, out = self.batch("--dry-run")
+        self.assertRegex(out, r"(?m)^check ok: worktree - would reuse ")
+        self.assertEqual(self.git.tree(self.wt), {"branch": "feat/9-x", "head": "old", "dirty_tracked": []})
+        self.assertFalse(bra.lock_path(self.wt).exists())
+
+    def test_dry_run_says_would_prune_and_create_for_a_registered_missing_worktree(self):
+        self.git.register(self.wt)
+        shutil.rmtree(self.wt)
+        _, out = self.batch("--dry-run")
+        self.assertRegex(out, r"(?m)^check ok: worktree - would prune and create ")
+
+    def test_dry_run_fails_the_worktree_check_for_a_dirty_kept_worktree(self):
+        self.git.register(self.wt, dirty_tracked=["README.md"])
+        code, out = self.batch("--dry-run")
+        self.assertNotEqual(code, 0)
+        self.assertRegex(out, r"(?m)^check FAIL: worktree - .*has 1 changed or untracked paths")
 
     def test_dry_run_prints_the_stop_line_for_a_missing_effort(self):
         env = {k: v for k, v in self.env.items() if k != "CLAUDE_EFFORT"}
         code, out = self.batch("--dry-run", env=env)
         self.assertNotEqual(code, 0)
         self.assertRegex(out, r"(?m)^STOP: .*CLAUDE_EFFORT")
+
+
+@unittest.skipUnless(shutil.which("git"), "git is not installed")
+class RealGitWorktreeTest(unittest.TestCase):
+    """The worktree helpers against real git, with ``_run`` unpatched.
+
+    The fake cannot catch a mistake in ``git worktree list --porcelain``
+    parsing or in what ``worktree remove`` refuses; a throwaway repo with a
+    local bare ``origin`` does.
+    """
+
+    def git(self, *cmd, cwd=None):
+        done = subprocess.run(["git", *cmd], cwd=cwd or self.repo, capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return done.stdout.strip()
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name).resolve()
+        env = {"HOME": str(root), "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull,
+               "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.test",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.test"}
+        patcher = mock.patch.dict(os.environ, env)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.origin, self.repo = root / "origin.git", root / "repo"
+        self.git("init", "-q", "--bare", "-b", "main", str(self.origin), cwd=root)
+        self.git("init", "-q", "-b", "main", str(self.repo), cwd=root)
+        (self.repo / ".gitignore").write_text(".claude/worktrees/\n.bench-run/\n")
+        (self.repo / "README.md").write_text("x\n")
+        self.git("add", ".")
+        self.git("commit", "-q", "-m", "init")
+        self.git("remote", "add", "origin", str(self.origin))
+        self.git("push", "-q", "origin", "main")
+        self.git("fetch", "-q", "origin", "main")
+        self.wt = bra.worktree_path(self.repo, "claude-fable-5-2", "high")
+
+    def test_setup_creates_a_detached_worktree_at_origin_main(self):
+        self.assertEqual(bra.classify_worktree(self.repo, self.wt), "create")
+        self.assertEqual(bra.setup_worktree(self.repo, self.wt), "create")
+        self.assertEqual(self.git("branch", "--show-current", cwd=self.wt), "")
+        self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.wt), self.git("rev-parse", "origin/main"))
+        self.assertEqual(self.git("status", "--porcelain", cwd=self.repo), "")  # main checkout untouched
+        self.assertEqual(self.git("branch", "--show-current"), "main")
+
+    def test_a_created_worktree_is_found_again_in_the_porcelain_listing(self):
+        bra.setup_worktree(self.repo, self.wt)
+        self.assertEqual(bra.classify_worktree(self.repo, self.wt), "reuse")
+        self.assertEqual(bra.setup_worktree(self.repo, self.wt), "reuse")
+
+    def test_a_reused_worktree_on_a_feature_branch_is_synced_back(self):
+        bra.setup_worktree(self.repo, self.wt)
+        self.git("switch", "-q", "-c", "feat/1-x", cwd=self.wt)
+        (self.wt / "new.txt").write_text("y")
+        self.git("add", "new.txt", cwd=self.wt)
+        self.git("commit", "-q", "-m", "child", cwd=self.wt)
+        self.assertIsNone(bra.sync_worktree(self.wt))
+        self.assertEqual(self.git("branch", "--show-current", cwd=self.wt), "")
+        self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.wt), self.git("rev-parse", "origin/main"))
+        self.assertTrue(self.git("branch", "--list", "feat/1-x"))  # the child's commit stays reachable
+
+    def test_remove_succeeds_with_only_ignored_files_and_is_refused_for_untracked_results(self):
+        bra.setup_worktree(self.repo, self.wt)
+        (self.wt / ".bench-run").mkdir()
+        (self.wt / ".bench-run" / "x.pr.md").write_text("body")
+        (self.wt / "results").mkdir()
+        (self.wt / "results" / "stray.txt").write_text("y")
+        kept = bra.finish_worktree(self.repo, self.wt, halt=None)
+        self.assertIn("worktree: kept %s (git worktree remove failed:" % self.wt, kept)
+        self.assertTrue(self.wt.exists())
+        (self.wt / "results" / "stray.txt").unlink()
+        self.assertEqual(bra.finish_worktree(self.repo, self.wt, halt=None),
+                         "worktree: removed %s" % self.wt)
+        self.assertFalse(self.wt.exists())
+
+    def test_a_registered_but_deleted_worktree_is_pruned_and_created_again(self):
+        bra.setup_worktree(self.repo, self.wt)
+        shutil.rmtree(self.wt)
+        self.assertEqual(bra.classify_worktree(self.repo, self.wt), "prune and create")
+        self.assertEqual(bra.setup_worktree(self.repo, self.wt), "prune and create")
+        self.assertEqual(bra.classify_worktree(self.repo, self.wt), "reuse")
+
+    def test_a_plain_folder_is_not_taken_for_a_worktree_and_git_never_runs_in_it(self):
+        self.wt.mkdir(parents=True)
+        with self.assertRaises(bra.WorktreeStop) as ctx:
+            bra.setup_worktree(self.repo, self.wt)
+        self.assertIn("not a worktree of this checkout", str(ctx.exception))
+        self.assertEqual(self.git("branch", "--show-current"), "main")
+
+    def test_a_dirty_kept_worktree_is_a_stop_that_names_the_path(self):
+        bra.setup_worktree(self.repo, self.wt)
+        (self.wt / "stray.txt").write_text("y")
+        with self.assertRaises(bra.WorktreeStop) as ctx:
+            bra.setup_worktree(self.repo, self.wt)
+        self.assertIn(str(self.wt), str(ctx.exception))
+        self.assertIn("1 changed or untracked paths", str(ctx.exception))
 
 
 BENCH_RUN_MODES = ("plan", "meta", "prompt", "issue-body", "pr-body")
@@ -1067,6 +1490,21 @@ class SkillStepCommandsTest(unittest.TestCase):
         exempt = [c for c in step_commands() if c.startswith(INTERACTIVE_ONLY)]
         self.assertTrue([c for c in exempt if c.startswith("python3 harness/bench_run.py grade ")])
         self.assertTrue([c for c in exempt if c.startswith("git restore ")])
+
+    def test_step_3_records_the_starting_branch_and_step_15_returns_to_it_or_the_commit(self):
+        cmds = step_commands()
+        self.assertIn("git branch --show-current", cmds)
+        self.assertIn("git switch --detach <starting-commit>", cmds)
+        self.assertIn("git switch <starting-branch>", cmds)
+        self.assertNotIn("git switch main", cmds)
+        self.assertNotIn("git switch main", skill_steps())
+
+    def test_batch_mode_describes_the_worktree(self):
+        text = (REPO / ".claude" / "skills" / "bench-run" / "SKILL.md").read_text(encoding="utf-8")
+        batch = text.split("## Batch mode\n", 1)[1].split("\n## One-shot rules\n", 1)[0]
+        for fragment in (".claude/worktrees/", "detached at `origin/main`", "never switched or written to",
+                         "the batch worktree"):
+            self.assertIn(fragment, batch)
 
     def test_steps_open_with_the_one_line_command_instruction(self):
         head = skill_steps().strip().split("\n", 1)[0]

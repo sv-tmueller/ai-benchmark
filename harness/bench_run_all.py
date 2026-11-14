@@ -8,16 +8,30 @@ allowlist and ``--permission-mode dontAsk``, so every generation is one
 isolated one-shot session. The helper reads no result content: it looks at
 file names, git and ``gh pr list`` only, and never merges anything itself.
 
+A batch runs in a private git worktree for its model and effort level,
+``.claude/worktrees/bench-run-<model_tag>_<effort>``, detached at
+``origin/main``: the children, the between-children cleanup and the merge
+step all run there, so the main checkout is never switched or written to and
+batches for other models or effort levels can run from it at the same time.
+An exclusive ``flock`` on ``<worktree>.lock`` (inherited by every child)
+stops a second batch for the same model and effort while one is running. After
+a run that ended without a halt the worktree is removed; after a halt it is
+kept and the next run reuses it only if it is clean. ``--smoke`` and
+``--dry-run`` create nothing.
+
 Usage (from the repo root)::
 
     python3 harness/bench_run_all.py --model <exact-model-id> [--dry-run]
     python3 harness/bench_run_all.py --model <id> --smoke <prompt-id>
 
 ``--smoke`` starts exactly one child running ``/bench-run <id> --dry-run``,
-which generates nothing. Stdlib only; Python 3.11+.
+which generates nothing and runs in the main checkout. Stdlib only; Python
+3.11+. Git and ``gh`` go through ``_run``, the one seam the unit tests patch;
+the real-git tests exercise the worktree helpers with it unpatched.
 """
 
 import argparse
+import fcntl
 import json
 import os
 import shlex
@@ -189,14 +203,19 @@ class ChildRun:
     stderr: str
 
 
-def launch(claude_bin, slash, model, effort, timeout, repo_root, environ):
-    """Start one child and wait for it; kill its whole process group on timeout."""
+def launch(claude_bin, slash, model, effort, timeout, repo_root, environ, pass_fds=()):
+    """Start one child and wait for it; kill its whole process group on timeout.
+
+    ``pass_fds`` stay open in the child. The batch passes its worktree lock, so
+    a child that outlives a dead helper (it runs in its own session) keeps the
+    worktree "in use" until it exits.
+    """
     cmd = build_command(claude_bin, slash, model, effort)
     try:
         proc = subprocess.Popen(
             cmd, cwd=str(repo_root), env=build_env(environ), stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            start_new_session=True,
+            start_new_session=True, pass_fds=pass_fds,
         )
     except OSError as exc:
         return ChildRun(127, False, "", "cannot start %s: %s" % (claude_bin, exc))
@@ -276,11 +295,16 @@ def summarize(run, model):
 # --- smoke ------------------------------------------------------------------
 
 
-def make_log_dir(base=None):
-    """Create and return the log folder, outside the repo tree."""
+def make_log_dir(base=None, tag=None):
+    """Create and return the log folder, outside the repo tree.
+
+    The default name is ``<UTC>_<tag>``: two batches started in the same second
+    (other model or effort) must not share a folder and overwrite each other's logs.
+    """
     if base is None:
         cache = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
-        base = Path(cache) / "bench-run" / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        name = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + ("_" + tag if tag else "")
+        base = Path(cache) / "bench-run" / name
     base = Path(base)
     base.mkdir(parents=True, exist_ok=True)
     return base
@@ -416,17 +440,43 @@ def tree_state(repo_root):
     return Tree(branch.stdout.strip(), [ln for ln in status.stdout.splitlines() if ln.strip()])
 
 
-def settle(repo_root, log_dir, pid, model, effort):
-    """Leave a clean tree on main between children; return a halt reason or None.
+def sync_worktree(wt):
+    """Put the worktree on a clean detached ``origin/main``; return an error string or None.
 
-    Only two leftovers are tolerated: this prompt's own planned paths, still
-    untracked (moved into the log folder, never deleted or opened), and a clean
-    tree on another branch (switched back to main). Anything else halts.
+    A fetch updates the one ``origin/main`` all worktrees share. The result is
+    verified: no branch, nothing changed or untracked, ``HEAD`` equal to
+    ``origin/main``.
+    """
+    fetch = _run(["git", "fetch", "origin", "main"], cwd=wt)
+    if fetch.returncode:
+        return "git fetch failed: " + _first_line(fetch.stderr)
+    switch = _run(["git", "switch", "--detach", "origin/main"], cwd=wt)
+    if switch.returncode:
+        return "git switch --detach failed: " + _first_line(switch.stderr)
+    try:
+        tree = tree_state(wt)
+    except GitError as exc:
+        return str(exc)
+    head, origin = _git_out(wt, "rev-parse", "HEAD"), _git_out(wt, "rev-parse", "origin/main")
+    if tree.branch or tree.lines or not head or head != origin:
+        return "worktree is not a clean detached origin/main"
+    return None
+
+
+def settle(wt, log_dir, pid, model, effort, start):
+    """Return the worktree to a clean detached ``origin/main`` between children.
+
+    ``start`` is the commit the child began on. Tolerated leftovers: this
+    prompt's own planned paths, still untracked (moved into the log folder,
+    never deleted or opened), a clean tree on the child's branch (it keeps the
+    commit) and a clean detached tree still at ``start``. Anything else halts,
+    in particular a commit made without a branch, which switching away would orphan.
+    Returns a halt reason or None.
     """
     halt = "tree dirty after %s" % pid
-    tree = tree_state(repo_root)
+    tree = tree_state(wt)
     if tree.lines:
-        planned = planned_names(repo_root, pid, model, effort)
+        planned = planned_names(wt, pid, model, effort)
         own = []
         for line in tree.lines:
             path = line[3:]
@@ -437,14 +487,157 @@ def settle(repo_root, log_dir, pid, model, effort):
         for path in own:
             dest = log_dir / "leftovers" / pid
             dest.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(Path(repo_root, path)), str(dest / Path(path).name))
-        if tree_state(repo_root).lines:
+            shutil.move(str(Path(wt, path)), str(dest / Path(path).name))
+        if tree_state(wt).lines:
             return halt
-    if tree.branch != "main":
-        _run(["git", "switch", "main"], cwd=repo_root)
-        if tree_state(repo_root).branch != "main":
-            return "could not return to main after %s" % pid
+    if not tree.branch and _git_out(wt, "rev-parse", "HEAD") != start:
+        return "HEAD moved without a branch after %s" % pid
+    if sync_worktree(wt):
+        return "could not return to origin/main after %s" % pid
     return None
+
+
+# --- the batch worktree -------------------------------------------------------
+
+
+class WorktreeStop(Exception):
+    """The batch worktree cannot be used; the message is the STOP detail."""
+
+
+def worktree_path(repo_root, model, effort):
+    """``<repo>/.claude/worktrees/bench-run-<model_tag>_<effort>``; one per model and effort."""
+    return Path(repo_root) / ".claude" / "worktrees" / ("bench-run-" + run_tag(model, effort))
+
+
+def lock_path(wt):
+    """The lock file: a sibling of the worktree, so it never shows in its status."""
+    return wt.with_name(wt.name + ".lock")
+
+
+def acquire_lock(wt):
+    """Take the exclusive lock for ``wt``; return the open fd, or None if it is taken.
+
+    The OS drops the lock when the last holder exits, even on SIGKILL, so it
+    cannot go stale. The file itself is never deleted.
+    """
+    path = lock_path(wt)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        return None
+    return fd
+
+
+def lock_in_use(wt):
+    """Whether another process holds the lock. Creates nothing."""
+    try:
+        fd = os.open(lock_path(wt), os.O_RDONLY)
+    except FileNotFoundError:
+        return False
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(fd)
+
+
+def in_use_message(wt, model, effort):
+    return "%s is in use by another batch run for %s at effort %s" % (wt, model, effort)
+
+
+def _registered_worktrees(repo_root):
+    """``{resolved path: prunable}`` from ``git worktree list --porcelain``."""
+    done = _run(["git", "worktree", "list", "--porcelain"], cwd=repo_root)
+    if done.returncode:
+        raise WorktreeStop("git worktree list failed: " + _first_line(done.stderr))
+    found, current = {}, None
+    for line in done.stdout.splitlines():
+        if line.startswith("worktree "):
+            current = Path(line[len("worktree "):]).resolve()
+            found[current] = False
+        elif line.startswith("prunable") and current is not None:
+            found[current] = True
+    return found
+
+
+def classify_worktree(repo_root, wt):
+    """Decide what setup would do: ``create``, ``prune and create`` or ``reuse``.
+
+    Raises ``WorktreeStop`` for a folder that is not a worktree of this checkout
+    and for a kept worktree that is not clean. This runs before any git
+    command inside ``wt``: in an unregistered folder git walks up to the main
+    checkout and would act on that instead.
+    """
+    registered = _registered_worktrees(repo_root)
+    key = Path(wt).resolve()
+    if key not in registered:
+        if Path(wt).exists():
+            raise WorktreeStop("%s exists but is not a worktree of this checkout; remove it" % wt)
+        return "create"
+    if not Path(wt).exists():
+        return "prune and create"
+    top = _git_out(wt, "rev-parse", "--show-toplevel")
+    if not top or Path(top).resolve() != key:
+        raise WorktreeStop("%s exists but is not a worktree of this checkout; remove it" % wt)
+    status = _run(["git", "status", "--porcelain", "--untracked-files=all"], cwd=wt)
+    if status.returncode:
+        raise WorktreeStop("git status failed in %s: %s" % (wt, _first_line(status.stderr)))
+    lines = [ln for ln in status.stdout.splitlines() if ln.strip()]
+    if lines:
+        raise WorktreeStop("%s has %d changed or untracked paths from an earlier run; "
+                           "inspect it, then git worktree remove --force %s" % (wt, len(lines), wt))
+    return "reuse"
+
+
+def setup_worktree(repo_root, wt):
+    """Create or reuse the worktree and sync it to ``origin/main``; return the action taken."""
+    action = classify_worktree(repo_root, wt)
+    if action == "prune and create":
+        _run(["git", "worktree", "prune"], cwd=repo_root)
+    if action != "reuse":
+        Path(wt).parent.mkdir(parents=True, exist_ok=True)
+        add = _run(["git", "worktree", "add", "--detach", str(wt), "origin/main"], cwd=repo_root)
+        if add.returncode:
+            raise WorktreeStop("cannot create %s: %s" % (wt, _first_line(add.stderr)))
+    err = sync_worktree(wt)
+    if err:
+        raise WorktreeStop("cannot sync %s to origin/main: %s" % (wt, err))
+    return action
+
+
+def finish_worktree(repo_root, wt, halt):
+    """Remove the worktree after a run without a halt, else keep it. Returns the report line.
+
+    Never ``--force``: ``git worktree remove`` refuses a worktree with
+    untracked files and ignores git-ignored ones such as ``.bench-run/``.
+    """
+    if halt:
+        return "worktree: kept %s (halted; the next run reuses it only if it is clean)" % wt
+    done = _run(["git", "worktree", "remove", str(wt)], cwd=repo_root)
+    if done.returncode == 0:
+        return "worktree: removed %s" % wt
+    return "worktree: kept %s (git worktree remove failed: %s)" % (wt, _first_line(done.stderr))
+
+
+def check_worktree(args, environ, repo_root, usable):
+    """The dry-run ``worktree`` check: where one would be created, or why it cannot be used."""
+    if not usable:
+        return Check("worktree", True, "skipped, model or effort unusable")
+    effort = environ["CLAUDE_EFFORT"]
+    wt = worktree_path(repo_root, args.model, effort)
+    if lock_in_use(wt):
+        return Check("worktree", False, in_use_message(wt, args.model, effort))
+    try:
+        return Check("worktree", True, "would %s %s" % (classify_worktree(repo_root, wt), wt))
+    except WorktreeStop as exc:
+        return Check("worktree", False, str(exc))
 
 
 # --- preflight --------------------------------------------------------------
@@ -491,11 +684,14 @@ def preflight(args, environ, repo_root):
     head, origin = _git_out(repo_root, "rev-parse", "HEAD"), _git_out(repo_root, "rev-parse", "origin/main")
     checks.append(Check("HEAD == origin/main", bool(head) and head == origin,
                         "HEAD %s, origin/main %s" % (head, origin)))
-    try:
-        dirty = tree_state(repo_root).lines
-        checks.append(Check("clean tree", not dirty, "%d changed or untracked paths" % len(dirty)))
-    except GitError as exc:
-        checks.append(Check("clean tree", False, str(exc)))
+    # Untracked files here are harmless: the children run in the worktree. Edited
+    # tracked files are not: this checkout's helper code runs the batch.
+    status = _run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=repo_root)
+    if status.returncode:
+        checks.append(Check("no tracked changes", False, "git status failed"))
+    else:
+        dirty = [ln for ln in status.stdout.splitlines() if ln.strip()]
+        checks.append(Check("no tracked changes", not dirty, "%d tracked changes" % len(dirty)))
     auth = _run(["gh", "auth", "status"], cwd=repo_root)
     checks.append(Check("gh auth", auth.returncode == 0,
                         "" if auth.returncode == 0 else _first_line(auth.stderr or auth.stdout)))
@@ -537,8 +733,12 @@ def describe(summary, pr):
     return outcome, (pr[2] if pr else "-")
 
 
-def run_batch(args, environ, repo_root, log_dir):
-    """The loop: skip check, child, outcome, cleanup. Returns (rows, halt reason)."""
+def run_batch(args, environ, wt, log_dir, lock_fd=None):
+    """The loop in the worktree ``wt``: skip check, child, outcome, cleanup.
+
+    Returns (rows, halt reason). ``lock_fd`` is handed to every child.
+    """
+    repo_root = wt
     rows, halt = [], None
     total = len(ARM_PROMPTS)
     effort = environ["CLAUDE_EFFORT"]
@@ -558,9 +758,14 @@ def run_batch(args, environ, repo_root, log_dir):
             rows.append((pid, outcome, hit[2] or "-"))
             _say("[%d/%d] %s  %s" % (i, total, pid, outcome))
             continue
+        start = _git_out(wt, "rev-parse", "HEAD")
+        if not start:
+            halt = "cannot read HEAD before %s" % pid
+            rows.append((pid, "not-started: " + halt, "-"))
+            continue
         _say("[%d/%d] %s  running ..." % (i, total, pid))
         run = launch(args.claude, "/bench-run " + pid, args.model, effort,
-                     args.timeout, repo_root, environ)
+                     args.timeout, wt, environ, pass_fds=() if lock_fd is None else (lock_fd,))
         write_child_log(log_dir, pid, run)
         summary = summarize(run, args.model)
         try:
@@ -572,14 +777,17 @@ def run_batch(args, environ, repo_root, log_dir):
         rows.append((pid, outcome, url))
         _say("[%d/%d] %s  %s" % (i, total, pid, outcome))
         try:
-            halt = settle(repo_root, log_dir, pid, args.model, effort)
+            halt = settle(wt, log_dir, pid, args.model, effort, start)
         except GitError as exc:
             halt = "tree check failed after %s: %s" % (pid, exc)
     return rows, halt
 
 
 def merge_step(args, environ, repo_root, halt):
-    """Run the gated merge command if it exists, else list the open PRs. Returns ok."""
+    """Run the gated merge command if it exists, else list the open PRs. Returns ok.
+
+    ``repo_root`` is the batch worktree: the merge command runs its copy.
+    """
     if halt:
         _say("merge step: skipped (%s)" % halt)
         return False
@@ -589,8 +797,8 @@ def merge_step(args, environ, repo_root, halt):
         except GitError as exc:
             _say("merge step: skipped (%s)" % exc)
             return False
-        if tree.lines or tree.branch != "main":
-            _say("merge step: skipped (tree not clean on main)")
+        if tree.lines or tree.branch:
+            _say("merge step: skipped (worktree not clean and detached)")
             return False
         try:
             done = _run([sys.executable, MERGE_SCRIPT, "--model", args.model, MERGE_OPT_IN],
@@ -621,7 +829,7 @@ def merge_step(args, environ, repo_root, halt):
 CATEGORIES = ("pr-opened", "skipped", "timed-out", "failed", "ended without PR", "not-started")
 
 
-def report(rows, log_dir, model, effort):
+def report(rows, log_dir, model, effort, worktree_line=None):
     _say()
     _say("report: %s at effort %s" % (model, effort))
     for pid, outcome, url in rows:
@@ -632,6 +840,8 @@ def report(rows, log_dir, model, effort):
         if n:
             _say("%s: %d" % (cat, n))
     _say("log folder: %s" % log_dir)
+    if worktree_line:
+        _say(worktree_line)
 
 
 def run_dry(args, environ, repo_root, checks):
@@ -668,16 +878,32 @@ def run_dry(args, environ, repo_root, checks):
 def run_all(args, environ, repo_root):
     checks = preflight(args, environ, repo_root)
     if args.dry_run:
+        usable = all(c.ok for c in checks if c.name in ("model", "effort"))
+        checks.append(check_worktree(args, environ, repo_root, usable))
         return run_dry(args, environ, repo_root, checks)
     failed = [c for c in checks if not c.ok]
     if failed:
         for c in failed:
             _say("STOP: %s: %s" % (c.name, c.detail))
         return 2
-    log_dir = make_log_dir(args.log_dir)
-    rows, halt = run_batch(args, environ, repo_root, log_dir)
-    merge_ok = merge_step(args, environ, repo_root, halt)
-    report(rows, log_dir, args.model, environ["CLAUDE_EFFORT"])
+    effort = environ["CLAUDE_EFFORT"]
+    wt = worktree_path(repo_root, args.model, effort)
+    lock_fd = acquire_lock(wt)
+    if lock_fd is None:
+        _say("STOP: worktree: " + in_use_message(wt, args.model, effort))
+        return 2
+    try:
+        try:
+            setup_worktree(repo_root, wt)
+        except WorktreeStop as exc:
+            _say("STOP: worktree: %s" % exc)
+            return 2
+        log_dir = make_log_dir(args.log_dir, run_tag(args.model, effort))
+        rows, halt = run_batch(args, environ, wt, log_dir, lock_fd)
+        merge_ok = merge_step(args, environ, wt, halt)
+        report(rows, log_dir, args.model, effort, finish_worktree(repo_root, wt, halt))
+    finally:
+        os.close(lock_fd)
     clean = all(o.startswith(("pr-opened", "skipped")) for _, o, _ in rows)
     return 0 if clean and merge_ok and not halt else 1
 
@@ -692,7 +918,7 @@ def parse_args(argv):
     p.add_argument("--smoke", metavar="PROMPT_ID", help="start one /bench-run <id> --dry-run child")
     p.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT, help="seconds per child (default 3600)")
     p.add_argument("--claude", default="claude", help="path to the claude binary")
-    p.add_argument("--log-dir", help="log folder (default: ~/.cache/bench-run/<UTC>/)")
+    p.add_argument("--log-dir", help="log folder (default: ~/.cache/bench-run/<UTC>_<run tag>/)")
     return p.parse_args(argv)
 
 
