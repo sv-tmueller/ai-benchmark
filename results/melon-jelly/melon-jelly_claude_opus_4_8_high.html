@@ -1,0 +1,754 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Melon Jelly</title>
+<style>
+  :root { --bg:#fdf6ef; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; padding:0; height:100%; overflow:hidden; background:var(--bg);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; -webkit-user-select:none; user-select:none; }
+  #c { position:fixed; inset:0; display:block; touch-action:none; cursor:grab; }
+  #c.knife { cursor:crosshair; }
+  #c.grabbing { cursor:grabbing; }
+
+  #toolbar { position:fixed; top:12px; left:50%; transform:translateX(-50%); display:flex; gap:6px;
+    align-items:center; padding:7px 9px; background:rgba(255,255,255,0.82); backdrop-filter:blur(8px);
+    border:1px solid rgba(0,0,0,0.08); border-radius:14px; box-shadow:0 6px 24px rgba(0,0,0,0.12); z-index:10; flex-wrap:wrap; max-width:96vw; justify-content:center; }
+  .btn { border:1px solid rgba(0,0,0,0.1); background:#fff; color:#333; border-radius:10px; padding:8px 12px;
+    font-size:13px; font-weight:600; cursor:pointer; transition:.12s; }
+  .btn:hover { background:#f3f3f3; }
+  .btn.on { background:#ff3b6b; color:#fff; border-color:#ff3b6b; }
+  .sep { width:1px; align-self:stretch; background:rgba(0,0,0,0.1); margin:2px 3px; }
+  input[type=color] { width:34px; height:34px; border:none; background:none; padding:0; cursor:pointer; }
+  .swatches { display:flex; gap:4px; }
+  .sw { width:20px; height:20px; border-radius:6px; border:2px solid rgba(255,255,255,0.8);
+    box-shadow:0 1px 3px rgba(0,0,0,0.25); cursor:pointer; }
+
+  #panel { position:fixed; top:12px; right:12px; width:234px; background:rgba(255,255,255,0.86);
+    backdrop-filter:blur(8px); border:1px solid rgba(0,0,0,0.08); border-radius:14px;
+    box-shadow:0 6px 24px rgba(0,0,0,0.12); z-index:10; overflow:hidden; font-size:12px; }
+  #panelHead { display:flex; justify-content:space-between; align-items:center; padding:9px 12px;
+    cursor:pointer; font-weight:700; color:#444; }
+  #panelHead small { font-weight:500; color:#999; }
+  #panelBody { padding:4px 12px 12px; }
+  #panel.collapsed #panelBody { display:none; }
+  .row { margin:9px 0; }
+  .row label { display:flex; justify-content:space-between; color:#555; margin-bottom:3px; }
+  .row label span { color:#ff3b6b; font-variant-numeric:tabular-nums; }
+  .row input[type=range] { width:100%; accent-color:#ff3b6b; }
+  .chk { display:flex; align-items:center; gap:6px; color:#555; margin-top:4px; }
+
+  #fps { position:fixed; left:12px; bottom:12px; z-index:10; font-size:12px; font-weight:700;
+    color:#444; background:rgba(255,255,255,0.8); padding:4px 9px; border-radius:9px;
+    border:1px solid rgba(0,0,0,0.08); font-variant-numeric:tabular-nums; }
+  #hint { position:fixed; right:12px; bottom:12px; z-index:10; font-size:11px; color:#9a8f82;
+    background:rgba(255,255,255,0.6); padding:4px 9px; border-radius:9px; max-width:52vw; text-align:right; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="toolbar">
+  <button class="btn on" id="bGrab">✋ Grab</button>
+  <button class="btn" id="bKnife">🔪 Knife</button>
+  <div class="sep"></div>
+  <input type="color" id="colorPick" value="#ff3b6b" title="Flesh color">
+  <div class="swatches" id="swatches"></div>
+  <div class="sep"></div>
+  <button class="btn" id="bReset">↺ Reset</button>
+</div>
+
+<div id="panel">
+  <div id="panelHead">⚙︎ Parameters <small>▾</small></div>
+  <div id="panelBody">
+    <div class="row"><label>Gravity <span id="vGrav"></span></label><input type="range" id="sGrav" min="0" max="100" value="50"></div>
+    <div class="row"><label>Flesh stiffness <span id="vStiff"></span></label><input type="range" id="sStiff" min="0" max="100" value="70"></div>
+    <div class="row"><label>Rind stiffness <span id="vRind"></span></label><input type="range" id="sRind" min="0" max="100" value="80"></div>
+    <div class="row"><label>Damping <span id="vDamp"></span></label><input type="range" id="sDamp" min="0" max="100" value="15"></div>
+    <div class="row"><label>Wobble / bulge <span id="vWob"></span></label><input type="range" id="sWob" min="0" max="100" value="55"></div>
+    <div class="row"><label>Substeps <span id="vSub"></span></label><input type="range" id="sSub" min="0" max="100" value="38"></div>
+    <label class="chk"><input type="checkbox" id="cFps" checked> Show FPS</label>
+  </div>
+</div>
+
+<div id="fps">FPS --</div>
+<div id="hint">Drag to squish · Shift / right-drag to pinch · Knife to cut · two fingers to pinch</div>
+
+<script>
+"use strict";
+/* =========================================================================
+   MELON JELLY — 2D XPBD soft-body watermelon slice
+   Sections: CONFIG · MESH · PHYSICS · COLLISIONS · CUTTING · TOPOLOGY ·
+             INPUT · RENDER · UI · MAIN LOOP
+   Self-contained: no CDN, no external assets, plain JS with JSDoc types.
+   ========================================================================= */
+
+/* ----------------------------- CONFIG / STATE --------------------------- */
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+/** Tunable simulation parameters (driven by the panel). */
+const P = {
+  gravity: 2000,      // px / s^2
+  fleshComp: 1e-7,    // XPBD compliance of flesh distance constraints
+  rindComp: 1e-8,     // XPBD compliance of rind (stiffer) distance constraints
+  areaComp: 3e-6,     // XPBD compliance of area constraints (bulge / wobble)
+  damping: 0.0045,    // velocity damping per substep
+  substeps: 12,       // substeps per fixed 1/60 step (>= 8 required)
+  grabStiff: 0.18,    // compliant pull strength per substep
+  bladeR: 7,          // knife blade collision radius
+  maxV: 5000,         // velocity clamp (anti-explosion)
+  floorFric: 0.35     // tangential friction on floor / walls
+};
+
+let W = 0, H = 0, DPR = 1, floorY = 0, wallL = 0, wallR = 0;
+
+// Particle arrays (flat, Float32 for speed).
+let NP = 0;                 // particle count
+let px, py, vx, vy, ppx, ppy, invm, restX, restY, rindParticle;
+
+// Mesh topology (triangles never deleted; cutting only flips `active`).
+let triList = [];           // [a,b,c] per triangle
+let active;                 // Uint8Array: 1 = triangle present
+let restArea = [];          // signed rest area per triangle
+let restLenMap = new Map(); // edgeKey -> rest length
+let rindEdgeSet = new Set(); // edgeKey of rind (stiff) edges
+let NPkey = 1;              // base for packing an edge into one integer
+const ek = (u, v) => (u < v ? u * NPkey + v : v * NPkey + u);
+
+// Active constraint lists (rebuilt on cut / reset).
+let dA = [], dB = [], dRest = [], dRind = [], dLam;
+let aTri = [], aLam;
+
+// Derived rendering topology (rebuilt on cut / reset).
+let pieces = [];            // {loops, bEdges, rindEdges, tris}
+let seeds = [];             // {tri, w0,w1,w2, ang}
+
+// Model geometry.
+let R = 160, cx = 0, cy = 0, rindThickness = 22;
+
+// Interaction.
+let mode = 'grab';          // 'grab' | 'knife'
+let fleshColor = '#ff3b6b';
+let showFPS = true;
+const pointers = new Map(); // pointerId -> grab / knife record
+let blade = null;           // active knife path {pts, p0, p1}
+
+/* ------------------------------ MESH BUILD ------------------------------ */
+/** @returns signed area of triangle (x1,y1)(x2,y2)(x3,y3). */
+function signedArea(x1, y1, x2, y2, x3, y3) {
+  return 0.5 * ((x2 - x1) * (y3 - y1) - (x3 - x1) * (y2 - y1));
+}
+
+/** Build a triangulated half-disc (watermelon slice, flat face up, rind arc down). */
+function buildMesh() {
+  R = Math.max(90, Math.min(W, H) * 0.26);
+  rindThickness = R * 0.14;
+  cx = W * 0.5;
+  cy = floorY - R - 40;                 // start just above the floor so it settles on load
+  const h = R / 20;                     // grid spacing -> ~600-800 particles
+  const Ni = Math.ceil(R / h) + 1;
+
+  const map = new Map();
+  const key = (i, j) => i + '_' + j;
+  const gx = [], gy = [], gd = [];
+  let idx = 0;
+  for (let j = 0; j <= Ni; j++) {
+    for (let i = -Ni; i <= Ni; i++) {
+      const x = i * h, y = j * h, d = Math.hypot(x, y);
+      if (d <= R + 1e-6 && y >= -1e-9) { // lower half-disc
+        map.set(key(i, j), idx);
+        gx.push(cx + x); gy.push(cy + y); gd.push(d);
+        idx++;
+      }
+    }
+  }
+  NP = idx; NPkey = NP;
+  px = new Float32Array(gx); py = new Float32Array(gy);
+  restX = Float32Array.from(gx); restY = Float32Array.from(gy);
+  vx = new Float32Array(NP); vy = new Float32Array(NP);
+  ppx = new Float32Array(NP); ppy = new Float32Array(NP);
+  invm = new Float32Array(NP); invm.fill(1);
+  rindParticle = new Uint8Array(NP);
+  for (let k = 0; k < NP; k++) if (gd[k] >= R - rindThickness) rindParticle[k] = 1;
+
+  // Triangulate grid cells (two triangles each, plus partial boundary cells).
+  triList = [];
+  const addTri = (a, b, c) => triList.push([a, b, c]);
+  for (let j = 0; j < Ni; j++) {
+    for (let i = -Ni; i < Ni; i++) {
+      const A = map.get(key(i, j)), B = map.get(key(i + 1, j));
+      const C = map.get(key(i, j + 1)), D = map.get(key(i + 1, j + 1));
+      const a = A != null, b = B != null, c = C != null, d = D != null;
+      if (a && b && d) addTri(A, B, D);
+      if (a && d && c) addTri(A, D, C);
+      if (a && b && c && !d) addTri(A, B, C);        // partial cells so the boundary fills
+      if (b && d && c && !a) addTri(B, D, C);
+    }
+  }
+
+  // Rest lengths / areas and rind-edge flags.
+  restLenMap.clear(); rindEdgeSet.clear();
+  restArea = new Array(triList.length);
+  for (let t = 0; t < triList.length; t++) {
+    const [a, b, c] = triList[t];
+    restArea[t] = signedArea(restX[a], restY[a], restX[b], restY[b], restX[c], restY[c]);
+    for (const [u, v] of [[a, b], [b, c], [c, a]]) {
+      const k = ek(u, v);
+      if (!restLenMap.has(k)) {
+        restLenMap.set(k, Math.hypot(restX[u] - restX[v], restY[u] - restY[v]));
+        if (rindParticle[u] && rindParticle[v]) rindEdgeSet.add(k);
+      }
+    }
+  }
+  active = new Uint8Array(triList.length); active.fill(1);
+
+  buildSeeds();
+  rebuildConstraints();
+  rebuildTopology();
+}
+
+/** Scatter seeds inside the flesh, stored as barycentric anchors on triangles. */
+function buildSeeds() {
+  seeds = [];
+  const cand = [];
+  for (let t = 0; t < triList.length; t++) {
+    const [a, b, c] = triList[t];
+    const mx = (restX[a] + restX[b] + restX[c]) / 3;
+    const my = (restY[a] + restY[b] + restY[c]) / 3;
+    if (Math.hypot(mx - cx, my - cy) < R - rindThickness * 1.3 && my > cy + R * 0.18) cand.push(t);
+  }
+  const n = Math.min(22, cand.length);
+  for (let s = 0; s < n; s++) {
+    const t = cand[(Math.random() * cand.length) | 0];
+    let w0 = Math.random() + 0.2, w1 = Math.random() + 0.2, w2 = Math.random() + 0.2;
+    const sm = w0 + w1 + w2; w0 /= sm; w1 /= sm; w2 /= sm;
+    seeds.push({ tri: t, w0, w1, w2, ang: Math.random() * Math.PI });
+  }
+}
+
+/** Rebuild the flat distance + area constraint lists from currently active triangles. */
+function rebuildConstraints() {
+  dA = []; dB = []; dRest = []; dRind = [];
+  const seen = new Set();
+  for (let t = 0; t < triList.length; t++) {
+    if (!active[t]) continue;
+    const [a, b, c] = triList[t];
+    for (const [u, v] of [[a, b], [b, c], [c, a]]) {
+      const k = ek(u, v);
+      if (seen.has(k)) continue; seen.add(k);
+      dA.push(u); dB.push(v); dRest.push(restLenMap.get(k)); dRind.push(rindEdgeSet.has(k) ? 1 : 0);
+    }
+  }
+  dLam = new Float32Array(dA.length);
+  aTri = [];
+  for (let t = 0; t < triList.length; t++) if (active[t]) aTri.push(t);
+  aLam = new Float32Array(aTri.length);
+}
+
+/* ------------------------------- PHYSICS -------------------------------- */
+/** One XPBD substep: integrate, project constraints, derive velocities. */
+function substep(sdt) {
+  const g = P.gravity, damp = 1 - P.damping, maxV = P.maxV;
+  for (let i = 0; i < NP; i++) {
+    ppx[i] = px[i]; ppy[i] = py[i];
+    if (invm[i] === 0) continue;
+    vy[i] += g * sdt;
+    vx[i] *= damp; vy[i] *= damp;
+    const sp = Math.hypot(vx[i], vy[i]);
+    if (sp > maxV) { const s = maxV / sp; vx[i] *= s; vy[i] *= s; }
+    px[i] += vx[i] * sdt; py[i] += vy[i] * sdt;
+  }
+  dLam.fill(0); aLam.fill(0);
+  const sdt2 = sdt * sdt;
+  solveDistance(sdt2);
+  solveArea(sdt2);
+  solveGrabs();
+  solveCollisions();
+
+  // Derive velocity from position change; guard NaN / Inf and recover.
+  const inv = 1 / sdt;
+  for (let i = 0; i < NP; i++) {
+    if (invm[i] === 0) { vx[i] = 0; vy[i] = 0; continue; }
+    let nx = (px[i] - ppx[i]) * inv, ny = (py[i] - ppy[i]) * inv;
+    if (!isFinite(px[i]) || !isFinite(py[i]) || !isFinite(nx) || !isFinite(ny)) {
+      px[i] = isFinite(ppx[i]) ? ppx[i] : restX[i];
+      py[i] = isFinite(ppy[i]) ? ppy[i] : restY[i];
+      nx = 0; ny = 0;
+    }
+    vx[i] = nx; vy[i] = ny;
+  }
+}
+
+/** Distance (edge) constraints with per-edge compliance. */
+function solveDistance(sdt2) {
+  for (let i = 0; i < dA.length; i++) {
+    const a = dA[i], b = dB[i];
+    const wa = invm[a], wb = invm[b], wsum = wa + wb;
+    if (wsum === 0) continue;
+    const dx = px[a] - px[b], dy = py[a] - py[b];
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-9) continue;
+    const comp = (dRind[i] ? P.rindComp : P.fleshComp) / sdt2;
+    const C = len - dRest[i];
+    const dl = (-C - comp * dLam[i]) / (wsum + comp);
+    dLam[i] += dl;
+    const nx = dx / len, ny = dy / len;
+    px[a] += wa * dl * nx; py[a] += wa * dl * ny;
+    px[b] -= wb * dl * nx; py[b] -= wb * dl * ny;
+  }
+}
+
+/** Area-preservation constraints — produce sideways bulge when compressed. */
+function solveArea(sdt2) {
+  const comp = P.areaComp / sdt2;
+  for (let i = 0; i < aTri.length; i++) {
+    const [a, b, c] = triList[aTri[i]];
+    const x1 = px[a], y1 = py[a], x2 = px[b], y2 = py[b], x3 = px[c], y3 = py[c];
+    const A = 0.5 * ((x2 - x1) * (y3 - y1) - (x3 - x1) * (y2 - y1));
+    const C = A - restArea[aTri[i]];
+    const g1x = 0.5 * (y2 - y3), g1y = 0.5 * (x3 - x2);
+    const g2x = 0.5 * (y3 - y1), g2y = 0.5 * (x1 - x3);
+    const g3x = 0.5 * (y1 - y2), g3y = 0.5 * (x2 - x1);
+    const wa = invm[a], wb = invm[b], wc = invm[c];
+    const denom = wa * (g1x * g1x + g1y * g1y) + wb * (g2x * g2x + g2y * g2y) +
+                  wc * (g3x * g3x + g3y * g3y) + comp;
+    if (denom < 1e-9) continue;               // skip degenerate triangle
+    const dl = (-C - comp * aLam[i]) / denom;
+    aLam[i] += dl;
+    px[a] += wa * dl * g1x; py[a] += wa * dl * g1y;
+    px[b] += wb * dl * g2x; py[b] += wb * dl * g2y;
+    px[c] += wc * dl * g3x; py[c] += wc * dl * g3y;
+  }
+}
+
+/** Compliant pull toward each grab target (no teleporting). */
+function solveGrabs() {
+  const k = P.grabStiff;
+  for (const pr of pointers.values()) {
+    if (pr.mode === 'knife' || !pr.grabbed) continue;
+    for (const gp of pr.grabbed) {
+      const sc = pr.pinch ? pr.pinchScale : 1;    // pinch collapses offsets -> squeeze
+      const i = gp.idx;
+      px[i] += ((pr.tx + gp.ox * sc) - px[i]) * k * gp.w;
+      py[i] += ((pr.ty + gp.oy * sc) - py[i]) * k * gp.w;
+    }
+  }
+}
+
+/* ------------------------------ COLLISIONS ------------------------------ */
+function solveCollisions() {
+  const fr = P.floorFric;
+  for (let i = 0; i < NP; i++) {
+    if (invm[i] === 0) continue;
+    if (py[i] > floorY) { py[i] = floorY; px[i] -= (px[i] - ppx[i]) * fr; }  // floor + friction
+    if (px[i] < wallL) { px[i] = wallL; py[i] -= (py[i] - ppy[i]) * fr; }    // left wall
+    else if (px[i] > wallR) { px[i] = wallR; py[i] -= (py[i] - ppy[i]) * fr; } // right wall
+  }
+  // Knife blade collision (thin capsule) — pushes flesh aside, opening the cut.
+  if (blade && blade.p0 && blade.p1) {
+    const r = P.bladeR;
+    const x0 = blade.p0.x, y0 = blade.p0.y, x1 = blade.p1.x, y1 = blade.p1.y;
+    const ex = x1 - x0, ey = y1 - y0, el2 = ex * ex + ey * ey || 1e-6;
+    for (let i = 0; i < NP; i++) {
+      if (invm[i] === 0) continue;
+      let tcl = ((px[i] - x0) * ex + (py[i] - y0) * ey) / el2;
+      tcl = tcl < 0 ? 0 : tcl > 1 ? 1 : tcl;
+      const clx = x0 + ex * tcl, cly = y0 + ey * tcl;
+      let dx = px[i] - clx, dy = py[i] - cly, d = Math.hypot(dx, dy);
+      if (d < r) {
+        if (d < 1e-6) { dx = ey; dy = -ex; d = Math.hypot(dx, dy) || 1; }
+        px[i] = clx + dx / d * r; py[i] = cly + dy / d * r;
+      }
+    }
+  }
+}
+
+/* ------------------------------- CUTTING -------------------------------- */
+/** @returns true if segments (a0,a1)-(b0,b1) intersect. */
+function segSeg(ax, ay, bx, by, cxp, cyp, dx, dy) {
+  const r1 = (bx - ax) * (cyp - ay) - (by - ay) * (cxp - ax);
+  const r2 = (bx - ax) * (dy - ay) - (by - ay) * (dx - ax);
+  const r3 = (dx - cxp) * (ay - cyp) - (dy - cyp) * (ax - cxp);
+  const r4 = (dx - cxp) * (by - cyp) - (dy - cyp) * (bx - cxp);
+  return (r1 > 0) !== (r2 > 0) && (r3 > 0) !== (r4 > 0);
+}
+
+/** Cut: deactivate every active triangle the knife segment crosses, then rebuild. */
+function knifeMove(x, y) {
+  if (!blade) return;
+  const prev = blade.pts[blade.pts.length - 1];
+  blade.pts.push({ x, y });
+  blade.p0 = prev; blade.p1 = { x, y };
+  let removed = false;
+  for (let t = 0; t < triList.length; t++) {
+    if (!active[t]) continue;
+    const [a, b, c] = triList[t];
+    if (segSeg(prev.x, prev.y, x, y, px[a], py[a], px[b], py[b]) ||
+        segSeg(prev.x, prev.y, x, y, px[b], py[b], px[c], py[c]) ||
+        segSeg(prev.x, prev.y, x, y, px[c], py[c], px[a], py[a])) {
+      active[t] = 0; removed = true;
+    }
+  }
+  if (removed) { rebuildConstraints(); rebuildTopology(); }
+}
+
+/* ------------------------------ TOPOLOGY -------------------------------- */
+/** Split active triangles into connected pieces and extract boundary loops. */
+function rebuildTopology() {
+  const parent = new Int32Array(NP);
+  for (let i = 0; i < NP; i++) parent[i] = i;
+  const find = (x) => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
+  const uni = (a, b) => { a = find(a); b = find(b); if (a !== b) parent[a] = b; };
+
+  for (let t = 0; t < triList.length; t++) {
+    if (!active[t]) continue;
+    const [a, b, c] = triList[t]; uni(a, b); uni(b, c);
+  }
+  const edgeCount = new Map();
+  for (let t = 0; t < triList.length; t++) {
+    if (!active[t]) continue;
+    const [a, b, c] = triList[t];
+    for (const [u, v] of [[a, b], [b, c], [c, a]]) {
+      const k = ek(u, v); edgeCount.set(k, (edgeCount.get(k) || 0) + 1);
+    }
+  }
+  const pieceMap = new Map();
+  const getP = (r) => { let p = pieceMap.get(r); if (!p) { p = { tris: [], bEdges: [] }; pieceMap.set(r, p); } return p; };
+  for (let t = 0; t < triList.length; t++) {
+    if (!active[t]) continue; getP(find(triList[t][0])).tris.push(t);
+  }
+  for (const [k, cnt] of edgeCount) {
+    if (cnt === 1) { const u = Math.floor(k / NPkey), v = k % NPkey; getP(find(u)).bEdges.push([u, v]); }
+  }
+  pieces = [];
+  for (const p of pieceMap.values()) {
+    if (p.tris.length === 0) continue;
+    const rindEdges = new Set();
+    for (const [u, v] of p.bEdges) { const k = ek(u, v); if (rindEdgeSet.has(k)) rindEdges.add(k); }
+    pieces.push({ loops: buildLoops(p.bEdges), bEdges: p.bEdges, rindEdges, tris: p.tris });
+  }
+}
+
+/** Order a set of boundary edges into closed loops (particle-index sequences). */
+function buildLoops(bEdges) {
+  const adj = new Map();
+  const add = (a, b) => { let l = adj.get(a); if (!l) { l = []; adj.set(a, l); } l.push(b); };
+  for (const [u, v] of bEdges) { add(u, v); add(v, u); }
+  const used = new Set();
+  const uk = (a, b) => (a < b ? a * NPkey + b : b * NPkey + a);
+  const loops = [];
+  for (const [su, sv] of bEdges) {
+    if (used.has(uk(su, sv))) continue;
+    const loop = [su]; let prev = su, cur = sv; used.add(uk(su, sv)); loop.push(cur);
+    let guard = 0;
+    while (cur !== su && guard++ < bEdges.length * 2 + 8) {
+      const nbrs = adj.get(cur) || [];
+      let nxt = -1;
+      for (const nb of nbrs) if (nb !== prev && !used.has(uk(cur, nb))) { nxt = nb; break; }
+      if (nxt === -1) for (const nb of nbrs) if (!used.has(uk(cur, nb))) { nxt = nb; break; }
+      if (nxt === -1) break;
+      used.add(uk(cur, nxt)); loop.push(nxt); prev = cur; cur = nxt;
+    }
+    if (loop.length > 1 && loop[loop.length - 1] === loop[0]) loop.pop();
+    if (loop.length >= 3) loops.push(loop);
+  }
+  return loops;
+}
+
+/* -------------------------------- INPUT --------------------------------- */
+/** Grab particles within a soft radius, storing offsets + falloff weights. */
+function startGrab(pr, x, y, pinch) {
+  const rad = R * 0.34;
+  const grabbed = [];
+  let bi = -1, bd = 1e9;
+  for (let i = 0; i < NP; i++) {
+    const d = Math.hypot(px[i] - x, py[i] - y);
+    if (d < bd) { bd = d; bi = i; }
+    if (d < rad) grabbed.push({ idx: i, ox: px[i] - x, oy: py[i] - y, w: Math.max(0.15, 1 - d / rad) });
+  }
+  if (bd > R * 0.7) { pr.grabbed = []; }        // clicked empty space -> nothing grabbed
+  else {
+    if (grabbed.length === 0) grabbed.push({ idx: bi, ox: px[bi] - x, oy: py[bi] - y, w: 1 });
+    pr.grabbed = grabbed;
+  }
+  pr.tx = x; pr.ty = y; pr.pinch = pinch; pr.pinchScale = 1;
+}
+
+canvas.addEventListener('pointerdown', (e) => {
+  canvas.setPointerCapture(e.pointerId);
+  const x = e.clientX, y = e.clientY;
+  if (mode === 'knife') {
+    blade = { pts: [{ x, y }], p0: { x, y }, p1: { x, y } };
+    pointers.set(e.pointerId, { mode: 'knife' });
+    canvas.classList.remove('grabbing');
+  } else {
+    const pinch = e.shiftKey || e.button === 2 || (e.pointerType === 'touch' && pointers.size >= 1);
+    const pr = { mode: 'grab' };
+    startGrab(pr, x, y, pinch);
+    pointers.set(e.pointerId, pr);
+    canvas.classList.add('grabbing');
+  }
+  e.preventDefault();
+});
+canvas.addEventListener('pointermove', (e) => {
+  const pr = pointers.get(e.pointerId); if (!pr) return;
+  if (pr.mode === 'knife') knifeMove(e.clientX, e.clientY);
+  else { pr.tx = e.clientX; pr.ty = e.clientY; }
+  e.preventDefault();
+});
+function endPointer(e) {
+  const pr = pointers.get(e.pointerId); if (!pr) return;
+  if (pr.mode === 'knife') blade = null;         // release: trail clears, pieces keep momentum
+  pointers.delete(e.pointerId);
+  if (pointers.size === 0) canvas.classList.remove('grabbing');
+}
+canvas.addEventListener('pointerup', endPointer);
+canvas.addEventListener('pointercancel', endPointer);
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+/* -------------------------------- RENDER -------------------------------- */
+function hex2rgb(h) {
+  h = h.replace('#', '');
+  if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+  const n = parseInt(h, 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+const rgb = (r, g, b) => 'rgb(' + (r | 0) + ',' + (g | 0) + ',' + (b | 0) + ')';
+function lighten(h, t) { const [r, g, b] = hex2rgb(h); return rgb(r + (255 - r) * t, g + (255 - g) * t, b + (255 - b) * t); }
+function darken(h, t) { const [r, g, b] = hex2rgb(h); return rgb(r * (1 - t), g * (1 - t), b * (1 - t)); }
+
+/** Issue a smoothed path for a piece (quadratic curves through edge midpoints). */
+function piecePath(piece) {
+  ctx.beginPath();
+  for (const loop of piece.loops) {
+    const n = loop.length; if (n < 3) continue;
+    ctx.moveTo((px[loop[0]] + px[loop[1]]) / 2, (py[loop[0]] + py[loop[1]]) / 2);
+    for (let i = 0; i < n; i++) {
+      const cur = loop[(i + 1) % n], nxt = loop[(i + 2) % n];
+      ctx.quadraticCurveTo(px[cur], py[cur], (px[cur] + px[nxt]) / 2, (py[cur] + py[nxt]) / 2);
+    }
+    ctx.closePath();
+  }
+}
+
+/** Draw rind as bands offset outward (green) and inward (white pith) from the arc. */
+function rindBands(piece) {
+  if (piece.rindEdges.size === 0) return;
+  let sx = 0, sy = 0, c = 0;
+  for (const loop of piece.loops) for (const vi of loop) { sx += px[vi]; sy += py[vi]; c++; }
+  if (c === 0) return;
+  const ccx = sx / c, ccy = sy / c, rt = rindThickness;
+  const band = (wid, col, sign) => {
+    ctx.fillStyle = col; ctx.beginPath();
+    for (const [u, v] of piece.bEdges) {
+      if (!piece.rindEdges.has(ek(u, v))) continue;
+      const x1 = px[u], y1 = py[u], x2 = px[v], y2 = py[v];
+      let nx = (x1 + x2) / 2 - ccx, ny = (y1 + y2) / 2 - ccy;
+      const nl = Math.hypot(nx, ny) || 1; nx = nx / nl * sign * wid; ny = ny / nl * sign * wid;
+      ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.lineTo(x2 + nx, y2 + ny); ctx.lineTo(x1 + nx, y1 + ny); ctx.closePath();
+    }
+    ctx.fill();
+  };
+  band(rt * 1.02, '#14502a', 1);   // dark green outer skin
+  band(rt * 0.86, '#46a84e', 1);   // green rind
+  band(rt * 0.34, '#eafff0', -1);  // white pith (inward, against flesh)
+}
+
+function render() {
+  ctx.clearRect(0, 0, W, H);
+  // Background + table.
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, '#fdf6ef'); bg.addColorStop(1, '#efe2d4');
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#d8c3ab'; ctx.fillRect(0, floorY, W, H - floorY);
+  ctx.fillStyle = 'rgba(255,255,255,0.45)'; ctx.fillRect(0, floorY, W, 2);
+
+  // Soft contact shadows.
+  for (const piece of pieces) {
+    let minx = 1e9, maxx = -1e9, maxy = -1e9, sx = 0, c = 0;
+    for (const t of piece.tris) for (const vi of triList[t]) {
+      const X = px[vi], Y = py[vi];
+      if (X < minx) minx = X; if (X > maxx) maxx = X; if (Y > maxy) maxy = Y;
+    }
+    for (const loop of piece.loops) for (const vi of loop) { sx += px[vi]; c++; }
+    const gap = Math.max(0, floorY - maxy);
+    const a = Math.max(0, 0.32 * (1 - gap / 220));
+    if (a <= 0) continue;
+    ctx.save(); ctx.globalAlpha = a; ctx.fillStyle = '#3a2a1a';
+    ctx.beginPath();
+    ctx.ellipse(sx / Math.max(1, c), floorY + 6, Math.max(10, (maxx - minx) / 2), 12, 0, 0, Math.PI * 2);
+    ctx.fill(); ctx.restore();
+  }
+
+  // Flesh fill + glossy highlight (clipped).
+  for (const piece of pieces) {
+    let minx = 1e9, maxx = -1e9, miny = 1e9, maxy = -1e9;
+    for (const loop of piece.loops) for (const vi of loop) {
+      const X = px[vi], Y = py[vi];
+      if (X < minx) minx = X; if (X > maxx) maxx = X; if (Y < miny) miny = Y; if (Y > maxy) maxy = Y;
+    }
+    const gxm = (minx + maxx) / 2;
+    const grad = ctx.createLinearGradient(gxm, miny, gxm, maxy);
+    grad.addColorStop(0, lighten(fleshColor, 0.30));
+    grad.addColorStop(0.5, fleshColor);
+    grad.addColorStop(1, darken(fleshColor, 0.22));
+    piecePath(piece); ctx.fillStyle = grad; ctx.fill('evenodd');
+
+    ctx.save(); piecePath(piece); ctx.clip('evenodd');
+    const r = Math.max(maxx - minx, maxy - miny);
+    const hl = ctx.createRadialGradient(gxm - (maxx - minx) * 0.15, miny + (maxy - miny) * 0.18, r * 0.02,
+                                        gxm, miny + (maxy - miny) * 0.22, r * 0.8);
+    hl.addColorStop(0, 'rgba(255,255,255,0.42)');
+    hl.addColorStop(0.4, 'rgba(255,255,255,0.08)');
+    hl.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = hl; ctx.fillRect(minx - 20, miny - 20, (maxx - minx) + 40, (maxy - miny) + 40);
+    ctx.restore();
+  }
+
+  // Seeds (follow their triangle via barycentric coords; hidden if cut away).
+  for (const sd of seeds) {
+    if (!active[sd.tri]) continue;
+    const [a, b, c] = triList[sd.tri];
+    const X = sd.w0 * px[a] + sd.w1 * px[b] + sd.w2 * px[c];
+    const Y = sd.w0 * py[a] + sd.w1 * py[b] + sd.w2 * py[c];
+    ctx.save(); ctx.translate(X, Y); ctx.rotate(sd.ang);
+    ctx.fillStyle = '#241109'; ctx.beginPath(); ctx.ellipse(0, 0, 2.5, 4.3, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+
+  // Cut-face edges (flesh interior) + rind bands on original outer arc.
+  ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  for (const piece of pieces) {
+    ctx.strokeStyle = darken(fleshColor, 0.32); ctx.lineWidth = 3; ctx.beginPath();
+    for (const [u, v] of piece.bEdges) {
+      if (piece.rindEdges.has(ek(u, v))) continue;
+      ctx.moveTo(px[u], py[u]); ctx.lineTo(px[v], py[v]);
+    }
+    ctx.stroke();
+    rindBands(piece);
+  }
+
+  // Knife trail.
+  if (blade && blade.pts.length > 1) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(180,215,255,0.9)'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(blade.pts[0].x, blade.pts[0].y);
+    for (let i = 1; i < blade.pts.length; i++) ctx.lineTo(blade.pts[i].x, blade.pts[i].y);
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = 1; ctx.stroke();
+    ctx.restore();
+  }
+
+  // Grab / pinch indicators.
+  for (const pr of pointers.values()) {
+    if (pr.mode === 'grab' && pr.grabbed && pr.grabbed.length) {
+      ctx.save();
+      ctx.strokeStyle = pr.pinch ? 'rgba(120,180,255,0.85)' : 'rgba(255,255,255,0.85)';
+      ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(pr.tx, pr.ty, 10, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    }
+  }
+}
+
+/* ---------------------------------- UI ---------------------------------- */
+const PRESETS = ['#ff3b6b', '#ff5277', '#e84393', '#ff2d55', '#ff7eb6', '#c0392b', '#ff8c42', '#9b59b6'];
+const swWrap = document.getElementById('swatches');
+PRESETS.forEach((col) => {
+  const s = document.createElement('div'); s.className = 'sw'; s.style.background = col;
+  s.addEventListener('click', () => { fleshColor = col; document.getElementById('colorPick').value = col; });
+  swWrap.appendChild(s);
+});
+document.getElementById('colorPick').addEventListener('input', (e) => { fleshColor = e.target.value; });
+
+const bGrab = document.getElementById('bGrab'), bKnife = document.getElementById('bKnife');
+function setMode(m) {
+  mode = m;
+  bGrab.classList.toggle('on', m === 'grab');
+  bKnife.classList.toggle('on', m === 'knife');
+  canvas.classList.toggle('knife', m === 'knife');
+}
+bGrab.addEventListener('click', () => setMode('grab'));
+bKnife.addEventListener('click', () => setMode('knife'));
+document.getElementById('bReset').addEventListener('click', () => reset());
+
+// Parameter sliders (slider value 0..100 -> physical parameter).
+const el = (id) => document.getElementById(id);
+function syncParams() {
+  const gv = +el('sGrav').value, st = +el('sStiff').value, rd = +el('sRind').value,
+        dp = +el('sDamp').value, wb = +el('sWob').value, sb = +el('sSub').value;
+  P.gravity = gv / 100 * 4000;
+  P.fleshComp = Math.pow(10, -5 - (st / 100) * 3);   // higher slider -> stiffer (lower compliance)
+  P.rindComp = Math.pow(10, -6 - (rd / 100) * 3);
+  P.damping = dp / 100 * 0.03;
+  P.areaComp = Math.pow(10, -7 + (wb / 100) * 2.2);
+  P.substeps = 6 + Math.round(sb / 100 * 16);
+  el('vGrav').textContent = Math.round(P.gravity);
+  el('vStiff').textContent = st; el('vRind').textContent = rd;
+  el('vDamp').textContent = dp; el('vWob').textContent = wb;
+  el('vSub').textContent = P.substeps;
+}
+['sGrav', 'sStiff', 'sRind', 'sDamp', 'sWob', 'sSub'].forEach((id) => el(id).addEventListener('input', syncParams));
+syncParams();
+
+const panel = document.getElementById('panel');
+document.getElementById('panelHead').addEventListener('click', () => panel.classList.toggle('collapsed'));
+
+const fpsEl = document.getElementById('fps');
+el('cFps').addEventListener('change', (e) => { showFPS = e.target.checked; fpsEl.style.display = showFPS ? '' : 'none'; });
+
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'g' || e.key === 'G') setMode('grab');
+  else if (e.key === 'k' || e.key === 'K') setMode('knife');
+  else if (e.key === 'r' || e.key === 'R') reset();
+  else if (e.key === 'f' || e.key === 'F') { showFPS = !showFPS; el('cFps').checked = showFPS; fpsEl.style.display = showFPS ? '' : 'none'; }
+});
+
+/* ------------------------------ MAIN LOOP ------------------------------- */
+function resize() {
+  W = window.innerWidth; H = window.innerHeight;
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = W * DPR; canvas.height = H * DPR;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  floorY = H - 70; wallL = 16; wallR = W - 16;
+}
+function reset() {
+  pointers.clear(); blade = null;
+  buildMesh();
+}
+window.addEventListener('resize', () => { resize(); });
+
+function simulate(step) {
+  const ss = Math.max(8, Math.min(24, P.substeps | 0));
+  const sdt = step / ss;
+  for (let s = 0; s < ss; s++) substep(sdt);
+}
+
+let last = performance.now(), acc = 0, fpsT = last, frames = 0;
+function loop(now) {
+  let dt = (now - last) / 1000; last = now;
+  if (dt > 0.05) dt = 0.05;                    // clamp after tab stalls
+  acc += dt;
+  const step = 1 / 60;
+  let n = 0;
+  while (acc >= step && n < 5) { simulate(step); acc -= step; n++; }
+  if (n === 5) acc = 0;                         // avoid spiral of death
+  for (const pr of pointers.values()) if (pr.pinch) pr.pinchScale *= 0.94; // pinch pulls regions together
+  render();
+  frames++;
+  if (now - fpsT >= 500) {
+    if (showFPS) fpsEl.textContent = 'FPS ' + Math.round(frames * 1000 / (now - fpsT));
+    frames = 0; fpsT = now;
+  }
+  requestAnimationFrame(loop);
+}
+
+resize();
+reset();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
