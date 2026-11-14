@@ -5,6 +5,7 @@ through a fake ``claude`` executable written into a temp dir; ``git`` and
 ``gh`` go through the helper's single ``_run`` seam, which the tests patch.
 """
 
+import base64
 import contextlib
 import fcntl
 import io
@@ -58,8 +59,14 @@ if eff:
     if eff.get("open_pr"):
         n = st["next_pr"]
         st["next_pr"] = n + 1
-        st["prs"].append({"number": n, "url": "https://example.test/pull/%d" % n,
-                          "files": [{"path": sc["files"][pid]}]})
+        stem = os.path.splitext(os.path.basename(sc["files"][pid]))[0]
+        pr = {"number": n, "url": "https://example.test/pull/%d" % n,
+              "files": [{"path": sc["files"][pid]}],
+              "headRefName": "feat/%d-%s-result" % (n, stem.replace("_", "-")),
+              "state": "OPEN", "isCrossRepository": False,
+              "body": "## Summary\n\ntext\n\nCloses #%d\n" % n}
+        pr.update(eff.get("pr_extra", {}))
+        st["prs"].append(pr)
     for rel in eff.get("write", []):
         path = sc["files"][pid] if rel == "{target}" else rel
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -84,9 +91,27 @@ sys.exit(beh.get("exit", 0))
 '''
 
 
+class StrictStdout(io.TextIOWrapper):
+    """A stdout that raises ``UnicodeEncodeError`` on text it cannot encode, like a real terminal stream."""
+
+    def __init__(self, encoding="utf-8"):
+        super().__init__(io.BytesIO(), encoding=encoding, errors="strict", write_through=True)
+
+    def getvalue(self):
+        self.flush()
+        return self.buffer.getvalue().decode(self.encoding)
+
+
+GH_HANGS = "<hang>"  # as a gh_fail message: the call runs into its timeout
+
+USAGE = {"input_tokens": 28, "output_tokens": 77902,
+         "cache_read_input_tokens": 1082945, "cache_creation_input_tokens": 109699}
+
+
 def result_json(text="ok", **kw):
     d = {"type": "result", "subtype": "success", "is_error": False, "result": text,
-         "permission_denials": [], "modelUsage": {"claude-fable-5-2": {}}}
+         "permission_denials": [], "modelUsage": {"claude-fable-5-2": {}},
+         "usage": dict(USAGE), "duration_ms": 821274, "total_cost_usd": 5.088076999999998}
     d.update(kw)
     return d
 
@@ -270,11 +295,195 @@ class SummarizeTest(unittest.TestCase):
         events = [{"type": "system"}, result_json("STOP: x"), {"type": "other"}]
         self.assertEqual(self.summarize(events).stop_line, "STOP: x")
 
+    def test_usable_usage_is_kept_as_the_six_metrics_and_the_text_is_still_dropped(self):
+        out = self.summarize(result_json("SECRET-DELIVERABLE"))
+        self.assertEqual(out.metrics["output_tokens"], 77902)
+        self.assertEqual(out.metrics["duration_seconds"], 821.3)
+        self.assertNotIn("SECRET", repr(out))
+
+    def test_unusable_usage_leaves_no_metrics(self):
+        self.assertIsNone(self.summarize(result_json(usage=None)).metrics)
+
+    def test_a_timed_out_child_has_no_metrics_even_with_parseable_output(self):
+        self.assertIsNone(self.summarize(result_json(), timed_out=True).metrics)
+
+    def test_unparseable_output_has_no_metrics(self):
+        self.assertIsNone(self.summarize(None, stdout="not json").metrics)
+
+    def test_an_unexpected_error_in_deriving_the_metrics_leaves_the_rest_of_the_summary_intact(self):
+        text = "STOP: nothing to do\nrun void: x"
+        denial = [{"tool_name": "Read", "tool_input": {"x": "SECRET"}}]
+        with mock.patch.object(bra, "run_metrics", side_effect=RuntimeError("SECRET")):
+            out = self.summarize(result_json(text, permission_denials=denial, modelUsage={"other": {}}))
+        self.assertIsNone(out.metrics)
+        self.assertEqual(out.metrics_error, "RuntimeError")
+        self.assertEqual((out.stop_line, out.void_line, out.denied_tools, out.model_ok),
+                         ("STOP: nothing to do", "run void: x", ["Read"], False))
+        self.assertNotIn("SECRET", repr(out))
+
+    def test_no_metrics_error_when_the_metrics_are_unusable_or_fine(self):
+        self.assertIsNone(self.summarize(result_json(usage=None)).metrics_error)
+        self.assertIsNone(self.summarize(result_json()).metrics_error)
+
+    def test_interrupts_in_deriving_the_metrics_still_propagate(self):
+        for exc in (KeyboardInterrupt, SystemExit):
+            with self.subTest(exc.__name__), mock.patch.object(bra, "run_metrics", side_effect=exc):
+                with self.assertRaises(exc):
+                    self.summarize(result_json())
+
     def test_unparseable_output_gives_no_json_and_no_text(self):
         out = self.summarize(None, stdout="not json SECRET")
         self.assertFalse(out.parsed)
         self.assertIsNone(out.stop_line)
         self.assertNotIn("SECRET", repr(out))
+
+
+class RunMetricsTest(unittest.TestCase):
+    def test_the_six_values_are_converted_and_rounded_in_contract_order(self):
+        out = bra.run_metrics(result_json())
+        self.assertEqual(list(out), ["duration_seconds", "input_tokens", "output_tokens",
+                                     "cache_read_tokens", "cache_write_tokens", "cost_usd"])
+        self.assertEqual(out, {"duration_seconds": 821.3, "input_tokens": 28,
+                               "output_tokens": 77902, "cache_read_tokens": 1082945,
+                               "cache_write_tokens": 109699, "cost_usd": 5.088077})
+
+    def test_whole_number_duration_and_cost_are_accepted(self):
+        out = bra.run_metrics(result_json(duration_ms=2000, total_cost_usd=3))
+        self.assertEqual((out["duration_seconds"], out["cost_usd"]), (2.0, 3.0))
+
+    def test_zero_tokens_in_some_fields_are_usable_when_the_sum_is_positive(self):
+        usage = {"input_tokens": 0, "output_tokens": 5,
+                 "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+        out = bra.run_metrics(result_json(usage=usage, duration_ms=0, total_cost_usd=0))
+        self.assertEqual(out["output_tokens"], 5)
+
+    def test_extra_and_unknown_fields_do_not_matter(self):
+        usage = dict(USAGE, server_tool_use={"web_search_requests": 0}, service_tier="standard")
+        out = bra.run_metrics(result_json(usage=usage, is_error=True, subtype="x", extra=1))
+        self.assertIsNotNone(out)
+
+    def test_unusable_data_gives_none_and_never_a_partial_result(self):
+        def without(key):
+            d = result_json()
+            del d[key]
+            return d
+
+        def with_usage(**kw):
+            return result_json(usage=dict(USAGE, **kw))
+
+        def without_usage(key):
+            d = result_json()
+            del d["usage"][key]
+            return d
+
+        cases = {
+            "not a dict": None,
+            "a list": [result_json()],
+            "usage missing": without("usage"),
+            "usage not a dict": result_json(usage=[1, 2, 3, 4]),
+            "duration missing": without("duration_ms"),
+            "cost missing": without("total_cost_usd"),
+            "input missing": without_usage("input_tokens"),
+            "output missing": without_usage("output_tokens"),
+            "cache read missing": without_usage("cache_read_input_tokens"),
+            "cache write missing": without_usage("cache_creation_input_tokens"),
+            "token as string": with_usage(output_tokens="77902"),
+            "token as float": with_usage(output_tokens=1.5),
+            "token as bool": with_usage(input_tokens=True),
+            "negative token": with_usage(cache_read_input_tokens=-1),
+            "token None": with_usage(output_tokens=None),
+            "duration as string": result_json(duration_ms="821274"),
+            "duration as bool": result_json(duration_ms=True),
+            "negative duration": result_json(duration_ms=-1),
+            "nan duration": result_json(duration_ms=float("nan")),
+            "inf duration": result_json(duration_ms=float("inf")),
+            "cost as string": result_json(total_cost_usd="5.08"),
+            "cost as bool": result_json(total_cost_usd=False),
+            "negative cost": result_json(total_cost_usd=-0.01),
+            "nan cost": result_json(total_cost_usd=float("nan")),
+            "inf cost": result_json(total_cost_usd=float("inf")),
+            "duration too big for a float": result_json(duration_ms=10**400),
+            "cost too big for a float": result_json(total_cost_usd=10**400),
+            "token count too big for a float": with_usage(output_tokens=10**400),
+            "all-zero usage (API error before any model call)": result_json(
+                usage={"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0,
+                       "cache_creation_input_tokens": 0}, total_cost_usd=0, is_error=True),
+        }
+        for label, data in cases.items():
+            with self.subTest(label):
+                self.assertIsNone(bra.run_metrics(data))
+
+
+class MetricsSectionTest(unittest.TestCase):
+    METRICS = {"duration_seconds": 821.3, "input_tokens": 28, "output_tokens": 77902,
+               "cache_read_tokens": 1082945, "cache_write_tokens": 109699, "cost_usd": 5.088077}
+    PATH = "results/melon-jelly/melon-jelly_claude_fable_5_2_high.run.json"
+
+    def test_the_usable_section_shows_duration_output_tokens_cost_and_the_breakdown(self):
+        text = bra.metrics_section(self.METRICS, self.PATH)
+        self.assertTrue(text.startswith("<!-- run-metrics -->\n## Run metrics\n"))
+        self.assertTrue(text.endswith("<!-- /run-metrics -->"))
+        self.assertIn("Duration 821.3 s, 77,902 output tokens, cost 5.088077 USD.", text)
+        for row in ("| Input | 28 |", "| Output | 77,902 |",
+                    "| Cache read | 1,082,945 |", "| Cache write | 109,699 |"):
+            self.assertIn(row, text)
+        self.assertIn("`%s`" % self.PATH, text)
+        self.assertIn("harness/bench_run_all.py", text)
+
+    def test_a_short_duration_and_a_small_cost_keep_their_fixed_decimals(self):
+        text = bra.metrics_section(dict(self.METRICS, duration_seconds=2.0, cost_usd=0.5), self.PATH)
+        self.assertIn("Duration 2.0 s,", text)
+        self.assertIn("cost 0.500000 USD.", text)
+
+    def test_the_unavailable_section_says_so_and_names_no_run_file(self):
+        text = bra.metrics_section(None, self.PATH)
+        self.assertEqual(text, (
+            "<!-- run-metrics -->\n## Run metrics\n\n"
+            "Unavailable: the JSON output of the batch session that generated this result "
+            "carried no usable usage data, so no run file was written.\n"
+            "<!-- /run-metrics -->"))
+
+
+class SpliceSectionTest(unittest.TestCase):
+    SECTION = "<!-- run-metrics -->\n## Run metrics\n\nbody\n<!-- /run-metrics -->"
+    BODY = "## Summary\n\ntext\n\n## In-session caveats\n\nnotes\n\nCloses #315\n\nfooter\n"
+
+    def test_the_section_goes_in_front_of_the_closes_line(self):
+        out = bra.splice_section(self.BODY, self.SECTION)
+        self.assertEqual(out, "## Summary\n\ntext\n\n## In-session caveats\n\nnotes\n\n"
+                              + self.SECTION + "\n\nCloses #315\n\nfooter\n")
+
+    def test_without_a_closes_line_the_section_is_appended(self):
+        out = bra.splice_section("## Summary\n\ntext\n", self.SECTION)
+        self.assertEqual(out, "## Summary\n\ntext\n\n" + self.SECTION + "\n")
+
+    def test_a_closes_mention_inside_a_line_is_not_the_anchor(self):
+        body = "This PR Closes #1 sometimes.\n\nmore\n"
+        self.assertTrue(bra.splice_section(body, self.SECTION).endswith(self.SECTION + "\n"))
+
+    def test_an_empty_body_becomes_just_the_section(self):
+        self.assertEqual(bra.splice_section("", self.SECTION), self.SECTION + "\n")
+        self.assertEqual(bra.splice_section(None, self.SECTION), self.SECTION + "\n")
+
+    def test_a_second_application_replaces_the_span_between_the_markers(self):
+        first = bra.splice_section(self.BODY, self.SECTION)
+        newer = "<!-- run-metrics -->\n## Run metrics\n\nnewer\n<!-- /run-metrics -->"
+        second = bra.splice_section(first, newer)
+        self.assertEqual(second.count("<!-- run-metrics -->"), 1)
+        self.assertEqual(second.count("<!-- /run-metrics -->"), 1)
+        self.assertIn("newer", second)
+        self.assertNotIn("\nbody\n", second)
+        self.assertEqual(second, self.BODY.replace("Closes #315", newer + "\n\nCloses #315"))
+
+    def test_applying_the_same_section_twice_changes_nothing(self):
+        once = bra.splice_section(self.BODY, self.SECTION)
+        self.assertEqual(bra.splice_section(once, self.SECTION), once)
+
+    def test_a_lone_start_marker_is_not_a_span(self):
+        body = "<!-- run-metrics -->\nstray\n\nCloses #4\n"
+        out = bra.splice_section(body, self.SECTION)
+        self.assertEqual(out.count("<!-- /run-metrics -->"), 1)
+        self.assertIn("stray", out)
 
 
 class LaunchTest(FakeClaudeCase):
@@ -443,6 +652,7 @@ class FakeGit:
 
     def init(self, **overrides):
         st = {"origin_main": "abc", "gh_ok": True, "main_files": [], "prs": [], "next_pr": 1,
+              "gh_fail": {}, "puts": [], "edits": [],
               "trees": {str(self.main_root): {"branch": "main", "head": "abc", "dirty_tracked": []}},
               "worktrees": [], "unmerged": ["child-commit"]}
         st.update(overrides)
@@ -589,7 +799,65 @@ class FakeGit:
             return self.done(rc=0 if st["gh_ok"] else 1, err="" if st["gh_ok"] else "not logged in")
         if cmd[:3] == ["gh", "pr", "list"]:
             return self.done(json.dumps(st["prs"]))
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return self.pr_view(cmd, st)
+        if cmd[:4] == ["gh", "api", "--method", "PUT"]:
+            return self.contents_put(cmd, st)
+        if cmd[:3] == ["gh", "pr", "edit"]:
+            return self.pr_edit(cmd, st)
         raise AssertionError("unexpected command %r" % (cmd,))
+
+    @staticmethod
+    def failure(st, name):
+        """The stderr to fail ``name`` with, or ``None``; set with ``set_shared(gh_fail={...})``."""
+        message = st["gh_fail"].get(name)
+        if message == GH_HANGS:
+            raise subprocess.TimeoutExpired(["gh"], bra.GH_TIMEOUT)
+        return None if message is None else FakeGit.done(rc=1, err=message)
+
+    def pr_view(self, cmd, st):
+        assert cmd[4:6] == ["--json", "state,isCrossRepository,headRefName,body,files"], cmd
+        assert len(cmd) == 6, cmd
+        if self.failure(st, "view"):
+            return self.failure(st, "view")
+        found = [p for p in st["prs"] if p["number"] == int(cmd[3])]
+        if not found:
+            return self.done(rc=1, err="no pull requests found\n")
+        keys = cmd[5].split(",")
+        return self.done(json.dumps({k: found[0][k] for k in keys}))
+
+    def contents_put(self, cmd, st):
+        """``gh api --method PUT repos/{owner}/{repo}/contents/<path> -f k=v ...``: one new file, one commit."""
+        endpoint = cmd[4]
+        prefix = "repos/{owner}/{repo}/contents/"
+        assert endpoint.startswith(prefix), cmd
+        rest = cmd[5:]
+        assert len(rest) % 2 == 0 and all(a == "-f" for a in rest[::2]), cmd
+        fields = dict(f.split("=", 1) for f in rest[1::2])
+        assert sorted(fields) == ["branch", "content", "message"], cmd  # no sha: it must never overwrite
+        if self.failure(st, "put"):
+            return self.failure(st, "put")
+        path = endpoint[len(prefix):]
+        found = [p for p in st["prs"] if p.get("headRefName") == fields["branch"]]
+        if not found or any(f["path"] == path for f in found[0]["files"]):
+            return self.done(rc=1, err="HTTP 422: Invalid request.\n")
+        found[0]["files"].append({"path": path})
+        st["puts"].append({"path": path, "branch": fields["branch"], "message": fields["message"],
+                           "content": base64.b64decode(fields["content"]).decode("utf-8")})
+        self.save(st)
+        return self.done("{}")
+
+    def pr_edit(self, cmd, st):
+        assert cmd[3:5] == [cmd[3], "--body-file"] and len(cmd) == 6, cmd
+        if self.failure(st, "edit"):
+            return self.failure(st, "edit")
+        text = Path(cmd[5]).read_text(encoding="utf-8")
+        for p in st["prs"]:
+            if p["number"] == int(cmd[3]):
+                p["body"] = text
+        st["edits"].append({"number": int(cmd[3]), "body": text})
+        self.save(st)
+        return self.done()
 
 
 def readme_ledger():
@@ -627,10 +895,10 @@ class BatchCase(FakeClaudeCase):
         self.scenario({"help": help_text, "files": self.targets,
                        "default": base, "by_prompt": by_prompt or {}})
 
-    def batch(self, *extra, model="claude-fable-5-2", timeout="60", env=None, runner=None):
+    def batch(self, *extra, model="claude-fable-5-2", timeout="60", env=None, runner=None, stream=None):
         argv = ["--model", model, "--claude", str(self.bin), "--timeout", timeout,
                 "--log-dir", str(self.dir / "logs"), *extra]
-        out = io.StringIO()
+        out = io.StringIO() if stream is None else stream
         with contextlib.redirect_stdout(out), mock.patch.object(bra, "_run", runner or self.git):
             code = bra.main(argv, environ=env or self.env, repo_root=self.repo)
         return code, out.getvalue()
@@ -1608,6 +1876,513 @@ class MergeStepTest(BatchCase):
         _, out = self.batch()
         self.assertEqual(len(self.calls()), before)
         self.assertIn("MERGED", out)
+
+
+class RunMetricsBatchTest(BatchCase):
+    """The step after each child that opened a PR: run file by contents API, then the description."""
+
+    SIX = ["duration_seconds", "input_tokens", "output_tokens",
+           "cache_read_tokens", "cache_write_tokens", "cost_usd"]
+
+    def puts(self):
+        return self.git.state()["puts"]
+
+    def edits(self):
+        return self.git.state()["edits"]
+
+    def metrics_calls(self):
+        return [c for c in self.git.calls
+                if c[:3] in (["gh", "pr", "view"], ["gh", "pr", "edit"]) or c[:2] == ["gh", "api"]]
+
+    def run_one(self, pid="game-melon-jelly", **kw):
+        return self.batch("--prompts", pid, **kw)
+
+    def one_note(self, out, pid="game-melon-jelly"):
+        return self.report_lines(out)[pid][0]
+
+    def test_each_opened_pr_gets_one_run_file_commit_on_its_own_branch(self):
+        self.batch()
+        puts = self.puts()
+        self.assertEqual(len(puts), 14)
+        prs = self.git.state()["prs"]
+        for pid, put in zip(bra.ARM_PROMPTS, puts):
+            target = self.targets[pid]
+            self.assertEqual(put["path"], target.rsplit(".", 1)[0] + ".run.json")
+            (own,) = [p for p in prs if target in [f["path"] for f in p["files"]]]
+            self.assertEqual(put["branch"], own["headRefName"])
+            prefix = bra._prompt_data(self.repo, pid)["file_prefix"]
+            self.assertEqual(put["message"],
+                             "feat(results): add %s claude-fable-5-2 high run metrics" % prefix)
+
+    def test_the_run_file_holds_exactly_the_six_keys_in_contract_order(self):
+        self.run_one()
+        (put,) = self.puts()
+        self.assertTrue(put["content"].endswith("\n"))
+        data = json.loads(put["content"])
+        self.assertEqual(list(data), self.SIX)
+        self.assertEqual(data, {"duration_seconds": 821.3, "input_tokens": 28, "output_tokens": 77902,
+                                "cache_read_tokens": 1082945, "cache_write_tokens": 109699,
+                                "cost_usd": 5.088077})
+        self.assertEqual(put["content"], json.dumps(data, indent=2) + "\n")
+
+    def test_the_description_gets_the_section_before_the_closes_line(self):
+        self.run_one()
+        (edit,) = self.edits()
+        body = edit["body"]
+        self.assertEqual(body.count("<!-- run-metrics -->"), 1)
+        for text in ("Duration 821.3 s", "77,902 output tokens", "5.088077 USD", "| Input | 28 |",
+                     "| Cache read | 1,082,945 |", "| Cache write | 109,699 |",
+                     "melon-jelly_claude_fable_5_2_high.run.json"):
+            self.assertIn(text, body)
+        self.assertLess(body.index("<!-- /run-metrics -->"), body.index("Closes #%d" % edit["number"]))
+        self.assertTrue(body.startswith("## Summary\n\ntext\n\n"))
+
+    def test_success_adds_no_note_to_the_report_line(self):
+        _, out = self.batch()
+        rep = self.report_lines(out)
+        for pid in bra.ARM_PROMPTS:
+            self.assertRegex(rep[pid][0], r"^pr-opened #\d+$")
+
+    def test_only_the_run_file_is_added_to_the_pr(self):
+        self.run_one()
+        (put,) = self.puts()
+        files = [f["path"] for f in self.git.state()["prs"][0]["files"]]
+        self.assertEqual(files, [self.targets["game-melon-jelly"], put["path"]])
+
+    def test_without_usable_usage_no_run_file_is_written_and_the_description_says_so(self):
+        zero = {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 0}
+        self.set_children(default={"json": result_json("done", usage=zero, total_cost_usd=0)})
+        _, out = self.batch()
+        self.assertEqual(self.puts(), [])
+        self.assertEqual(len(self.calls()), 14)
+        self.assertEqual(len(self.edits()), 14)
+        for edit in self.edits():
+            self.assertIn("Unavailable: the JSON output of the batch session", edit["body"])
+            self.assertNotIn("| Input |", edit["body"])
+        rep = self.report_lines(out)
+        for pid in bra.ARM_PROMPTS:
+            self.assertRegex(rep[pid][0], r"^pr-opened #\d+ \(run metrics unavailable\)$")
+
+    def test_a_failed_description_edit_without_usage_is_reported_and_the_batch_goes_on(self):
+        self.set_children(default={"json": result_json("done", usage=None)})
+        self.git.set_shared(gh_fail={"edit": "HTTP 502: bad gateway\nsecond line\n"})
+        _, out = self.batch()
+        self.assertEqual(len(self.calls()), 14)
+        self.assertEqual(self.one_note(out), "pr-opened #1 (run metrics unavailable, "
+                                             "PR description not updated: HTTP 502: bad gateway)")
+
+    def test_a_failed_put_leaves_the_pr_alone_says_so_and_the_batch_continues(self):
+        clean_code, _ = self.batch()
+        self.setUp()
+        self.git.set_shared(gh_fail={"put": "HTTP 422: Validation Failed\nsecond line SECRET\n"})
+        code, out = self.batch()
+        self.assertEqual(code, clean_code)
+        self.assertEqual(self.called_ids(), list(bra.ARM_PROMPTS))
+        self.assertEqual(self.puts(), [])
+        self.assertEqual(self.edits(), [])
+        self.assertEqual([c for c in self.git.calls if c[:3] == ["gh", "pr", "edit"]], [])
+        rep = self.report_lines(out)
+        for pid in bra.ARM_PROMPTS:
+            self.assertRegex(rep[pid][0],
+                             r"^pr-opened #\d+ \(run file not added: HTTP 422: Validation Failed\)$")
+        self.assertNotIn("SECRET", out)
+        self.assertIn("worktree: removed", out)
+
+    def test_a_failed_put_does_not_stop_the_merge_step(self):
+        (self.repo / "harness").mkdir(exist_ok=True)
+        (self.repo / "harness" / "merge_results.py").write_text("print('MERGE-RAN')\n")
+        self.git.set_shared(gh_fail={"put": "HTTP 500: boom"})
+        code, out = self.batch()
+        self.assertIn("MERGE-RAN", out)
+        self.assertEqual(code, 0)
+
+    def test_a_failed_edit_after_the_put_keeps_the_run_file_and_says_so(self):
+        self.git.set_shared(gh_fail={"edit": "HTTP 403: nope\nmore"})
+        _, out = self.run_one()
+        self.assertEqual(len(self.puts()), 1)
+        self.assertEqual(self.edits(), [])
+        self.assertEqual(self.one_note(out),
+                         "pr-opened #1 (run file added, PR description not updated: HTTP 403: nope)")
+
+    def test_a_long_reason_is_capped_and_has_no_double_space(self):
+        self.git.set_shared(gh_fail={"put": "HTTP 422: " + "word  " * 100})
+        _, out = self.run_one()
+        note = self.one_note(out)
+        self.assertNotIn("  ", note)
+        self.assertLessEqual(len(note), len("pr-opened #1 (run file not added: )") + 200)
+        self.assertIn("pr-opened #1 (run file not added: HTTP 422: word word", note)
+
+    def test_a_number_too_big_for_a_float_means_unavailable_and_the_batch_goes_on(self):
+        clean_code, _ = self.batch()
+        for field, value in (("duration_ms", 10**400), ("total_cost_usd", 10**400)):
+            with self.subTest(field):
+                self.setUp()
+                self.set_children(default={"json": result_json("done", **{field: value})})
+                code, out = self.batch()
+                self.assertEqual(code, clean_code)
+                self.assertEqual(self.called_ids(), list(bra.ARM_PROMPTS))
+                self.assertEqual(self.puts(), [])
+                self.assertEqual(len(self.edits()), 14)
+                for edit in self.edits():
+                    self.assertIn("Unavailable:", edit["body"])
+                rep = self.report_lines(out)
+                for pid in bra.ARM_PROMPTS:
+                    self.assertRegex(rep[pid][0], r"^pr-opened #\d+ \(run metrics unavailable\)$")
+                self.assertIn("worktree: removed", out)
+
+    def test_a_pr_body_that_cannot_be_written_as_utf8_is_a_failed_description_update(self):
+        clean_code, _ = self.batch()
+        self.setUp()
+        lone = {"effects": {"open_pr": True, "pr_extra": {"body": "text \ud800 SECRET\n\nCloses #1\n"}}}
+        self.set_children(by_prompt={"game-melon-jelly": lone})
+        code, out = self.batch()
+        self.assertEqual(code, clean_code)
+        self.assertEqual(self.called_ids(), list(bra.ARM_PROMPTS))
+        self.assertEqual(len(self.puts()), 14)
+        self.assertEqual(len(self.edits()), 13)
+        prs = self.git.state()["prs"]
+        self.assertEqual(prs[0]["body"], "text \ud800 SECRET\n\nCloses #1\n")  # never altered to fit
+        rep = self.report_lines(out)
+        self.assertEqual(rep["game-melon-jelly"][0],
+                         "pr-opened #1 (run file added, PR description not updated: "
+                         "PR description is not valid UTF-8 text)")
+        self.assertRegex(rep["game-lava-lamp"][0], r"^pr-opened #\d+$")
+        self.assertNotIn("SECRET", out)
+        self.assertIn("worktree: removed", out)
+
+    def test_a_pr_body_that_cannot_be_written_as_utf8_without_usage_says_both(self):
+        self.set_children(default={"json": result_json("done", usage=None)},
+                          by_prompt={"game-melon-jelly": {"effects": {
+                              "open_pr": True, "pr_extra": {"body": "\ud800"}}}})
+        _, out = self.run_one()
+        self.assertEqual((self.puts(), self.edits()), ([], []))
+        self.assertEqual(self.one_note(out), "pr-opened #1 (run metrics unavailable, PR description "
+                                             "not updated: PR description is not valid UTF-8 text)")
+
+    def test_an_unexpected_error_in_the_description_stage_becomes_a_note_with_the_class_name(self):
+        clean_code, _ = self.batch()
+        self.setUp()
+        with mock.patch.object(bra, "metrics_section", side_effect=RuntimeError("SECRET body")):
+            code, out = self.batch()
+        self.assertEqual(code, clean_code)
+        self.assertEqual(self.called_ids(), list(bra.ARM_PROMPTS))
+        self.assertEqual(len(self.puts()), 14)
+        self.assertEqual(self.edits(), [])
+        self.assertEqual(self.one_note(out), "pr-opened #1 (run file added, PR description not updated: "
+                                             "RuntimeError)")
+        self.assertNotIn("SECRET", out)
+        self.assertIn("worktree: removed", out)
+
+    def test_an_unexpected_error_before_any_write_becomes_a_note_with_the_class_name(self):
+        with mock.patch.object(bra, "_read_result_pr", side_effect=ValueError("SECRET")):
+            _, out = self.run_one()
+        self.assertEqual((self.puts(), self.edits()), ([], []))
+        self.assertEqual(self.one_note(out), "pr-opened #1 (run file not added: ValueError)")
+        self.setUp()
+        self.set_children(default={"json": result_json("done", usage=None)})
+        with mock.patch.object(bra, "_read_result_pr", side_effect=ValueError("SECRET")):
+            _, out = self.run_one()
+        self.assertEqual(self.one_note(out), "pr-opened #1 (run metrics unavailable, "
+                                             "PR description not updated: ValueError)")
+        self.assertNotIn("SECRET", out)
+
+    def test_an_unexpected_error_at_the_put_becomes_a_note_with_the_class_name(self):
+        real = bra._gh
+
+        def gh(wt, *args):
+            if args[0] == "api":
+                raise RuntimeError("SECRET")
+            return real(wt, *args)
+
+        with mock.patch.object(bra, "_gh", gh):
+            _, out = self.run_one()
+        self.assertEqual((self.puts(), self.edits()), ([], []))
+        self.assertEqual(self.one_note(out), "pr-opened #1 (run file not added: RuntimeError)")
+
+    def test_an_unexpected_error_in_deriving_the_metrics_is_a_note_and_the_rest_of_the_line_stays(self):
+        clean_code, _ = self.batch()
+        self.setUp()
+        stop = result_json("STOP: odd\ndone", permission_denials=[{"tool_name": "Read"}])
+        self.set_children(default={"json": stop})
+        with mock.patch.object(bra, "run_metrics", side_effect=RuntimeError("SECRET")):
+            code, out = self.batch()
+        self.assertEqual(code, clean_code)
+        self.assertEqual(self.called_ids(), list(bra.ARM_PROMPTS))
+        self.assertEqual(self.puts(), [])
+        self.assertEqual(len(self.edits()), 14)
+        self.assertEqual(self.one_note(out), "pr-opened #1 (STOP: odd; denied: Read; "
+                                             "run metrics unavailable: RuntimeError)")
+        self.assertNotIn("SECRET", out)
+
+    def test_interrupts_in_the_metrics_step_are_not_swallowed(self):
+        for exc in (KeyboardInterrupt, SystemExit):
+            with self.subTest(exc.__name__):
+                self.setUp()
+                with mock.patch.object(bra, "metrics_section", side_effect=exc):
+                    with self.assertRaises(exc):
+                        self.run_one()
+
+    def test_a_gh_timeout_at_each_of_the_three_calls_gives_the_planned_note(self):
+        cases = (("view", "run file not added: gh timed out after 120 s", 0, 0),
+                 ("put", "run file not added: gh timed out after 120 s", 0, 0),
+                 ("edit", "run file added, PR description not updated: gh timed out after 120 s", 1, 0))
+        clean_code, _ = self.batch()
+        for name, note, puts, edits in cases:
+            with self.subTest(name):
+                self.setUp()
+                self.git.set_shared(gh_fail={name: GH_HANGS})
+                code, out = self.batch()
+                self.assertEqual(code, clean_code)
+                self.assertEqual(self.called_ids(), list(bra.ARM_PROMPTS))
+                self.assertEqual(self.one_note(out), "pr-opened #1 (%s)" % note)
+                self.assertEqual((len(self.puts()), len(self.edits())), (14 * puts, 14 * edits))
+                self.assertIn("worktree: removed", out)
+
+    def test_a_gh_timeout_without_usage_gives_the_unavailable_variant(self):
+        note = "run metrics unavailable, PR description not updated: gh timed out after 120 s"
+        for name in ("view", "edit"):
+            with self.subTest(name):
+                self.setUp()
+                self.set_children(default={"json": result_json("done", usage=None)})
+                self.git.set_shared(gh_fail={name: GH_HANGS})
+                _, out = self.run_one()
+                self.assertEqual(self.one_note(out), "pr-opened #1 (%s)" % note)
+
+    def test_a_failed_pr_read_changes_nothing(self):
+        self.git.set_shared(gh_fail={"view": "HTTP 404: gone"})
+        _, out = self.run_one()
+        self.assertEqual((self.puts(), self.edits()), ([], []))
+        self.assertEqual(self.one_note(out), "pr-opened #1 (run file not added: HTTP 404: gone)")
+
+    def test_a_failed_pr_read_without_usage_says_both(self):
+        self.set_children(default={"json": result_json("done", usage=None)})
+        self.git.set_shared(gh_fail={"view": "HTTP 404: gone"})
+        _, out = self.run_one()
+        self.assertEqual((self.puts(), self.edits()), ([], []))
+        self.assertEqual(self.one_note(out), "pr-opened #1 (run metrics unavailable, "
+                                             "PR description not updated: HTTP 404: gone)")
+
+    def test_a_pr_that_is_not_this_results_pr_gets_no_write(self):
+        target = self.targets["game-melon-jelly"]
+        run_file = target.rsplit(".", 1)[0] + ".run.json"
+        other_branch = "feat/1-melon-jelly-claude-fable-5-2-max-result"
+        cases = {
+            "not open": ({"state": "CLOSED"}, "PR #1 is not open"),
+            "merged": ({"state": "MERGED"}, "PR #1 is not open"),
+            "from a fork": ({"isCrossRepository": True}, "PR #1 comes from a fork"),
+            "other branch": ({"headRefName": "feat/9-x"}, "branch feat/9-x is not this result's branch"),
+            "other effort": ({"headRefName": other_branch},
+                             "branch %s is not this result's branch" % other_branch),
+            "run file already there": ({"files": [{"path": target}, {"path": run_file}]},
+                                       "PR #1 already has the run file"),
+            "two deliverables": ({"files": [{"path": target},
+                                            {"path": target.replace("melon-jelly/", "other/")}]},
+                                 "PR #1 does not have exactly one deliverable"),
+            "odd path": ({"files": [{"path": "results/a b/" + Path(target).name}]},
+                         "PR #1 does not have exactly one deliverable"),
+        }
+        for label, (extra, reason) in cases.items():
+            with self.subTest(label):
+                self.setUp()
+                self.set_children(by_prompt={"game-melon-jelly": {
+                    "effects": {"open_pr": True, "pr_extra": extra}}})
+                _, out = self.run_one()
+                self.assertEqual((self.puts(), self.edits()), ([], []))
+                self.assertEqual([c for c in self.git.calls if c[:2] == ["gh", "api"]], [])
+                self.assertEqual(self.one_note(out), "pr-opened #1 (run file not added: %s)" % reason)
+
+    def test_skipped_prompts_run_no_metrics_step(self):
+        st = self.git.state()
+        st["main_files"] = [Path(self.targets["game-melon-jelly"]).as_posix()]
+        st["prs"] = [{"number": 42, "url": "https://example.test/pull/42", "files": [
+            {"path": self.targets["game-lava-lamp"]}]}]
+        st["next_pr"] = 43
+        self.git.save(st)
+        self.batch("--prompts", "game-melon-jelly,game-lava-lamp")
+        self.assertEqual(self.calls(), [])
+        self.assertEqual(self.metrics_calls(), [])
+
+    def test_failed_and_ended_without_pr_prompts_run_no_metrics_step(self):
+        self.set_children(by_prompt={"game-melon-jelly": {"exit": 1, "effects": {}},
+                                     "game-lava-lamp": {"effects": {}}})
+        self.batch("--prompts", "game-melon-jelly,game-lava-lamp")
+        self.assertEqual(self.metrics_calls(), [])
+
+    def test_a_timed_out_child_without_a_pr_runs_no_metrics_step(self):
+        self.set_children(by_prompt={"game-melon-jelly": {"sleep": 60, "effects": {}}})
+        _, out = self.run_one(timeout="1")
+        self.assertEqual(self.metrics_calls(), [])
+        self.assertEqual(self.one_note(out), "timed-out")
+
+    def test_a_child_that_opened_a_pr_and_then_timed_out_gets_the_unavailable_section_only(self):
+        self.set_children(by_prompt={"game-melon-jelly": {"sleep": 60, "json": result_json("x")}})
+        _, out = self.run_one(timeout="2")
+        self.assertEqual(self.puts(), [])
+        (edit,) = self.edits()
+        self.assertIn("Unavailable:", edit["body"])
+        self.assertEqual(self.one_note(out), "pr-opened #1 (run metrics unavailable)")
+
+    def test_the_step_runs_no_git_command_that_moves_the_worktree(self):
+        _, out = self.batch()
+        git_cmds = [c for c in self.git.calls if c[0] == "git"]
+        for sub in ("add", "commit", "push", "checkout", "reset", "stash"):
+            self.assertEqual([c for c in git_cmds if c[1] == sub], [])
+        self.assertEqual([c for c in git_cmds if c[1] == "switch" and c[2:] != ["--detach", "origin/main"]], [])
+        self.assertIn("worktree: removed", out)
+
+    def test_the_metrics_gh_calls_run_in_the_worktree_and_never_merge(self):
+        self.run_one()
+        views = [w for c, w in zip(self.git.calls, self.git.cwds) if c[:3] == ["gh", "pr", "view"]]
+        self.assertEqual(views, [self.wt.resolve()])
+        for cmd in self.git.calls:
+            self.assertNotEqual(cmd[:3], ["gh", "pr", "merge"])
+        api = [c for c in self.git.calls if c[:2] == ["gh", "api"]]
+        self.assertEqual(len(api), 1)
+        self.assertEqual(api[0][2:4], ["--method", "PUT"])
+        self.assertIn("-f", api[0])
+
+    def test_no_result_text_pr_body_or_run_content_reaches_the_output(self):
+        _, out = self.batch()
+        self.assertNotIn("SECRET", out)
+        for text in ("## Run metrics", "Closes #", "run-metrics", "77,902", "5.088077"):
+            self.assertNotIn(text, out)
+
+    def test_secret_text_never_lands_in_the_run_file_or_the_description(self):
+        denial = [{"tool_name": "Read", "tool_input": {"x": "SECRET"}}]
+        self.set_children(default={"json": result_json("SECRET-DELIVERABLE", permission_denials=denial)})
+        self.batch()
+        self.assertEqual(len(self.puts()), 14)
+        for put in self.puts():
+            self.assertNotIn("SECRET", put["content"] + put["message"])
+        for edit in self.edits():
+            self.assertNotIn("SECRET", edit["body"])
+
+    def test_a_second_run_skips_every_pr_and_touches_none(self):
+        self.batch()
+        before = (len(self.puts()), len(self.edits()), len(self.metrics_calls()))
+        self.batch()
+        self.assertEqual((len(self.puts()), len(self.edits()), len(self.metrics_calls())), before)
+
+    def test_the_description_file_lives_in_the_log_folder_not_the_worktree(self):
+        paths = []
+        original = self.git.pr_edit
+
+        def spy(cmd, st):
+            paths.append(Path(cmd[5]))
+            return original(cmd, st)
+
+        self.git.pr_edit = spy
+        self.run_one()
+        (path,) = paths
+        self.assertEqual(path.parent, self.dir / "logs")
+        self.assertTrue(path.name.endswith(".pr-body.md"))
+
+
+class MetricsNotePrintableTest(BatchCase):
+    """Every note ``record_metrics`` returns can be printed and fits on one report line."""
+
+    SURROGATE_HEAD = "feat/9-\ud800"
+    METRICS = {"duration_seconds": 1.0, "input_tokens": 1, "output_tokens": 1,
+               "cache_read_tokens": 1, "cache_write_tokens": 1, "cost_usd": 1.0}
+
+    def record(self, metrics, **patches):
+        with contextlib.ExitStack() as stack:
+            for name, kw in patches.items():
+                stack.enter_context(mock.patch.object(bra, name, **kw))
+            return bra.record_metrics(self.repo, self.dir / "logs", "game-melon-jelly",
+                                      "claude-fable-5-2", "high", 1, metrics)
+
+    def note_for_head(self, head, metrics):
+        view = json.dumps({"state": "OPEN", "isCrossRepository": False, "headRefName": head,
+                           "body": "Closes #1\n", "files": [{"path": self.targets["game-melon-jelly"]}]})
+        return self.record(metrics, _gh={"return_value": view})
+
+    def assert_printable(self, note):
+        note.encode("utf-8")  # raises on a lone surrogate
+        self.assertNotRegex(note, r"[\x00-\x1f\x7f-\x9f]")
+        self.assertNotIn("  ", note)
+        self.assertEqual(note, note.strip())
+
+    def test_a_note_built_from_a_branch_name_with_a_lone_surrogate_is_printable(self):
+        for label, metrics in (("usage", self.METRICS), ("no usage", None)):
+            with self.subTest(label):
+                note = self.note_for_head(self.SURROGATE_HEAD, metrics)
+                self.assert_printable(note)
+                self.assertIn("is not this result's branch", note)
+                with contextlib.redirect_stdout(StrictStdout()):
+                    print(note)
+
+    def test_the_batch_goes_on_when_the_first_prs_branch_holds_a_lone_surrogate(self):
+        clean_code, _ = self.batch()
+        self.setUp()
+        bad = {"effects": {"open_pr": True, "pr_extra": {"headRefName": self.SURROGATE_HEAD}}}
+        self.set_children(by_prompt={"game-melon-jelly": bad})
+        code, out = self.batch(stream=StrictStdout())
+        self.assertEqual(code, clean_code)
+        self.assertEqual(self.called_ids(), list(bra.ARM_PROMPTS))
+        self.assertEqual(len(self.git.state()["puts"]), 13)
+        rep = self.report_lines(out)
+        self.assertRegex(rep["game-melon-jelly"][0],
+                         r"^pr-opened #1 \(run file not added: branch feat/9-.* is not this result's branch\)$")
+        self.assertRegex(rep["game-lava-lamp"][0], r"^pr-opened #\d+$")
+        self.assertIn("report: claude-fable-5-2 at effort high", out)
+        self.assertIn("worktree: removed", out)
+
+    def test_the_batch_goes_on_with_a_lone_surrogate_branch_and_no_usage(self):
+        clean_code, _ = self.batch()
+        self.setUp()
+        bad = {"effects": {"open_pr": True, "pr_extra": {"headRefName": self.SURROGATE_HEAD}}}
+        self.set_children(default={"json": result_json("done", usage=None)},
+                          by_prompt={"game-melon-jelly": bad})
+        code, out = self.batch(stream=StrictStdout())
+        self.assertEqual(code, clean_code)
+        self.assertEqual(self.called_ids(), list(bra.ARM_PROMPTS))
+        rep = self.report_lines(out)
+        self.assertRegex(rep["game-melon-jelly"][0],
+                         r"^pr-opened #1 \(run metrics unavailable, PR description not updated: "
+                         r"branch feat/9-.* is not this result's branch\)$")
+        self.assertIn("worktree: removed", out)
+
+    def test_newlines_tabs_and_runs_of_spaces_in_a_note_collapse_to_single_spaces(self):
+        reason = "first\nsecond\tthird  fourth \x1b fifth\x00 sixth seventh\xa0eighth"
+        with mock.patch.object(bra, "_read_result_pr", side_effect=bra._MetricsStop(reason)):
+            _, out = self.batch("--prompts", "game-melon-jelly")
+        self.assertEqual(self.report_lines(out)["game-melon-jelly"][0],
+                         "pr-opened #1 (run file not added: first second third fourth fifth sixth "
+                         "seventh eighth)")
+
+    def test_a_cleaned_note_is_capped_at_200_characters(self):
+        reason = "word \n\t " * 100
+        note = self.record(None, _read_result_pr={"side_effect": bra._MetricsStop(reason)})
+        self.assertLessEqual(len(note), 200)
+        self.assert_printable(note)
+        self.assertTrue(note.startswith("run metrics unavailable, PR description not updated: word word"))
+
+    def test_a_successful_step_still_returns_no_note(self):
+        (self.dir / "logs").mkdir()
+        self.assertIsNone(self.record(self.METRICS, _read_result_pr={
+            "return_value": ("feat/1-x", "Closes #1\n", "results/melon-jelly/x.run.json")},
+            _gh={"return_value": ""}))
+
+
+class SayTest(unittest.TestCase):
+    def say(self, text, encoding):
+        stream = StrictStdout(encoding)
+        with contextlib.redirect_stdout(stream):
+            bra._say(text)
+        return stream.buffer.getvalue()
+
+    def test_text_the_stream_cannot_encode_is_printed_with_backslash_escapes(self):
+        self.assertEqual(self.say("café \ud800 x", "ascii"), b"caf\\xe9 \\ud800 x\n")
+
+    def test_a_lone_surrogate_on_a_utf8_stream_is_printed_escaped(self):
+        self.assertEqual(self.say("a \ud800 b", "utf-8"), b"a \\ud800 b\n")
+
+    def test_output_the_stream_can_encode_is_unchanged(self):
+        self.assertEqual(self.say("café ✓", "utf-8"), "café ✓\n".encode("utf-8"))
+        self.assertEqual(self.say("", "utf-8"), b"\n")
+        self.assertEqual(self.say("plain", "ascii"), b"plain\n")
 
 
 class DryRunTest(BatchCase):

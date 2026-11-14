@@ -6,8 +6,13 @@
 headless ``claude -p "/bench-run <id>"`` child with the same model and effort
 as the calling session, a narrow tool allowlist and
 ``--permission-mode dontAsk``, so every generation is one isolated one-shot
-session. The helper reads no result content: it looks at file names, git and
-``gh pr list`` only, and never merges anything itself.
+session. The helper reads no result content: it looks at file names, git,
+``gh pr list`` and, for a PR a child opened, ``gh pr view``, and never merges
+anything itself. It does write once per such PR: it adds the run metrics of the
+child (duration, tokens, cost, read from the child's JSON output after it
+exited) as ``<deliverable stem>.run.json`` through the GitHub contents API, and
+puts a "Run metrics" section into the PR description with ``gh pr edit``. A
+failure there is a note in the report line, never a halt or a changed exit code.
 
 A batch runs in a private git worktree for its model and effort level,
 ``.claude/worktrees/bench-run-<model_tag>_<effort>``, detached at
@@ -47,8 +52,10 @@ patch; the real-git tests exercise the worktree helpers with it unpatched.
 """
 
 import argparse
+import base64
 import fcntl
 import json
+import math
 import os
 import re
 import shlex
@@ -313,7 +320,13 @@ def launch(claude_bin, slash, model, effort, timeout, repo_root, environ, pass_f
 
 @dataclass
 class ChildSummary:
-    """What the helper keeps of a child: never the result text, only markers."""
+    """What the helper keeps of a child: never the result text, only markers.
+
+    ``metrics`` is the six run-file values (see ``run_metrics``), or ``None``
+    when the child's output carries no usable usage data. ``metrics_error`` is
+    the class name of an unexpected exception raised while deriving them
+    (``metrics`` is then ``None``), else ``None``.
+    """
 
     exit_code: int
     timed_out: bool
@@ -325,6 +338,8 @@ class ChildSummary:
     denied_tools: list = field(default_factory=list)
     model_usage: list = field(default_factory=list)
     model_ok: bool | None = None
+    metrics: dict | None = None
+    metrics_error: str | None = None
 
 
 def _result_object(raw):
@@ -338,12 +353,66 @@ def _result_object(raw):
     return data if isinstance(data, dict) else None
 
 
+# The run file's keys, in contract order, with where each comes from.
+METRIC_KEYS = ("duration_seconds", "input_tokens", "output_tokens",
+               "cache_read_tokens", "cache_write_tokens", "cost_usd")
+_TOKEN_FIELDS = (("input_tokens", "input_tokens"),
+                 ("output_tokens", "output_tokens"),
+                 ("cache_read_tokens", "cache_read_input_tokens"),
+                 ("cache_write_tokens", "cache_creation_input_tokens"))
+
+
+def _finite(value):
+    """Whether ``value`` is a finite number; one too big for a float (``OverflowError``) is not."""
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _count(value):
+    """``value`` if it is a non-negative finite ``int`` (never a ``bool``), else ``None``."""
+    ok = isinstance(value, int) and not isinstance(value, bool) and value >= 0 and _finite(value)
+    return value if ok else None
+
+
+def _amount(value):
+    """``value`` if it is a non-negative finite ``int`` or ``float`` (never a ``bool``), else ``None``."""
+    ok = (isinstance(value, (int, float)) and not isinstance(value, bool)
+          and _finite(value) and value >= 0)
+    return value if ok else None
+
+
+def run_metrics(data):
+    """The six run-file values from a child's JSON result object, or ``None``.
+
+    ``data`` is the parsed result. Usable means: ``usage`` is a dict whose four
+    token fields are non-negative ints, ``duration_ms`` and ``total_cost_usd``
+    are non-negative finite numbers (no bools anywhere; a number too big to be
+    checked as a float is not finite), and the four token
+    counts add up to more than zero, which excludes an API error before any
+    model call. Anything else gives ``None``, never a partial result. Other
+    fields, ``is_error`` and ``subtype`` do not matter.
+    """
+    if not isinstance(data, dict) or not isinstance(data.get("usage"), dict):
+        return None
+    usage = data["usage"]
+    tokens = {key: _count(usage.get(source)) for key, source in _TOKEN_FIELDS}
+    duration, cost = _amount(data.get("duration_ms")), _amount(data.get("total_cost_usd"))
+    if None in tokens.values() or duration is None or cost is None or not sum(tokens.values()):
+        return None
+    return {"duration_seconds": round(duration / 1000, 1), **tokens, "cost_usd": round(float(cost), 6)}
+
+
 def summarize(run, model):
     """Reduce a child's output to exit state, markers and denied tool names.
 
     Only a ``STOP:`` line or a ``run void`` line is ever taken from the result
     text; the rest of it and every ``permission_denials[].tool_input`` (which
-    can contain the deliverable) are dropped here.
+    can contain the deliverable) are dropped here. The usage numbers become
+    ``metrics``, except for a child that timed out. An unexpected exception
+    while deriving them leaves ``metrics`` unset and its class name in
+    ``metrics_error``; the rest of the summary is not affected.
     """
     out = ChildSummary(run.exit_code, run.timed_out)
     data = _result_object(run.stdout)
@@ -369,6 +438,11 @@ def summarize(run, model):
     if isinstance(usage, dict):
         out.model_usage = sorted(usage)
         out.model_ok = model in usage
+    if not run.timed_out:
+        try:
+            out.metrics = run_metrics(data)
+        except Exception as exc:  # the metrics must never stop the batch
+            out.metrics, out.metrics_error = None, type(exc).__name__
     return out
 
 
@@ -792,11 +866,219 @@ def preflight(args, environ, repo_root):
 
 
 def _say(text=""):
-    print(text, flush=True)
+    """Print one line. Text the output stream cannot encode (a lone surrogate, a non-ASCII
+    character on an ASCII stream) is printed with backslash escapes instead of raising."""
+    try:
+        print(text, flush=True)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+        print(str(text).encode(encoding, "backslashreplace").decode(encoding, "replace"), flush=True)
 
 
-def describe(summary, pr):
-    """Outcome string and PR url for one finished child."""
+METRICS_START = "<!-- run-metrics -->"
+METRICS_END = "<!-- /run-metrics -->"
+_CLOSES_LINE = re.compile(r"(?m)^Closes #\d+\r?$")
+
+
+def metrics_section(metrics, run_path):
+    """The PR description's "Run metrics" section, between its two markers."""
+    if metrics is None:
+        lines = ["Unavailable: the JSON output of the batch session that generated this result "
+                 "carried no usable usage data, so no run file was written."]
+    else:
+        lines = [
+            "Duration %.1f s, {:,} output tokens, cost %.6f USD.".format(metrics["output_tokens"])
+            % (metrics["duration_seconds"], metrics["cost_usd"]),
+            "",
+            "| Tokens | Count |",
+            "|---|---:|",
+            "| Input | {:,} |".format(metrics["input_tokens"]),
+            "| Output | {:,} |".format(metrics["output_tokens"]),
+            "| Cache read | {:,} |".format(metrics["cache_read_tokens"]),
+            "| Cache write | {:,} |".format(metrics["cache_write_tokens"]),
+            "",
+            "Read by `harness/bench_run_all.py` from the JSON output of the batch session that "
+            "generated this result, after it exited; that session cannot observe its own usage. "
+            "Recorded in `%s`." % run_path,
+        ]
+    return "\n".join([METRICS_START, "## Run metrics", "", *lines, METRICS_END])
+
+
+def splice_section(body, section):
+    """Put ``section`` into a PR description and return the new text.
+
+    A span between the two markers is replaced. Otherwise the section goes in
+    front of the first line that is exactly ``Closes #<n>``, or at the end.
+    """
+    body = body or ""
+    start = body.find(METRICS_START)
+    end = body.find(METRICS_END, start + len(METRICS_START)) if start >= 0 else -1
+    if start >= 0 and end >= 0:
+        return body[:start] + section + body[end + len(METRICS_END):]
+    closes = _CLOSES_LINE.search(body)
+    if closes is None:
+        head = body.rstrip("\n")
+        return (head + "\n\n" if head else "") + section + "\n"
+    head = body[:closes.start()].rstrip("\n")
+    return (head + "\n\n" if head else "") + section + "\n\n" + body[closes.start():]
+
+
+GH_TIMEOUT = 120
+RUN_SUFFIX = ".run.json"
+REASON_LIMIT = 200
+_FAMILY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+class _MetricsStop(Exception):
+    """One step of ``record_metrics`` failed; the message is the one-line reason."""
+
+
+def _reason(text, fallback):
+    """First line of ``text`` on one line with single spaces, at most ``REASON_LIMIT`` characters."""
+    line = " ".join(_first_line(text or "").split())[:REASON_LIMIT].rstrip()
+    return line or fallback
+
+
+def _gh(wt, *args):
+    """Run ``gh`` in ``wt``; return its stdout or raise ``_MetricsStop`` with a one-line reason.
+
+    The reason never includes the command line, which can carry the run file.
+    """
+    try:
+        done = _run(["gh", *args], cwd=wt, timeout=GH_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise _MetricsStop("gh timed out after %d s" % GH_TIMEOUT)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise _MetricsStop(_reason(str(exc), type(exc).__name__))
+    if done.returncode:
+        raise _MetricsStop(_reason(done.stderr, "gh exited %d" % done.returncode))
+    return done.stdout
+
+
+def _read_result_pr(wt, number, prefix, base, name, model, effort):
+    """Check PR ``number`` is this result's open, same-repo PR; return ``(head branch, body, run file path)``.
+
+    Raises ``_MetricsStop`` before anything is written when it is not: not
+    open, from a fork, on another branch, not holding exactly one file named
+    like the deliverable under ``results/<family>/``, or already holding the
+    run file.
+    """
+    out = _gh(wt, "pr", "view", str(number), "--json", "state,isCrossRepository,headRefName,body,files")
+    try:
+        info = json.loads(out)
+        state, fork, head, body, files = (info["state"], info["isCrossRepository"], info["headRefName"],
+                                          info["body"], info["files"])
+        paths = [f["path"] for f in files]
+        shaped = (isinstance(state, str) and isinstance(fork, bool) and isinstance(head, str)
+                  and (body is None or isinstance(body, str)) and all(isinstance(p, str) for p in paths))
+    except (ValueError, KeyError, TypeError):
+        shaped = False
+    if not shaped:
+        raise _MetricsStop("PR #%d could not be read: unexpected gh output" % number)
+    if state != "OPEN":
+        raise _MetricsStop("PR #%d is not open" % number)
+    if fork:
+        raise _MetricsStop("PR #%d comes from a fork" % number)
+    branch = r"feat/\d+-%s-%s-result" % (re.escape(prefix), re.escape(run_tag(model, effort).replace("_", "-")))
+    if not re.fullmatch(branch, head):
+        raise _MetricsStop(_reason("branch %s is not this result's branch" % head, ""))
+    named = [p for p in paths if p.rsplit("/", 1)[-1] == name]
+    parts = named[0].split("/") if len(named) == 1 else []
+    if not (len(parts) == 3 and parts[0] == "results" and _FAMILY.fullmatch(parts[1]) and parts[2] == name):
+        raise _MetricsStop("PR #%d does not have exactly one deliverable" % number)
+    run_path = "results/%s/%s%s" % (parts[1], base, RUN_SUFFIX)
+    if run_path in paths:
+        raise _MetricsStop("PR #%d already has the run file" % number)
+    return head, body or "", run_path
+
+
+def _record_metrics(wt, log_dir, pid, model, effort, number, metrics):
+    """Document one result PR's run metrics; return a report note, or ``None`` when all went well.
+
+    Runs only for a PR this batch's child just opened. Checks the PR first,
+    then adds ``<deliverable stem>.run.json`` to the PR's head branch with one
+    contents-API PUT (a commit of its own; the worktree is never touched) and
+    updates the PR description's marked "Run metrics" section. ``metrics`` of
+    ``None`` writes no file and says "unavailable" in the description. Any
+    failure leaves the PR as the child opened it, plus at most the one added
+    file, and becomes a note; nothing is raised and nothing is printed. An
+    unexpected exception becomes a note with its class name as the reason
+    (``KeyboardInterrupt`` and ``SystemExit`` still propagate). A PR body and
+    result text are never printed. The note is raw; ``record_metrics`` cleans it.
+    """
+    usable = metrics is not None
+    not_added = "run file not added: %s" if usable else "run metrics unavailable, PR description not updated: %s"
+    not_updated = ("run file added, PR description not updated: %s" if usable
+                   else "run metrics unavailable, PR description not updated: %s")
+    stage = not_added
+    try:
+        try:
+            base, ext = expected_base(wt, pid, model, effort)
+            prefix = _prompt_data(wt, pid)["file_prefix"]
+        except (LookupError, ValueError, OSError) as exc:
+            return "run file not added: " + _reason(str(exc), "prompt file unreadable")
+        try:
+            head, body, run_path = _read_result_pr(wt, number, prefix, base, "%s.%s" % (base, ext),
+                                                   model, effort)
+        except _MetricsStop as exc:
+            return not_added % exc
+        if usable:
+            content = base64.b64encode((json.dumps(metrics, indent=2) + "\n").encode("utf-8")).decode("ascii")
+            try:
+                _gh(wt, "api", "--method", "PUT", "repos/{owner}/{repo}/contents/" + run_path,
+                    "-f", "message=feat(results): add %s %s %s run metrics" % (prefix, model, effort),
+                    "-f", "content=" + content, "-f", "branch=" + head)
+            except _MetricsStop as exc:
+                return not_added % exc
+        stage = not_updated
+        body_file = Path(log_dir) / (pid + ".pr-body.md")
+        try:
+            body_file.write_text(splice_section(body, metrics_section(metrics, run_path)), encoding="utf-8")
+            _gh(wt, "pr", "edit", str(number), "--body-file", str(body_file))
+        except UnicodeEncodeError:  # e.g. a lone surrogate; the body is never altered to fit
+            return not_updated % "PR description is not valid UTF-8 text"
+        except OSError as exc:
+            return not_updated % _reason("cannot write the PR description file: %s" % exc.strerror,
+                                         "write failed")
+        except _MetricsStop as exc:
+            return not_updated % exc
+    except Exception as exc:  # the metrics step must never stop the batch
+        return stage % type(exc).__name__
+    return None if usable else "run metrics unavailable"
+
+
+def _clean_note(text):
+    """``text`` as one printable report-line fragment of at most ``REASON_LIMIT`` characters.
+
+    Characters UTF-8 cannot encode (lone surrogates) become ``?``; control
+    characters and every run of whitespace become one space, because the
+    report line format splits on two spaces.
+    """
+    text = text.encode("utf-8", "replace").decode("utf-8")
+    text = re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", text)
+    return " ".join(text.split())[:REASON_LIMIT].rstrip()
+
+
+def record_metrics(wt, log_dir, pid, model, effort, number, metrics, metrics_error=None):
+    """Document one result PR's run metrics; return a report note, or ``None`` when all went well.
+
+    Does the work of ``_record_metrics`` (see there). ``metrics_error`` is the
+    reason ``summarize`` could not derive ``metrics``; it ends the "unavailable"
+    note. This is the single point where a note leaves the metrics step: the
+    returned text is always printable on one line (see ``_clean_note``),
+    whatever the exception messages, ``gh`` output, branch names or paths in it.
+    """
+    note = _record_metrics(wt, log_dir, pid, model, effort, number, metrics)
+    if note == "run metrics unavailable" and metrics_error:
+        note += ": " + metrics_error
+    return None if note is None else _clean_note(note)
+
+
+def describe(summary, pr, metrics_note=None):
+    """Outcome string and PR url for one finished child.
+
+    ``metrics_note`` (from ``record_metrics``) goes last inside the parentheses.
+    """
     if pr is not None:
         outcome = "pr-opened #%d" % pr[1]
     elif summary.timed_out:
@@ -818,6 +1100,8 @@ def describe(summary, pr):
         notes.append("model usage lacks the requested id, has: " + ", ".join(summary.model_usage))
     if not summary.parsed and not summary.timed_out:
         notes.append("no parseable JSON output")
+    if metrics_note:
+        notes.append(metrics_note)
     if notes:
         outcome += " (" + "; ".join(notes) + ")"
     return outcome, (pr[2] if pr else "-")
@@ -865,7 +1149,9 @@ def run_batch(args, environ, wt, log_dir, lock_fd, prompts):
         except GitError:
             after = None
         pr = after if after and after[0] == "pr" else None
-        outcome, url = describe(summary, pr)
+        note = (record_metrics(wt, log_dir, pid, args.model, effort, pr[1], summary.metrics,
+                               summary.metrics_error) if pr else None)
+        outcome, url = describe(summary, pr, note)
         rows.append((pid, outcome, url))
         _say("[%d/%d] %s  %s" % (i, total, pid, outcome))
         try:

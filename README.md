@@ -76,6 +76,7 @@ Outputs are grouped under `results/<file_prefix>/`, one folder per prompt:
 ```
 results/<file_prefix>/<file_prefix>_<model_tag>_<effort>.<save_as>      the deliverable
 results/<file_prefix>/<file_prefix>_<model_tag>_<effort>.meta.json      the sidecar
+results/<file_prefix>/<file_prefix>_<model_tag>_<effort>.run.json       run metrics (batch runs only)
 ```
 
 The model tag is the model id in lower case with every run of
@@ -86,6 +87,11 @@ The effort is the effort level of the session that generated the result
 one model at different effort levels sit side by side.
 The sidecar records the prompt, the model, how the result was generated and
 that the session's defaults applied.
+
+A result generated in a batch run also has a run file with the generating
+session's duration and token usage: `duration_seconds`, `input_tokens`,
+`output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `cost_usd`. Results
+from `/bench-run <prompt-id>`, and older ones, have none.
 
 ## One-shot arm
 
@@ -111,6 +117,12 @@ side by side from the same checkout; a second batch for the same model and
 effort stops while the first is running. After a run that ended without a halt
 the worktree is removed; after a halt it is kept, and the next run reuses it
 only if it is clean and not detached at a commit that is not on `origin/main`.
+After a session that opened a PR has exited, the helper reads that session's
+duration, token usage and cost from its JSON output and adds them to the PR: as
+the run file, in a commit of its own made through the GitHub API, and as a "Run
+metrics" section in the PR description. If the output carries no usable usage
+data, the description says so and no run file is written. If the commit or the
+edit fails, the PR stays valid and the report line says so.
 `/bench-run --dry-run` asks the same question, then prints the checks, which
 selected prompts would run or be skipped, and the exact child command, and
 starts nothing; `/bench-run all --dry-run` does this for the whole arm. A
@@ -134,7 +146,8 @@ Code session, so:
 - No sampling settings can be set, so the prompt files carry none; the session
   defaults apply.
 - `finish_reason` and token `usage` are not observable. The sidecar records
-  them as `null` with a note.
+  them as `null` with a note. In a batch run the helper records the session's
+  usage afterwards in the run file; the sidecar is unchanged.
 - There is no length-retry ladder: the first complete output is the result.
 
 **Verification split.** Generation runs on the small dev box. Reviewing the
@@ -177,7 +190,8 @@ for example `generated (high, max), review pending`.
 `<prefix> (<model-id>, <effort>, one-shot): result` PRs of the model, at every
 effort level, that pass a gate: the prompt exists, the branch and folder match
 the model and the effort in the title, the PR adds exactly the deliverable and
-its `.meta.json` (plus `_grading.json` only for graded prompts) as new files,
+its `.meta.json` (plus `_grading.json` only for graded prompts, and the
+`.run.json` run file if the batch helper added one) as new files,
 and the checks are green. A PR that fails the gate, or that GitHub refuses to
 merge, stays open with the reason printed; the command never uses `--admin`
 or `--auto`. Afterwards it opens one docs PR that brings the model's ledger rows up to
@@ -218,7 +232,7 @@ python3 harness/grade.py --prompt game-melon-jelly    # one prompt only
 A result is gradable when its paired `.meta.json` carries a playability
 verdict or its prompt TOML carries a `[grading]` block. Results with neither
 are **skipped, never failed**, as are the harness's own artifacts
-(`*.meta.json`, `*_grading.json`, images). Prompt association goes through
+(`*.meta.json`, `*_grading.json`, `*.run.json`, images). Prompt association goes through
 the meta sidecar's `prompt_id` field.
 
 ### Playability labels
