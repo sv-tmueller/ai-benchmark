@@ -598,6 +598,8 @@ class PromptCorpusTest(unittest.TestCase):
     def setUpClass(cls):
         cls.prompts = {}
         for path in sorted((REPO / "prompts").glob("*.toml")):
+            if path.name.endswith(".fixtures.toml"):
+                continue
             with open(path, "rb") as fh:
                 cls.prompts[path.stem] = tomllib.load(fh)
 
