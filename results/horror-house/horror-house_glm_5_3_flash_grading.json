@@ -1,7 +1,0 @@
-{
-  "prompt_id": "game-horror-house",
-  "model": "glm_5_3_flash",
-  "mode": "playability",
-  "pass": false,
-  "detail": "playability verdict: BOOTS_ONLY"
-}

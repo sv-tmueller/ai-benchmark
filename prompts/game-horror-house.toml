@@ -1,10 +1,15 @@
+# Reworked in #285: the game design is unchanged, but the deliverable is now
+# one self-contained HTML file instead of a Vite project captured as a
+# markdown blueprint. Changed: the tech-stack section (single file, Three.js
+# from a CDN, code sections instead of a file tree), acceptance test T1 (open
+# the file instead of `npm run dev`) and the user text (deliverable sentence).
 id          = "game-horror-house"
-title       = "First-person haunted-house escape game (Vite + Three.js)"
+title       = "First-person haunted-house escape game as a single HTML file (Three.js)"
 category    = "game-generation"
 difficulty  = "hard"
 temperature = 0.2
 max_tokens  = 65536
-save_as     = "md"
+save_as     = "html"
 file_prefix = "horror-house"
 
 [system]
@@ -121,27 +126,32 @@ These are genre rules. Violating them makes the game less scary:
 
 ## TECH STACK (FIXED — DO NOT DEBATE)
 
-- Vite + vanilla JavaScript ES modules
-- Three.js (WebGL2) + postprocessing (EffectComposer, UnrealBloomPass)
+- **One self-contained HTML file.** No build step, no bundler, no other
+  files. It runs by opening the file in a browser.
+- Vanilla JavaScript in one inline `<script type="module">`
+- Three.js (WebGL2) and its addons (EffectComposer, RenderPass,
+  UnrealBloomPass, OutputPass) loaded from a CDN through an import map, with
+  one pinned version for `three` and `three/addons/`. Nothing else is
+  downloaded.
 - Procedural canvas textures, procedural Web Audio — **zero asset files**
-- UI/HUD in plain HTML/CSS overlays (no framework)
+- UI/HUD in plain HTML/CSS overlays in the same file (no framework)
+
+The file is organised into clearly labelled sections, in this order, each a
+class or a group of functions with one job:
 
 ```
-bridge-horror-house/
-├── SYSTEM_PROMPT.md        # this file — design constitution
-├── index.html              # UI overlays: title, HUD, note, death, win, grain
-├── src/
-│   ├── main.js             # boot + title screen wiring
-│   ├── Game.js             # state machine, loop, interaction, burn mechanic
-│   ├── world/
-│   │   ├── Textures.js     # procedural canvas textures (wood, wallpaper, faces)
-│   │   └── House.js        # floor plan, walls, doors, furniture, lights, items
-│   ├── player/Player.js    # pointer-lock controls, collision, flashlight, battery
-│   ├── systems/
-│   │   ├── AudioEngine.js  # synthesized drones, rain, thunder, chase music
-│   │   ├── Ghost.js        # entity visuals, stalk/chase/burn/banish AI
-│   │   └── ScareDirector.js# trigger volumes, ambient scheduler, lightning
-│   └── ui/HUD.js           # objective, battery, burn meter, flashes, shake
+<style>            UI overlays: title, HUD, note, death, win, grain
+<body>             overlay markup
+<script type="module">
+  Textures         procedural canvas textures (wood, wallpaper, faces)
+  House            floor plan, walls, doors, furniture, lights, items
+  Player           pointer-lock controls, collision, flashlight, battery
+  AudioEngine      synthesized drones, rain, thunder, chase music
+  Ghost            entity visuals, stalk/chase/burn/banish AI
+  ScareDirector    trigger volumes, ambient scheduler, lightning
+  HUD              objective, battery, burn meter, flashes, shake
+  Game             state machine, loop, interaction, burn mechanic
+  boot             title screen wiring
 ```
 
 ## THE HOUSE — FLOOR PLAN (FIXED)
@@ -181,13 +191,15 @@ Single floor, 20m × 16m, wall height 3m. South-center front door (start/exit).
 
 - Multiplayer, save systems, inventories beyond keys + batteries
 - Multiple floors, procedural room layouts, more than one entity
-- External assets, audio files, texture downloads
+- External assets, audio files, texture downloads (the Three.js CDN import
+  is the only network request)
 - Mobile/touch controls
 - Reading or writing any `.env` files
 
 ## ACCEPTANCE TESTS
 
-- T1 `npm run dev` → title screen loads in < 3s
+- T1 Opening the HTML file in a browser → title screen loads in < 3s, with
+  no errors in the console
 - T2 Click → pointer locks, audio starts, player stands in foyer in near-dark
 - T3 Flashlight reveals textured walls/floor with soft shadows; F toggles it
 - T4 WASD + Shift moves; walls and furniture block; doors open with E and creak
@@ -210,5 +222,5 @@ darkness do the work, not gore.
 
 [user]
 text = '''
-Build the game described in the system prompt above. Scaffold the full Vite + Three.js project as specified. No explanations.
+Build the game described in the system prompt above. The deliverable is one file, horror-house.html, starting with <!DOCTYPE html>, no markdown fences, no explanations.
 '''

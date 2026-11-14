@@ -1,0 +1,55 @@
+# New in #285: a 3D Rubik's cube that the reviewer can scramble and solve by
+# hand in the browser. Written in the melon-jelly / weichensteller pattern:
+# one self-contained HTML file, a requirements list and a self-check block.
+id          = "game-rubiks-cube"
+title       = "Rubik's Cube: a solvable 3D cube puzzle as a single HTML file (Three.js)"
+category    = "game-generation"
+difficulty  = "hard"
+temperature = 0.2
+max_tokens  = 65536
+save_as     = "html"
+file_prefix = "rubiks-cube"
+
+[user]
+text = '''
+Build a 3D Rubik's Cube that I can solve by hand in the browser, as a single, self-contained HTML file. Use Three.js via a CDN, no build tools, no other files, no downloaded assets. The deliverable is one file, rubiks-cube.html, starting with <!DOCTYPE html>, no markdown fences, no explanations.
+
+GOAL
+A classic 3x3x3 cube that feels like the real object in my hand: I turn the whole cube to look at it, I twist a layer by dragging it, and the game knows when I have solved it. Correct cube behavior and the feel of the controls are the primary quality criteria.
+
+THE CUBE (required)
+- 26 visible cubies with rounded edges and a dark plastic body. Stickers in the standard color scheme: white opposite yellow, red opposite orange, blue opposite green.
+- The cube state is a real permutation of the cubies. Every turn moves exactly the nine cubies of one layer by a quarter turn; nothing else can change the state, so the cube can never reach an unsolvable position.
+- Every turn is animated (about 150 to 250 ms, eased). Turns requested during an animation are queued, never dropped and never applied to a half-turned layer.
+- After each turn the cubies snap to exact positions and right angles; no drift after hundreds of turns.
+
+CONTROLS (mouse and touch, via Pointer Events)
+- Drag on the background: orbit the whole cube freely. The cube stays centred and fully in frame.
+- Drag on a sticker: twist the layer that sticker belongs to, in the direction of the drag. The layer follows the pointer while dragging and snaps to the nearest quarter turn on release; a short drag snaps back.
+- Mouse wheel or pinch: zoom within sensible limits.
+- Keyboard: U, D, L, R, F, B turn the face clockwise (as seen looking at that face); with Shift counter-clockwise. M, E, S turn the middle slices. X, Y, Z rotate the whole cube. The keys always refer to the cube as currently viewed: F is the face towards me.
+- On-screen buttons for the same face turns, so it is playable on a phone.
+
+GAME
+- Scramble: applies 25 random face turns as a fast animation (no turn directly undoes or repeats the previous one). A scramble is therefore always solvable.
+- Timer and move counter: both start with my first turn after a scramble and stop the moment the cube is solved. Whole-cube rotations and orbiting are not moves.
+- Solved detection: after every turn, check whether all six faces are single-colored, in any orientation of the cube. On a solve after a scramble: a short celebration (the cube spins, confetti or a glow), and the final time and move count are shown.
+- Undo and Redo of my own turns (also Ctrl+Z / Ctrl+Y), without limit back to the scramble.
+- Reset: back to the solved cube, timer and counter cleared, no page reload.
+- Best time and fewest moves are kept in localStorage and shown.
+- The current state (cube, timer, counter, history) survives a page reload.
+
+PRESENTATION
+- A calm studio look: soft key light, a contact shadow under the cube, a neutral gradient background. Slightly glossy stickers, anti-aliased edges.
+- Minimal HUD: timer, moves, best, and the buttons Scramble, Undo, Redo, Reset, plus a collapsible help panel listing the controls.
+- Responsive full-window canvas, devicePixelRatio aware (capped at 2), correct after every resize, usable in portrait on a phone.
+- Short synthesized click sound on each turn (Web Audio, no audio files), with a mute toggle.
+
+QUALITY
+- Steady 60 FPS on a mid-range laptop.
+- No errors in the browser console.
+- Clean structure: separate sections for cube state, turn animation, input, rendering, game logic and UI. Comment only non-obvious logic.
+
+SELF-CHECK BEFORE ANSWERING
+Verify mentally: (1) the file opens in a browser and shows a solved cube that can be orbited, (2) dragging a sticker twists the correct layer in the drag direction and snaps to a quarter turn, (3) turning a face four times, or a turn followed by its inverse, restores the exact previous state, (4) the keyboard turns follow the current view, (5) Scramble mixes the cube and undoing every turn of it would solve it again, (6) solving the cube stops the timer and triggers the celebration, in any cube orientation, (7) Undo, Redo and Reset work during and after a solve, (8) there are no errors in the browser console.
+'''

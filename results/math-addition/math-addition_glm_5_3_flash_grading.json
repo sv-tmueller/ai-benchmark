@@ -1,7 +1,0 @@
-{
-  "prompt_id": "math-addition",
-  "model": "glm_5_3_flash",
-  "mode": "contains",
-  "pass": true,
-  "detail": "expected \"42\" found"
-}

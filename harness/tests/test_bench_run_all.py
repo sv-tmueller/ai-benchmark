@@ -485,7 +485,7 @@ class BatchCase(FakeClaudeCase):
 
     def report_lines(self, out):
         return {m.group(1): (m.group(2), m.group(3)) for m in
-                re.finditer(r"(?m)^((?:game|app)-[a-z-]+)  (.+?)  (\S+)$", out)}
+                re.finditer(r"(?m)^([a-z]+(?:-[a-z]+)+)  (.+?)  (\S+)$", out)}
 
     def called_ids(self):
         return [c["argv"][c["argv"].index("-p") + 1].split()[1] for c in self.calls()]
@@ -494,7 +494,7 @@ class BatchCase(FakeClaudeCase):
 class ArmDataTest(unittest.TestCase):
     def test_arm_prompts_match_the_readme_ledger_in_order(self):
         self.assertEqual(list(bra.ARM_PROMPTS), [pid for pid, _ in readme_ledger()])
-        self.assertEqual(len(bra.ARM_PROMPTS), 11)
+        self.assertEqual(len(bra.ARM_PROMPTS), 15)
 
     def test_each_arm_prompt_has_one_toml_with_prefix_and_save_as_and_no_images_or_grading(self):
         import tomllib
@@ -577,7 +577,7 @@ class BatchPreflightTest(BatchCase):
 
 
 class BatchLoopTest(BatchCase):
-    def test_a_clean_run_attempts_all_eleven_in_order_and_reports_each_pr(self):
+    def test_a_clean_run_attempts_all_fifteen_in_order_and_reports_each_pr(self):
         code, out = self.batch()
         self.assertEqual(code, 0, out)
         self.assertEqual(self.called_ids(), list(bra.ARM_PROMPTS))
@@ -595,7 +595,7 @@ class BatchLoopTest(BatchCase):
 
     def test_progress_lines_come_before_the_report(self):
         _, out = self.batch()
-        first_progress = out.index("[1/11] game-melon-jelly")
+        first_progress = out.index("[1/15] game-melon-jelly")
         self.assertLess(first_progress, out.index("game-melon-jelly  pr-opened"))
 
     def test_prompt_on_origin_main_is_skipped(self):
@@ -604,7 +604,7 @@ class BatchLoopTest(BatchCase):
         self.git.save(st)
         code, out = self.batch()
         self.assertNotIn("game-melon-jelly", self.called_ids())
-        self.assertEqual(len(self.calls()), 10)
+        self.assertEqual(len(self.calls()), 14)
         self.assertEqual(self.report_lines(out)["game-melon-jelly"][0], "skipped: on origin/main")
 
     def test_prompt_in_an_open_pr_is_skipped_with_its_url(self):
@@ -655,7 +655,7 @@ class BatchLoopTest(BatchCase):
         self.assertIn("run void", rep["game-meridian-launch"][0])
         self.assertEqual(rep["game-sunset-ocean"][0], "failed: error_during_execution")
         self.assertTrue(rep["game-horror-house"][0].startswith("pr-opened"))
-        self.assertEqual(len(rep), 11)
+        self.assertEqual(len(rep), 15)
         self.assertNotEqual(code, 0)
 
     def test_denied_tool_names_and_a_model_mismatch_are_reported_without_content(self):
@@ -672,7 +672,7 @@ class BatchLoopTest(BatchCase):
 
     def test_counts_and_log_folder_are_reported(self):
         _, out = self.batch()
-        self.assertRegex(out, r"(?m)^pr-opened: 11$")
+        self.assertRegex(out, r"(?m)^pr-opened: 15$")
         self.assertIn("log folder: %s" % (self.dir / "logs"), out)
         self.assertTrue((self.dir / "logs" / "game-melon-jelly.json").exists())
 
@@ -694,7 +694,7 @@ class BatchCleanupTest(BatchCase):
             "json": result_json("run void, re-run in a fresh session"),
             "effects": {"write": ["{target}"]}}})
         code, out = self.batch()
-        self.assertEqual(len(self.calls()), 11)
+        self.assertEqual(len(self.calls()), 15)
         self.assertFalse((self.repo / self.targets["game-melon-jelly"]).exists())
         name = Path(self.targets["game-melon-jelly"]).name
         moved = self.dir / "logs" / "leftovers" / "game-melon-jelly" / name
@@ -706,7 +706,7 @@ class BatchCleanupTest(BatchCase):
         self.set_children(by_prompt={"game-melon-jelly": {"effects": {"branch": "feat/9-x"}}})
         self.batch()
         self.assertIn(["git", "switch", "main"], self.git.calls)
-        self.assertEqual(len(self.calls()), 11)
+        self.assertEqual(len(self.calls()), 15)
 
     def test_a_foreign_untracked_file_halts_the_batch_and_skips_the_merge_step(self):
         self.set_children(by_prompt={"game-lava-lamp": {

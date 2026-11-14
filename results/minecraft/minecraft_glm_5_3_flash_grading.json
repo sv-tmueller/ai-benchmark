@@ -1,7 +1,0 @@
-{
-  "prompt_id": "game-minecraft",
-  "model": "glm_5_3_flash",
-  "mode": "playability",
-  "pass": false,
-  "detail": "playability verdict: BROKEN_AT_BOOT"
-}

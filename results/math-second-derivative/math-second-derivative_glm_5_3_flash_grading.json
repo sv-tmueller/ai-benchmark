@@ -1,7 +1,0 @@
-{
-  "prompt_id": "math-calculus-derivative",
-  "model": "glm_5_3_flash",
-  "mode": "sympy-check",
-  "pass": true,
-  "detail": "expression and f''(2) match"
-}

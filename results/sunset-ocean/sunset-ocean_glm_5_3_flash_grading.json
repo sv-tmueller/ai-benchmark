@@ -1,7 +1,0 @@
-{
-  "prompt_id": "game-sunset-ocean",
-  "model": "glm_5_3_flash",
-  "mode": "playability",
-  "pass": true,
-  "detail": "playability verdict: PLAYABLE_VERIFIED"
-}

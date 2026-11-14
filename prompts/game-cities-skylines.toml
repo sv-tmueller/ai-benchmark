@@ -1,39 +1,51 @@
+# Reworked in #285. The original prompt described a multi-agent process
+# (architecture document, screenshot tool, builder and critic agents, a
+# /loop until every critic passes) for a Vite project with one folder per
+# subsystem. A one-shot run can do none of that, and the result was a
+# markdown blueprint. The rework keeps the goal, the AAA bar, the subsystem
+# list, the units, the determinism rule and the performance budget, and asks
+# for one self-contained HTML file. The process steps became a self-check
+# block; the CC0 asset policy became "procedural only".
 id          = "game-cities-skylines"
-title       = "AAA Cities: Skylines II-class city builder via multi-agent critique loop"
+title       = "Cities: Skylines II-class city builder as a single HTML file (Three.js)"
 category    = "game-generation"
 difficulty  = "hard"
 temperature = 0.2
 max_tokens  = 65536
-save_as     = "md"
+save_as     = "html"
 file_prefix = "cities-skylines"
 
 [user]
 text = '''
-That's the entire Prompt:
-
 # Goal
 
-Build a Cities: Skylines II–class city builder in Three.js (latest release) + Vite, plain ES modules, from this empty folder. The bar is AAA: photographic PBR materials, physically plausible sun/sky/shadows, atmospheric depth, a living city at night, believable roads and traffic. Never programmer art.
+Build a Cities: Skylines II–class city builder in Three.js as a single, self-contained HTML file. The bar is AAA: convincing PBR materials, physically plausible sun/sky/shadows, atmospheric depth, a living city at night, believable roads and traffic. Never programmer art.
 
-# How to work
+Three.js (latest release) comes from a CDN through an import map; plain ES modules in one inline script; no build tools, no other files. The deliverable is one file, cities-skylines.html, starting with <!DOCTYPE html>, no markdown fences, no explanations.
 
-1. Architecture first. Before any feature code, write ARCHITECTURE.md: one folder per subsystem (terrain, environment, roads, zoning, buildings, props, traffic, effects, simulation, tools, ui, audio, demo city), a shared world data model, the public API each module must expose, the events it emits, units (metres, +Y up), determinism (seeded RNG only), a performance budget (≥50 fps at 1080p, ≤1500 draw calls) and an asset policy (CC0 only: Poly Haven, ambientCG, or procedural). Isolate module failures so one broken module never takes the game down.
+# What to build
 
-2. Build the verification loop before the game. A headless-Chrome screenshot tool that loads the app, waits until ready, sets a camera preset and time of day, and writes PNG + a JSON log (console errors, fps, draw calls). Every module also ships a "showcase" mode that stages a representative scene of just that module. No agent may claim anything it hasn't screenshotted and looked at.
+The file opens on a finished demo city that is already alive, and everything in it can be changed with the build tools.
 
-3. Fan out. Use multi-agent orchestration ("ultracode"). One builder agent per module, each owning only its folder. Run in waves ordered by dependency: (1) terrain, sky/weather, roads, simulation, UI, audio, effects; (2) zoning, buildings, props, traffic, build tools; (3) demo city. Between waves, one integrator agent (the only one allowed to touch core) applies builders' core-change requests and fixes the seams.
-
-4. Gauntlet every module. After each builder round, a separate critic agent (a brutal AAA art director who writes no code) takes its own screenshots at several times of day and zoom levels, checks the API contract, console errors and perf, and scores 0–10 against real Cities: Skylines II reference screenshots: 10 = indistinguishable, 8.5 = AAA with nits, 7 = good indie, 5 = programmer art. Pass = ≥8.5 with zero errors. Below that, the builder gets the ranked issue list and goes again, up to 4 rounds.
-
-5. Final gate. A whole-game critic scores the demo city. Then blind judges get pairs of screenshots labelled only A and B (ours vs. Cities: Skylines II, order shuffled) and say which looks better and why.
-
-6. /loop until every critic passes. Persist scores and open issues to docs/STATUS.json so each iteration resumes from the weakest module, not from scratch.
+1. Terrain and environment. Rolling terrain with a river or a coast, 2 km × 2 km, textured by slope and height. A physically based sky with a moving sun, soft shadows that follow it, distance haze, and a full day/night cycle with a time-of-day control. At night the streetlights, windows and vehicle lights carry the image.
+2. Roads. A road tool that draws straight and curved segments between snapped nodes, with intersections created automatically, lane markings, sidewalks and streetlights. Roads follow the terrain. A bulldoze tool removes them.
+3. Zoning and buildings. Zone brushes for residential, commercial and industrial along roads, in low and high density. Buildings grow on zoned lots over time, in several distinct procedural styles per zone and density, with roofs, windows, entrances and rooftop detail, and level up or decay with the simulation.
+4. Props. Trees, parks, street furniture and parked cars, so no block looks empty.
+5. Traffic. Vehicles that spawn at buildings, follow lanes along a computed route, stop at intersections, queue behind each other and never drive through one another or off the road. Pedestrians on sidewalks if the budget allows.
+6. Simulation. Population, jobs, residential/commercial/industrial demand, a budget with tax income and road upkeep, and land value. Demand drives growth; missing road access, missing jobs or traffic jams hold it back. Speed controls: pause, 1×, 2×, 3×.
+7. Tools and UI. A bottom toolbar (roads, the three zones, bulldoze, parks), a top bar (money, population, demand bars, date, speed), an info panel for the selected building or road, and a camera that pans, orbits and zooms with mouse and keyboard, from street level to the whole map.
+8. Effects and audio. Chimney smoke, water reflections, bloom on night lights; a synthesized ambience that changes with zoom level and time of day, plus tool sounds (Web Audio, no audio files).
+9. Demo city. On load: a downtown core, suburbs, an industrial area, a bridge, parks and running traffic, generated from a fixed seed so every load shows the same city.
 
 # Rules
 
-- Never inflate scores. Report real numbers, failed rounds and what is still missing.
-- Never edit another module's folder. Core changes go through the integrator.
-- Keep the dev server running and the app loadable at all times; other agents are screenshotting it.
-- Do not ask me questions. Make routine decisions yourself, state assumptions, keep going.
+- One subsystem per clearly labelled code section (terrain, environment, roads, zoning, buildings, props, traffic, effects, simulation, tools, ui, audio, demo city), around a shared world data model. A failure in one subsystem is caught and logged and never takes the game down.
+- Units are metres, +Y is up. Seeded RNG only: the same seed always gives the same city.
+- No asset files and no downloads besides the Three.js import: every model, texture and sound is procedural.
+- Performance budget: at least 50 fps at 1080p and at most 1500 draw calls with the demo city in view. Instance everything that repeats.
+- Do not ask me questions. Make routine decisions yourself and keep going.
 
-Start now.'''
+# Self-check before answering
+
+Verify mentally: (1) the file opens in a browser and shows the demo city with moving traffic and no console errors, (2) the camera pans, orbits and zooms, (3) a new road can be drawn and connects to the network, (4) zoning along it makes buildings grow and the population rise, (5) bulldozing a road removes it and reroutes traffic, (6) changing the time of day moves the sun and switches the city lights on at dusk, (7) the simulation can be paused and sped up, (8) reloading the page shows the same demo city.
+'''

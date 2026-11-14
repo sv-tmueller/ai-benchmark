@@ -174,9 +174,12 @@ def _family_reasons(files, main_paths, prefix, reasons):
         if p.count("/") == 2 and p.startswith("results/")
         and p.split("/")[2].startswith(prefix + "_") and p.endswith(META_SUFFIX)
     }
-    if on_main != {family}:
+    # No result of this prompt on main yet: the folder is the file prefix,
+    # the same fallback harness/bench_run.py uses.
+    expected = on_main or {prefix}
+    if expected != {family}:
         reasons.append("wrong folder: %s results live in %s, PR uses %s" % (
-            prefix, sorted(on_main) or "no folder", family))
+            prefix, sorted(expected), family))
         return None
     return family
 

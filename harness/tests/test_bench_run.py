@@ -165,11 +165,23 @@ class PlanTest(RepoCase):
         self.invoke("plan", "game-x", "claude-fable-5-2")
         self.assertEqual(sorted(str(p) for p in self.root.rglob("*")), before)
 
-    def test_blueprint_kind_for_md_app_prompts_and_text_for_the_rest(self):
+    def test_kind_follows_the_extension(self):
+        _, out, _ = self.invoke("plan", "game-x", "claude-fable-5-2")
+        self.assertIn("kind: single HTML file\n", out)
         _, out, _ = self.invoke("plan", "app-y", "claude-fable-5-2")
-        self.assertIn("kind: single markdown blueprint\n", out)
-        _, out, _ = self.invoke("plan", "math-z", "claude-fable-5-2")
         self.assertIn("kind: text answer\n", out)
+        toml = self.root / "prompts" / "app-y.toml"
+        toml.write_text(toml.read_text().replace('save_as = "md"', 'save_as = "xml"'))
+        _, out, _ = self.invoke("plan", "app-y", "claude-fable-5-2")
+        self.assertIn("kind: single XML file\n", out)
+        self.assertIn("target: results/ay-dir/ay_claude_fable_5_2.xml\n", out)
+
+    def test_folder_falls_back_to_the_prefix_when_the_prompt_has_no_results_yet(self):
+        for meta in (self.root / "results" / "ay-dir").glob("*.meta.json"):
+            meta.unlink()
+        _, out, _ = self.invoke("plan", "app-y", "claude-fable-5-2")
+        self.assertIn("folder: results/ay\n", out)
+        self.assertIn("target: results/ay/ay_claude_fable_5_2.md\n", out)
 
     def test_reasoning_effort_is_null_when_the_variable_is_unset(self):
         _, out, _ = self.invoke("plan", "game-x", "claude-fable-5-2", environ={})
@@ -309,7 +321,7 @@ class PromptTest(RepoCase):
         tomls = [p for p in sorted((REPO / "prompts").glob("*.toml"))
                  if not p.name.endswith(".fixtures.toml")
                  and not (REPO / "prompts" / (p.stem + ".fixtures.toml")).exists()]
-        self.assertGreater(len(tomls), 20)
+        self.assertEqual(len(tomls), 15)
         for path in tomls:
             with self.subTest(prompt=path.name):
                 pid = tomllib.loads(path.read_text(encoding="utf-8"))["id"]

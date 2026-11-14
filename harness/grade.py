@@ -16,7 +16,7 @@ names diverge from prompt ids across the corpus.
 Usage::
 
     python harness/grade.py --all
-    python harness/grade.py --prompt math-addition
+    python harness/grade.py --prompt game-melon-jelly
 """
 
 import argparse

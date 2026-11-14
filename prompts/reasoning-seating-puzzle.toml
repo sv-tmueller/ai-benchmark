@@ -1,8 +1,13 @@
-id          = "reasoning-logic-puzzle"
-title       = "Solve a deductive logic puzzle step-by-step"
+# Reworked in #285: the puzzle and its five clues are unchanged; the answer
+# is now delivered as one HTML page so it can be reviewed in a browser. The
+# id now equals the file stem (it used to be "reasoning-logic-puzzle").
+id          = "reasoning-seating-puzzle"
+title       = "Solve a deductive seating puzzle step by step, as an HTML page"
 category    = "reasoning"
 difficulty  = "hard"
 temperature = 0.0
+save_as     = "html"
+file_prefix = "reasoning-seating-puzzle"
 
 [system]
 text = "You are a careful logical reasoner. Think step by step before giving the final answer."
@@ -20,4 +25,15 @@ Five people (Alice, Bob, Carol, Dave, Eve) sit in a row of five seats numbered
 
 Determine the seating arrangement (who is in seat 1, 2, 3, 4, 5).
 Show your reasoning step by step, then give the final arrangement.
+
+PRESENTATION
+Deliver the answer as a single, self-contained HTML page (inline CSS, no CDN,
+no external assets, no JavaScript needed):
+- the five clues, restated;
+- the reasoning as a numbered list of steps, in the order you made them;
+- the final answer in one element with id="answer": a row of five labelled
+  seats, 1 to 5 from left to right, each showing the name of the person
+  sitting there.
+
+The deliverable is one file, reasoning-seating-puzzle.html, starting with <!DOCTYPE html>, no markdown fences, no explanations.
 '''

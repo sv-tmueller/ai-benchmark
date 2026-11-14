@@ -1,7 +1,0 @@
-{
-  "prompt_id": "game-melon-jelly",
-  "model": "gpt_oss_120b",
-  "mode": "playability",
-  "pass": false,
-  "detail": "playability verdict: BROKEN_AT_BOOT"
-}

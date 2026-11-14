@@ -1,7 +1,0 @@
-{
-  "prompt_id": "probe-follow-spec",
-  "model": "glm_5_3_flash",
-  "mode": "script-exec",
-  "pass": true,
-  "detail": "all 4 cases passed"
-}

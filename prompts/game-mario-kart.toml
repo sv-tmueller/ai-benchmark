@@ -1,13 +1,23 @@
+# Reworked in #285: the original one-sentence prompt named no deliverable and
+# was captured as a markdown blueprint. It now asks for one self-contained
+# HTML file so the result opens in a browser. The closing "report back to me"
+# became the harness-neutral deliverable sentence of the melon-jelly pattern
+# (#23), and a self-check block replaces the report.
 id          = "game-mario-kart"
-title       = "Build a AAA-quality Mario Kart clone using Three.js"
+title       = "AAA-quality Mario Kart clone as a single HTML file (Three.js)"
 category    = "game-generation"
 difficulty  = "hard"
 temperature = 0.2
 max_tokens  = 65536
-save_as     = "md"
+save_as     = "html"
 file_prefix = "mario-kart"
 
 [user]
 text = '''
-Help me build a triple-A quality game that is a clone of Mario Kart, using Three.js (3JS). Build the game without asking me any questions at all, and once you're done, report back to me.
+Help me build a triple-A quality game that is a clone of Mario Kart, using Three.js (3JS). Build the game without asking me any questions at all.
+
+Build it as a single, self-contained HTML file: Three.js via a CDN, no build tools, no other files, no downloaded assets (models, textures and sounds are procedural). It must run by opening the file in a browser. The deliverable is one file, mario-kart.html, starting with <!DOCTYPE html>, no markdown fences, no explanations.
+
+SELF-CHECK BEFORE ANSWERING
+Verify mentally: (1) the file opens in a browser and shows a start screen, (2) a race starts from it and the kart can be driven with the keyboard, (3) opponents drive the track, laps are counted and the race ends with a result screen that can restart the game, (4) there are no errors in the browser console.
 '''

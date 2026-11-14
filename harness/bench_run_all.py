@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the whole Claude Fable 5.2 one-shot arm, one headless child per prompt.
+"""Run the whole one-shot arm, one headless child per prompt.
 
 ``/bench-run`` with no arguments calls this helper. For each prompt in
 ``ARM_PROMPTS`` it starts a fresh headless ``claude -p "/bench-run <id>"``
@@ -38,8 +38,9 @@ if str(REPO_ROOT) not in sys.path:
 
 from harness.modes._common import model_tag  # noqa: E402
 
-# The 11 prompts of the Fable 5.2 arm, in ledger order. A unit test checks
-# this against the README ledger table and the prompt files.
+# The 15 prompts of the one-shot arm, in ledger order: every prompt under
+# prompts/. A unit test checks this against the README ledger table and the
+# prompt files.
 ARM_PROMPTS = (
     "game-melon-jelly",
     "game-lava-lamp",
@@ -52,6 +53,10 @@ ARM_PROMPTS = (
     "game-mario-kart",
     "app-stillwater",
     "game-weichensteller",
+    "game-rubiks-cube",
+    "creative-water-bottle",
+    "reasoning-seating-puzzle",
+    "servicenow-loaner-request",
 )
 
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")

@@ -1,20 +1,27 @@
+# Reworked in #285. The original asked for six user stories with Gherkin
+# acceptance criteria as markdown. The rework asks for the implementation of
+# those six stories instead: one update set XML that the reviewer imports
+# into a Personal Developer Instance (Retrieved Update Sets > Import Update
+# Set from XML), previews, commits and then tests by hand. The domain
+# contract and the per-story minimums are carried over; the per-story
+# minimums are now the behaviour the committed update set must show.
 id          = "servicenow-loaner-request"
-title       = "Six Equipment Loan Desk stories with Gherkin acceptance criteria"
+title       = "Equipment Loan Desk as one importable ServiceNow update set (XML)"
 category    = "servicenow"
-difficulty  = "medium"
+difficulty  = "hard"
 temperature = 0.2
-max_tokens  = 16384
-save_as     = "md"
-file_prefix = "servicenow-loaner-stories"
+max_tokens  = 65536
+save_as     = "xml"
+file_prefix = "servicenow-loaner-request"
 
 [system]
 text = '''
-You are a senior ServiceNow consultant and backlog owner. You write user
-stories and acceptance criteria that an implementation team can build from
-without asking clarifying questions. You use precise ServiceNow terminology
-(custom table, business rule, client script, scheduled script execution,
-email notification, ACL, form and list layout) and you never invent features
-that do not exist in the platform.
+You are a senior ServiceNow developer. You deliver work as update sets that
+preview without errors and commit cleanly on a fresh instance. You use
+precise ServiceNow artefacts (custom table, dictionary entries, choices,
+number maintenance, business rule, client script, UI policy, scheduled script
+execution, event and email notification, role, ACL, form and list layout) and
+you never invent tables, fields or APIs that do not exist in the platform.
 '''
 
 [user]
@@ -22,25 +29,24 @@ text = '''
 CONTEXT
 An internal IT department runs an equipment loan desk (laptops, projectors,
 test gear borrowed by employees for short periods). The desk must be stood up
-on a clean ServiceNow instance as a custom Global-scope application built with
-the ServiceNow SDK in configuration mode. Six individually scoped stories
-cover the full stack: schema, server-side governance, form usability,
-nightly automation with notification, security, and the form/list layout that
-makes the automated overdue flag visible to coordinators.
+on a clean ServiceNow Personal Developer Instance (latest release, Australia
+era) as a custom Global-scope application. I will import your file under
+System Update Sets > Retrieved Update Sets > "Import Update Set from XML",
+preview it, commit it, and then test the result by hand.
 
 YOUR TASK
-Produce exactly 6 user stories — no fewer, no filler stories. Distribute them
-as follows:
+Produce one update set, exported as XML, that implements all six stories
+below. No story may be left out or stubbed.
 
   Story 1 — LOAN DESK SCHEMA: "Loan Request table (schema foundation)"
   Story 2 — SERVER GOVERNANCE: "Approval gatekeeper business rule"
   Story 3 — FORM USABILITY: "Form usability client scripts"
   Story 4 — NIGHTLY AUTOMATION: "Overdue loan sweep (scheduled job + notification)"
   Story 5 — SECURITY MODEL: "Roles and ACLs for the loan desk"
-  Story 6 — PRESENTATION LAYER: "Adjust Loan Request form to display overdue tracking"
+  Story 6 — PRESENTATION LAYER: "Loan Request form and list that display overdue tracking"
 
-DOMAIN CONTRACT (all six stories build on this shared model; reference it,
-do not contradict it)
+DOMAIN CONTRACT (all six stories build on this shared model; do not
+contradict it)
 Custom table u_loan_request (extends task, Global scope, label "Loan
 Request"):
   - u_requester   reference to sys_user, mandatory
@@ -52,76 +58,75 @@ Request"):
                   sweep (Story 4), displayed by the form (Story 6)
   - u_notes       multiline text (4000)
 Auto-numbering: prefix LN, starting LN0001001, seven digits.
+Roles: lab_borrower, lab_supervisor.
 
-STORY FORMAT (apply identically to all 6 stories)
-For each story provide, in this order:
+REQUIRED BEHAVIOUR AFTER COMMIT (this is what I will test)
+  Story 1: the table exists in Global scope with the stated columns, labels,
+           defaults, mandatory flags, choices and LN auto-numbering; a module
+           "Loan Requests" under an application menu "Loan Desk" opens its
+           list.
+  Story 2: requested -> returned is aborted server-side with a clear error
+           message regardless of entry point (REST, UI, import); approving
+           without a due date is aborted; the legal path due date -> approve
+           -> return succeeds.
+  Story 3: notes are hidden until a requester is chosen; a warning is shown
+           when status flips to returned while due date is empty; no warnings
+           on legitimate edits.
+  Story 4: a scheduled script execution, daily at 02:00, sets u_overdue=true
+           on approved loans past their due date; re-runs are idempotent
+           (already-flagged loans untouched); returned and not-yet-due loans
+           untouched; the requester receives the "Loan Overdue Alert" email
+           naming asset tag and due date. "Execute Now" on the job must work.
+  Story 5: lab_borrower may read and create but neither delete nor approve
+           (may not set u_loan_status to approved or rejected);
+           lab_supervisor may read, create, write, delete and approve; users
+           without either role may not read.
+  Story 6: the form has three titled sections (Identification, Scheduling,
+           Remarks) with the state trio (loan status, due date, overdue)
+           together in the Scheduling section and u_overdue read-only; the
+           list shows number, requester, asset tag, loan status, due date,
+           overdue.
 
-  1. Title              — "<Story N>: ..." heading
-  2. User statement     — "As a <persona>, I want <capability>,
-                          because <benefit>."
-                          Personas must vary sensibly (lab coordinator,
-                          lab supervisor, requester, security administrator).
-  3. Technical approach — a compact spec naming the exact ServiceNow
-                          artefacts the story delivers (table + columns /
-                          business rule timing and conditions / client script
-                          types and triggering events / scheduled script +
-                          notification / roles + ACL operations / form
-                          sections + list columns).
-  4. Acceptance Criteria— Gherkin, per the rules below.
-
-PER-STORY MINIMUMS
-  Story 1: table exists in Global scope with the stated columns, defaults,
-           mandatory flags, and LN auto-numbering.
-  Story 2: requested -> returned is aborted server-side regardless of entry
-           point (REST, UI, import); approving without a due date is aborted;
-           the legal path due date -> approve -> return succeeds.
-  Story 3: notes hidden until a requester is chosen; warning raised when
-           status flips to returned while due date is empty; no warnings on
-           legitimate edits.
-  Story 4: sweep sets u_overdue=true on approved loans past due; re-runs are
-           idempotent (already-flagged loans untouched); returned and
-           not-yet-due loans untouched; the requester receives the "Loan
-           Overdue Alert" email naming asset tag and due date.
-  Story 5: lab_borrower may create but neither delete nor approve;
-           lab_supervisor may delete and approve; roleless users may not
-           read.
-  Story 6: three titled form sections (identification, scheduling, remarks)
-           with the state trio (loan status, due date, overdue) reading
-           together in the scheduling section; list shows number, requester,
-           asset tag, loan status, due date, overdue.
-
-GHERKIN RULES (correct spelling throughout: Gherkin)
-- One Feature block per story, titled after the story.
-- Three to five scenarios per story; every scenario is independently
-  executable and asserts OBSERVABLE state (field values, HTTP/API outcomes,
-  visible form elements, delivered mail) — never implementation internals
-  like script fragments.
-- Assert modeled fields (booleans, dates, references), never sentinel
-  strings hidden inside free-text fields.
-- Steps must be concrete: name actual fields, statuses, and actors from the
-  domain contract. No vague steps like "the system processes the request".
-- Use Scenario Outline with an Examples table anywhere repetition begs for
-  it (at least once across the document).
+UPDATE SET RULES
+- The file is a complete update set export: one <unload> root containing
+  exactly one sys_remote_update_set record, named "Loan Desk", application
+  Global, state "loaded", followed by one sys_update_xml record per
+  customer update, each linked to that update set and each carrying its
+  record as a CDATA payload with the correct name, type, target_name and
+  action.
+- Everything the six stories need is in the update set and nothing else:
+  table and dictionary definitions with labels and choices, the number
+  record, application menu and module, the business rule(s), client
+  script(s) and/or UI policies, the scheduled job, the event registration
+  and email notification, the roles, the ACLs, the form sections and
+  elements, and the list layout.
+- Every sys_id is a unique 32-character lowercase hex string, used
+  consistently wherever the record is referenced. References to baseline
+  records (sys_user, the task table, the admin role and so on) use table
+  names or the values that exist on every instance, never invented sys_ids.
+- All server-side and client-side scripts are complete and follow platform
+  best practice: no hard-coded sys_ids, GlideRecord queries are filtered, no
+  current.update() in a business rule on its own table, client scripts guard
+  isLoading, messages go through gs.addErrorMessage / g_form.
+- The update set's description lists the six stories, one line each, and a
+  short manual test plan for each (what to click, what to expect).
+- Well-formed XML: correct escaping, CDATA closed properly, UTF-8.
 
 CONSTRAINTS
-- Stay inside latest ServiceNow (Australia release era) capabilities:
-  custom tables, business rules, client scripts, scheduled script
-  executions, email notifications, ACLs, form/list configuration. No
-  IntegrationHub spokes, no paid plugins.
-- Realistic corporate flavour: consistent fake org details (company name,
-  fulfilment groups like "Equipment Pool", believable locations) reused
-  across stories so the set feels coherent.
-- Professional, implementation-ready tone. Tables allowed for column specs.
+- Stay inside baseline platform capabilities: custom tables, business rules,
+  client scripts, UI policies, scheduled script executions, events and email
+  notifications, roles, ACLs, form/list configuration. No IntegrationHub
+  spokes, no paid plugins, no Flow Designer, no scoped application.
+- Field labels and messages in English.
 
-QUALITY BAR / SELF-CHECK BEFORE ANSWERING
-Verify mentally: (1) exactly 6 stories in the stated order, (2) every story
-has a user statement, technical approach, and Gherkin acceptance criteria,
-(3) the domain contract is respected everywhere (statuses, field names,
-numbering), (4) all Gherkin parses conceptually (Feature/Scenario/Examples
-keywords correct), (5) no contradictions between story text and its
-scenarios.
+SELF-CHECK BEFORE ANSWERING
+Verify mentally: (1) the file is well-formed XML with one update set record
+and every update linked to it, (2) the preview would report no missing
+references and no collisions on a fresh instance, (3) after commit a new Loan
+Request gets number LN0001001 and the form shows the three sections, (4) each
+story's required behaviour above is implemented by a record in the file,
+(5) the domain contract is respected everywhere (field names, statuses,
+numbering, roles), (6) no sys_id is used for two different records.
 
-OUTPUT
-Markdown. Start directly with the Story 1 heading — no preamble, no meta
-commentary about the task.
+The deliverable is one file, servicenow-loaner-request.xml, starting with <?xml version="1.0" encoding="UTF-8"?>, no markdown fences, no explanations.
 '''
