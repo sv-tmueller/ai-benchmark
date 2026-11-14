@@ -866,7 +866,13 @@ def preflight(args, environ, repo_root):
 
 
 def _say(text=""):
-    print(text, flush=True)
+    """Print one line. Text the output stream cannot encode (a lone surrogate, a non-ASCII
+    character on an ASCII stream) is printed with backslash escapes instead of raising."""
+    try:
+        print(text, flush=True)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+        print(str(text).encode(encoding, "backslashreplace").decode(encoding, "replace"), flush=True)
 
 
 METRICS_START = "<!-- run-metrics -->"
@@ -986,7 +992,7 @@ def _read_result_pr(wt, number, prefix, base, name, model, effort):
     return head, body or "", run_path
 
 
-def record_metrics(wt, log_dir, pid, model, effort, number, metrics):
+def _record_metrics(wt, log_dir, pid, model, effort, number, metrics):
     """Document one result PR's run metrics; return a report note, or ``None`` when all went well.
 
     Runs only for a PR this batch's child just opened. Checks the PR first,
@@ -998,7 +1004,7 @@ def record_metrics(wt, log_dir, pid, model, effort, number, metrics):
     file, and becomes a note; nothing is raised and nothing is printed. An
     unexpected exception becomes a note with its class name as the reason
     (``KeyboardInterrupt`` and ``SystemExit`` still propagate). A PR body and
-    result text are never printed.
+    result text are never printed. The note is raw; ``record_metrics`` cleans it.
     """
     usable = metrics is not None
     not_added = "run file not added: %s" if usable else "run metrics unavailable, PR description not updated: %s"
@@ -1039,6 +1045,33 @@ def record_metrics(wt, log_dir, pid, model, effort, number, metrics):
     except Exception as exc:  # the metrics step must never stop the batch
         return stage % type(exc).__name__
     return None if usable else "run metrics unavailable"
+
+
+def _clean_note(text):
+    """``text`` as one printable report-line fragment of at most ``REASON_LIMIT`` characters.
+
+    Characters UTF-8 cannot encode (lone surrogates) become ``?``; control
+    characters and every run of whitespace become one space, because the
+    report line format splits on two spaces.
+    """
+    text = text.encode("utf-8", "replace").decode("utf-8")
+    text = re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", text)
+    return " ".join(text.split())[:REASON_LIMIT].rstrip()
+
+
+def record_metrics(wt, log_dir, pid, model, effort, number, metrics, metrics_error=None):
+    """Document one result PR's run metrics; return a report note, or ``None`` when all went well.
+
+    Does the work of ``_record_metrics`` (see there). ``metrics_error`` is the
+    reason ``summarize`` could not derive ``metrics``; it ends the "unavailable"
+    note. This is the single point where a note leaves the metrics step: the
+    returned text is always printable on one line (see ``_clean_note``),
+    whatever the exception messages, ``gh`` output, branch names or paths in it.
+    """
+    note = _record_metrics(wt, log_dir, pid, model, effort, number, metrics)
+    if note == "run metrics unavailable" and metrics_error:
+        note += ": " + metrics_error
+    return None if note is None else _clean_note(note)
 
 
 def describe(summary, pr, metrics_note=None):
@@ -1116,9 +1149,8 @@ def run_batch(args, environ, wt, log_dir, lock_fd, prompts):
         except GitError:
             after = None
         pr = after if after and after[0] == "pr" else None
-        note = record_metrics(wt, log_dir, pid, args.model, effort, pr[1], summary.metrics) if pr else None
-        if pr and summary.metrics_error and note == "run metrics unavailable":
-            note += ": " + summary.metrics_error
+        note = (record_metrics(wt, log_dir, pid, args.model, effort, pr[1], summary.metrics,
+                               summary.metrics_error) if pr else None)
         outcome, url = describe(summary, pr, note)
         rows.append((pid, outcome, url))
         _say("[%d/%d] %s  %s" % (i, total, pid, outcome))

@@ -91,6 +91,17 @@ sys.exit(beh.get("exit", 0))
 '''
 
 
+class StrictStdout(io.TextIOWrapper):
+    """A stdout that raises ``UnicodeEncodeError`` on text it cannot encode, like a real terminal stream."""
+
+    def __init__(self, encoding="utf-8"):
+        super().__init__(io.BytesIO(), encoding=encoding, errors="strict", write_through=True)
+
+    def getvalue(self):
+        self.flush()
+        return self.buffer.getvalue().decode(self.encoding)
+
+
 GH_HANGS = "<hang>"  # as a gh_fail message: the call runs into its timeout
 
 USAGE = {"input_tokens": 28, "output_tokens": 77902,
@@ -884,10 +895,10 @@ class BatchCase(FakeClaudeCase):
         self.scenario({"help": help_text, "files": self.targets,
                        "default": base, "by_prompt": by_prompt or {}})
 
-    def batch(self, *extra, model="claude-fable-5-2", timeout="60", env=None, runner=None):
+    def batch(self, *extra, model="claude-fable-5-2", timeout="60", env=None, runner=None, stream=None):
         argv = ["--model", model, "--claude", str(self.bin), "--timeout", timeout,
                 "--log-dir", str(self.dir / "logs"), *extra]
-        out = io.StringIO()
+        out = io.StringIO() if stream is None else stream
         with contextlib.redirect_stdout(out), mock.patch.object(bra, "_run", runner or self.git):
             code = bra.main(argv, environ=env or self.env, repo_root=self.repo)
         return code, out.getvalue()
@@ -2266,6 +2277,112 @@ class RunMetricsBatchTest(BatchCase):
         (path,) = paths
         self.assertEqual(path.parent, self.dir / "logs")
         self.assertTrue(path.name.endswith(".pr-body.md"))
+
+
+class MetricsNotePrintableTest(BatchCase):
+    """Every note ``record_metrics`` returns can be printed and fits on one report line."""
+
+    SURROGATE_HEAD = "feat/9-\ud800"
+    METRICS = {"duration_seconds": 1.0, "input_tokens": 1, "output_tokens": 1,
+               "cache_read_tokens": 1, "cache_write_tokens": 1, "cost_usd": 1.0}
+
+    def record(self, metrics, **patches):
+        with contextlib.ExitStack() as stack:
+            for name, kw in patches.items():
+                stack.enter_context(mock.patch.object(bra, name, **kw))
+            return bra.record_metrics(self.repo, self.dir / "logs", "game-melon-jelly",
+                                      "claude-fable-5-2", "high", 1, metrics)
+
+    def note_for_head(self, head, metrics):
+        view = json.dumps({"state": "OPEN", "isCrossRepository": False, "headRefName": head,
+                           "body": "Closes #1\n", "files": [{"path": self.targets["game-melon-jelly"]}]})
+        return self.record(metrics, _gh={"return_value": view})
+
+    def assert_printable(self, note):
+        note.encode("utf-8")  # raises on a lone surrogate
+        self.assertNotRegex(note, r"[\x00-\x1f\x7f-\x9f]")
+        self.assertNotIn("  ", note)
+        self.assertEqual(note, note.strip())
+
+    def test_a_note_built_from_a_branch_name_with_a_lone_surrogate_is_printable(self):
+        for label, metrics in (("usage", self.METRICS), ("no usage", None)):
+            with self.subTest(label):
+                note = self.note_for_head(self.SURROGATE_HEAD, metrics)
+                self.assert_printable(note)
+                self.assertIn("is not this result's branch", note)
+                with contextlib.redirect_stdout(StrictStdout()):
+                    print(note)
+
+    def test_the_batch_goes_on_when_the_first_prs_branch_holds_a_lone_surrogate(self):
+        clean_code, _ = self.batch()
+        self.setUp()
+        bad = {"effects": {"open_pr": True, "pr_extra": {"headRefName": self.SURROGATE_HEAD}}}
+        self.set_children(by_prompt={"game-melon-jelly": bad})
+        code, out = self.batch(stream=StrictStdout())
+        self.assertEqual(code, clean_code)
+        self.assertEqual(self.called_ids(), list(bra.ARM_PROMPTS))
+        self.assertEqual(len(self.git.state()["puts"]), 13)
+        rep = self.report_lines(out)
+        self.assertRegex(rep["game-melon-jelly"][0],
+                         r"^pr-opened #1 \(run file not added: branch feat/9-.* is not this result's branch\)$")
+        self.assertRegex(rep["game-lava-lamp"][0], r"^pr-opened #\d+$")
+        self.assertIn("report: claude-fable-5-2 at effort high", out)
+        self.assertIn("worktree: removed", out)
+
+    def test_the_batch_goes_on_with_a_lone_surrogate_branch_and_no_usage(self):
+        clean_code, _ = self.batch()
+        self.setUp()
+        bad = {"effects": {"open_pr": True, "pr_extra": {"headRefName": self.SURROGATE_HEAD}}}
+        self.set_children(default={"json": result_json("done", usage=None)},
+                          by_prompt={"game-melon-jelly": bad})
+        code, out = self.batch(stream=StrictStdout())
+        self.assertEqual(code, clean_code)
+        self.assertEqual(self.called_ids(), list(bra.ARM_PROMPTS))
+        rep = self.report_lines(out)
+        self.assertRegex(rep["game-melon-jelly"][0],
+                         r"^pr-opened #1 \(run metrics unavailable, PR description not updated: "
+                         r"branch feat/9-.* is not this result's branch\)$")
+        self.assertIn("worktree: removed", out)
+
+    def test_newlines_tabs_and_runs_of_spaces_in_a_note_collapse_to_single_spaces(self):
+        reason = "first\nsecond\tthird  fourth \x1b fifth\x00 sixth seventh\xa0eighth"
+        with mock.patch.object(bra, "_read_result_pr", side_effect=bra._MetricsStop(reason)):
+            _, out = self.batch("--prompts", "game-melon-jelly")
+        self.assertEqual(self.report_lines(out)["game-melon-jelly"][0],
+                         "pr-opened #1 (run file not added: first second third fourth fifth sixth "
+                         "seventh eighth)")
+
+    def test_a_cleaned_note_is_capped_at_200_characters(self):
+        reason = "word \n\t " * 100
+        note = self.record(None, _read_result_pr={"side_effect": bra._MetricsStop(reason)})
+        self.assertLessEqual(len(note), 200)
+        self.assert_printable(note)
+        self.assertTrue(note.startswith("run metrics unavailable, PR description not updated: word word"))
+
+    def test_a_successful_step_still_returns_no_note(self):
+        (self.dir / "logs").mkdir()
+        self.assertIsNone(self.record(self.METRICS, _read_result_pr={
+            "return_value": ("feat/1-x", "Closes #1\n", "results/melon-jelly/x.run.json")},
+            _gh={"return_value": ""}))
+
+
+class SayTest(unittest.TestCase):
+    def say(self, text, encoding):
+        stream = StrictStdout(encoding)
+        with contextlib.redirect_stdout(stream):
+            bra._say(text)
+        return stream.buffer.getvalue()
+
+    def test_text_the_stream_cannot_encode_is_printed_with_backslash_escapes(self):
+        self.assertEqual(self.say("café \ud800 x", "ascii"), b"caf\\xe9 \\ud800 x\n")
+
+    def test_a_lone_surrogate_on_a_utf8_stream_is_printed_escaped(self):
+        self.assertEqual(self.say("a \ud800 b", "utf-8"), b"a \\ud800 b\n")
+
+    def test_output_the_stream_can_encode_is_unchanged(self):
+        self.assertEqual(self.say("café ✓", "utf-8"), "café ✓\n".encode("utf-8"))
+        self.assertEqual(self.say("", "utf-8"), b"\n")
+        self.assertEqual(self.say("plain", "ascii"), b"plain\n")
 
 
 class DryRunTest(BatchCase):
