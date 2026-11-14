@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Melon Jelly</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #fdf6ec; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  canvas { position: fixed; left: 0; top: 0; width: 100%; height: 100%; display: block; touch-action: none; user-select: none; -webkit-user-select: none; }
+  #toolbar { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); display: flex; gap: 6px; padding: 6px; background: rgba(255,255,255,0.92); border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.15); z-index: 2; }
+  #toolbar button { border: 0; border-radius: 8px; padding: 8px 14px; font: 600 14px system-ui, sans-serif; background: #f1ebe1; color: #3b2a22; cursor: pointer; }
+  #toolbar button.active { background: #2e7d32; color: #fff; }
+  #colorPanel { position: fixed; top: 64px; left: 50%; transform: translateX(-50%); z-index: 2; display: flex; flex-direction: column; gap: 8px; align-items: center; background: rgba(255,255,255,0.95); border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.15); padding: 10px 12px; }
+  #colorPanel[hidden] { display: none; }
+  #swatches { display: flex; gap: 6px; }
+  #swatches button { width: 26px; height: 26px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,0.2); cursor: pointer; padding: 0; }
+  #settings { position: fixed; right: 12px; bottom: 12px; z-index: 2; width: 230px; background: rgba(255,255,255,0.95); border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.15); padding: 8px 12px; font-size: 13px; color: #3b2a22; }
+  #settings summary { cursor: pointer; font-weight: 600; }
+  #settings label { display: grid; grid-template-columns: 72px 1fr 36px; align-items: center; gap: 6px; margin-top: 6px; }
+  #settings label.check { display: block; }
+  #fps { position: fixed; left: 12px; top: 12px; z-index: 2; font: 600 12px ui-monospace, monospace; color: #3b2a22; background: rgba(255,255,255,0.8); padding: 2px 6px; border-radius: 6px; display: none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="toolbar">
+  <button id="btnGrab" class="active">Grab</button>
+  <button id="btnKnife">Knife</button>
+  <button id="btnColor">Color</button>
+  <button id="btnReset">Reset</button>
+</div>
+
+<div id="colorPanel" hidden>
+  <div id="swatches"></div>
+  <input type="color" id="picker" value="#f2536e" aria-label="Flesh color">
+</div>
+
+<details id="settings">
+  <summary>Physics</summary>
+  <label>Stiffness <input type="range" id="p_stiffness" min="0" max="1" step="0.01"><output id="o_stiffness"></output></label>
+  <label>Volume <input type="range" id="p_volume" min="0" max="1" step="0.01"><output id="o_volume"></output></label>
+  <label>Damping <input type="range" id="p_damping" min="0" max="1" step="0.01"><output id="o_damping"></output></label>
+  <label>Wobble <input type="range" id="p_wobble" min="0" max="1" step="0.01"><output id="o_wobble"></output></label>
+  <label>Gravity <input type="range" id="p_gravity" min="0" max="2" step="0.05"><output id="o_gravity"></output></label>
+  <label class="check"><input type="checkbox" id="fpsToggle"> Show FPS</label>
+</details>
+
+<div id="fps"></div>
+
+<script>
+'use strict';
+
+/**
+ * @typedef {{x:number,y:number,px:number,py:number,vx:number,vy:number,ring:number,rx:number,ry:number,seed:boolean}} Particle
+ * @typedef {{a:number,b:number,c:number,A0:number,kind:number}} Tri  kind: 0 flesh, 1 pith, 2 rind
+ * @typedef {{a:number,b:number,L0:number,rind:boolean}} Edge
+ * @typedef {{p:Particle[],tris:Tri[],edges:Edge[]}} Body
+ */
+
+const SUBSTEPS = 8;
+const FIXED_DT = 1 / 120;
+const MAX_TICKS = 8;
+const NR = 16;            // radial rings of the half-disc
+const NA = 36;            // angular segments across the half-disc
+const VMAX = 3000;        // px/s speed clamp
+const BOUNCE = 0.25;      // restitution on floor and walls
+const FRICTION = 0.6;     // floor friction
+const KNIFE_THICK = 3;    // blade half-thickness in px
+const GRAB_ALPHA = 2e-5;  // grab spring compliance (scaled by 1/h^2 at use)
+const GRAB_PICK = 120;    // max distance to pick a grab point
+const TAU = Math.PI * 2;
+const RIND = [46, 125, 50];
+const PITH = [236, 246, 214];
+const DEFAULT_FLESH = [242, 83, 110];
+const PRESETS = ['#f2536e', '#ff8a65', '#ffd54f', '#9ccc65', '#4dd0e1', '#7986cb', '#ba68c8', '#f5f5dc'];
+
+const params = { stiffness: 0.45, volume: 0.7, damping: 0.5, wobble: 0.5, gravity: 1.0 };
+
+let W = 0, H = 0, floorY = 0, melonR = 120;
+/** @type {Body[]} */
+let bodies = [];
+/** @type {Map<number, any>} */
+let grabs = new Map();
+let tool = 'grab';
+let knifeDown = null;     // {pid, x, y}
+let knifeSeg = null;      // {ax, ay, bx, by} blade used for collisions
+let trail = [];           // {x, y, t}
+let fleshTarget = DEFAULT_FLESH.slice();
+let fleshCur = DEFAULT_FLESH.slice();
+let acc = 0;
+let lastT = performance.now();
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const btnGrab = document.getElementById('btnGrab');
+const btnKnife = document.getElementById('btnKnife');
+const btnColor = document.getElementById('btnColor');
+const btnReset = document.getElementById('btnReset');
+const colorPanel = document.getElementById('colorPanel');
+const picker = document.getElementById('picker');
+const swatchesEl = document.getElementById('swatches');
+const fpsEl = document.getElementById('fps');
+const fpsToggle = document.getElementById('fpsToggle');
+
+/* ---------- small helpers ---------- */
+
+function clamp255(v) { return v < 0 ? 0 : v > 255 ? 255 : Math.round(v); }
+
+function tint(base, shade, white) {
+  const r = base[0] * shade, g = base[1] * shade, b = base[2] * shade;
+  return 'rgb(' + clamp255(r + (255 - r) * white) + ',' + clamp255(g + (255 - g) * white) + ',' + clamp255(b + (255 - b) * white) + ')';
+}
+
+function hexToRgb(h) {
+  const n = parseInt(h.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+function edgeKey(a, b) { return a < b ? a * 100000 + b : b * 100000 + a; }
+
+function triKeys(t) { return [edgeKey(t.a, t.b), edgeKey(t.b, t.c), edgeKey(t.c, t.a)]; }
+
+function cross(ux, uy, vx, vy) { return ux * vy - uy * vx; }
+
+function segCross(ax, ay, bx, by, cx, cy, dx, dy) {
+  const d1 = cross(bx - ax, by - ay, cx - ax, cy - ay);
+  const d2 = cross(bx - ax, by - ay, dx - ax, dy - ay);
+  const d3 = cross(dx - cx, dy - cy, ax - cx, ay - cy);
+  const d4 = cross(dx - cx, dy - cy, bx - cx, by - cy);
+  return d1 * d2 < 0 && d3 * d4 < 0;
+}
+
+function centroid(b) {
+  let x = 0, y = 0;
+  for (const p of b.p) { x += p.x; y += p.y; }
+  const n = Math.max(1, b.p.length);
+  return { x: x / n, y: y / n };
+}
+
+function bbox(b) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of b.p) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  return { minX, minY, maxX, maxY };
+}
+
+function healthy() {
+  for (const b of bodies) for (const p of b.p) {
+    if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return false;
+  }
+  return true;
+}
+
+/* ---------- mesh and bodies ---------- */
+
+function mkParticle(x, y, ring, seed) {
+  return { x, y, px: x, py: y, vx: 0, vy: 0, ring, rx: x, ry: y, seed };
+}
+
+function signedArea(p, a, b, c) {
+  const A = p[a], B = p[b], C = p[c];
+  return 0.5 * ((B.x - A.x) * (C.y - A.y) - (C.x - A.x) * (B.y - A.y));
+}
+
+/** Unique distance constraints from triangle edges, rest length from rest positions. */
+function buildEdges(p, tris) {
+  const seen = new Set();
+  const edges = [];
+  for (const t of tris) {
+    const pairs = [[t.a, t.b], [t.b, t.c], [t.c, t.a]];
+    for (const pr of pairs) {
+      const a = pr[0], b = pr[1];
+      const k = edgeKey(a, b);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      const pa = p[a], pb = p[b];
+      edges.push({
+        a, b,
+        L0: Math.hypot(pa.rx - pb.rx, pa.ry - pb.ry),
+        rind: pa.ring >= NR - 1 && pb.ring >= NR - 1
+      });
+    }
+  }
+  return edges;
+}
+
+/** Polar mesh of a half-disc (dome up, flat face at the bottom). Outer rings are rind, the next ring in is pith. */
+function makeMelon() {
+  const R = Math.max(80, Math.min(190, Math.min(W, H) * 0.15));
+  melonR = R;
+  const cx = W / 2, cy = H * 0.28;
+  const parts = [mkParticle(cx, cy, 0, false)];
+  for (let i = 1; i <= NR; i++) {
+    for (let j = 0; j <= NA; j++) {
+      const r = R * i / NR, th = Math.PI * j / NA;
+      // sparse seeds on flesh rings only; they ride along with the mesh
+      const seed = (i % 2 === 0) && i <= NR - 4 && j % 3 === 1;
+      parts.push(mkParticle(cx + r * Math.cos(th), cy - r * Math.sin(th), i, seed));
+    }
+  }
+  const idx = (i, j) => (i === 0 ? 0 : 1 + (i - 1) * (NA + 1) + j);
+  const tris = [];
+  const add = (a, b, c) => {
+    const rmax = Math.max(parts[a].ring, parts[b].ring, parts[c].ring);
+    tris.push({ a, b, c, A0: signedArea(parts, a, b, c), kind: rmax >= NR ? 2 : (rmax >= NR - 1 ? 1 : 0) });
+  };
+  for (let j = 0; j < NA; j++) add(0, idx(1, j), idx(1, j + 1));
+  for (let i = 1; i < NR; i++) {
+    for (let j = 0; j < NA; j++) {
+      const a = idx(i, j), b = idx(i, j + 1), c = idx(i + 1, j + 1), d = idx(i + 1, j);
+      add(a, b, c);
+      add(a, c, d);
+    }
+  }
+  return { p: parts, tris, edges: buildEdges(parts, tris) };
+}
+
+/** Connected pieces of a body after removing the cut edges and every triangle touching them. */
+function splitBody(b, cutKeys) {
+  const keep = b.tris.filter(t => !triKeys(t).some(k => cutKeys.has(k)));
+  const byEdge = new Map();
+  keep.forEach((t, i) => {
+    for (const k of triKeys(t)) {
+      const L = byEdge.get(k);
+      if (L) L.push(i); else byEdge.set(k, [i]);
+    }
+  });
+  const seen = new Uint8Array(keep.length);
+  const pieces = [];
+  for (let i = 0; i < keep.length; i++) {
+    if (seen[i]) continue;
+    seen[i] = 1;
+    const stack = [i];
+    const comp = [];
+    while (stack.length) {
+      const ti = stack.pop();
+      const t = keep[ti];
+      comp.push(t);
+      for (const k of triKeys(t)) {
+        for (const tj of byEdge.get(k)) {
+          if (!seen[tj]) { seen[tj] = 1; stack.push(tj); }
+        }
+      }
+    }
+    if (comp.length >= 2) pieces.push(comp);
+  }
+  return pieces;
+}
+
+/** Each piece gets its own copies of its particles, so pieces are physically independent. */
+function makePiece(b, tris) {
+  const map = new Map();
+  const parts = [];
+  const remap = (i) => {
+    let j = map.get(i);
+    if (j === undefined) {
+      const s = b.p[i];
+      j = parts.length;
+      parts.push({ x: s.x, y: s.y, px: s.px, py: s.py, vx: s.vx, vy: s.vy, ring: s.ring, rx: s.rx, ry: s.ry, seed: s.seed });
+      map.set(i, j);
+    }
+    return j;
+  };
+  const newTris = tris.map(t => ({ a: remap(t.a), b: remap(t.b), c: remap(t.c), A0: t.A0, kind: t.kind }));
+  return { p: parts, tris: newTris, edges: buildEdges(parts, newTris) };
+}
+
+function resetMelon() {
+  bodies = [makeMelon()];
+  grabs.clear();
+  knifeDown = null;
+  knifeSeg = null;
+  trail = [];
+  fleshTarget = DEFAULT_FLESH.slice();
+  picker.value = '#f2536e';
+}
+
+/* ---------- XPBD solver ---------- */
+
+function predict(b, h, G) {
+  for (const p of b.p) {
+    p.px = p.x; p.py = p.y;
+    p.vy += G * h;
+    p.x += p.vx * h;
+    p.y += p.vy * h;
+  }
+}
+
+/** Distance constraints (XPBD). aD is compliance already divided by h^2. */
+function solveEdges(b, aD) {
+  const P = b.p;
+  for (const e of b.edges) {
+    const pa = P[e.a], pb = P[e.b];
+    const dx = pb.x - pa.x, dy = pb.y - pa.y;
+    const d = Math.sqrt(dx * dx + dy * dy);
+    if (d < 1e-9) continue;
+    const C = d - e.L0;
+    const alpha = e.rind ? aD * 0.2 : aD;   // rind is stiffer than flesh
+    const dl = C / (2 + alpha);
+    const nx = dx / d, ny = dy / d;
+    pa.x += dl * nx; pa.y += dl * ny;
+    pb.x -= dl * nx; pb.y -= dl * ny;
+  }
+}
+
+/** Area (volume) preservation per triangle, scale-free: C = (A - A0)/A0 * sqrt(A0). */
+function solveAreas(b, aA) {
+  const P = b.p;
+  for (const t of b.tris) {
+    const A = P[t.a], B = P[t.b], C = P[t.c];
+    const area = 0.5 * ((B.x - A.x) * (C.y - A.y) - (C.x - A.x) * (B.y - A.y));
+    const s = Math.sqrt(Math.abs(t.A0));
+    if (s < 1e-9) continue;
+    const k = s / t.A0;
+    const val = (area - t.A0) / t.A0 * s;
+    const g1x = 0.5 * (B.y - C.y) * k, g1y = 0.5 * (C.x - B.x) * k;
+    const g2x = 0.5 * (C.y - A.y) * k, g2y = 0.5 * (A.x - C.x) * k;
+    const g3x = 0.5 * (A.y - B.y) * k, g3y = 0.5 * (B.x - A.x) * k;
+    const sum = g1x * g1x + g1y * g1y + g2x * g2x + g2y * g2y + g3x * g3x + g3y * g3y;
+    const dl = -val / (sum + aA);
+    A.x += dl * g1x; A.y += dl * g1y;
+    B.x += dl * g2x; B.y += dl * g2y;
+    C.x += dl * g3x; C.y += dl * g3y;
+  }
+}
+
+/** Soft grab: compliant attachment of each picked particle to its target (no teleporting). */
+function solveGrabs(h2inv) {
+  const a = GRAB_ALPHA * h2inv;
+  for (const g of grabs.values()) {
+    const mx = 2 * g.c.x - g.cur.x, my = 2 * g.c.y - g.cur.y;
+    for (const it of g.items) {
+      const ax = it.type === 0 ? g.cur.x : mx;
+      const ay = it.type === 0 ? g.cur.y : my;
+      const dx = it.p.x - (ax + it.ox), dy = it.p.y - (ay + it.oy);
+      const d = Math.sqrt(dx * dx + dy * dy);
+      if (d < 1e-6) continue;
+      const dl = d / (1 + a / Math.max(it.w, 1e-3));
+      it.p.x -= dl * dx / d;
+      it.p.y -= dl * dy / d;
+    }
+  }
+}
+
+/** The knife blade pushes particles away from the line it is drawing. */
+function solveKnife(b) {
+  if (!knifeSeg) return;
+  const { ax, ay, bx, by } = knifeSeg;
+  const vx = bx - ax, vy = by - ay;
+  const L2 = vx * vx + vy * vy;
+  for (const p of b.p) {
+    let t = L2 > 1e-9 ? ((p.x - ax) * vx + (p.y - ay) * vy) / L2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    const qx = ax + vx * t, qy = ay + vy * t;
+    const dx = p.x - qx, dy = p.y - qy;
+    const d = Math.sqrt(dx * dx + dy * dy);
+    if (d < KNIFE_THICK && d > 1e-6) {
+      const k = (KNIFE_THICK - d) / d;
+      p.x += dx * k; p.y += dy * k;
+    }
+  }
+}
+
+/** Floor, side walls and friction. Bounces reflect the step's displacement. */
+function collide(b) {
+  for (const p of b.p) {
+    if (p.y > floorY) {
+      const dy = p.y - p.py;
+      p.y = floorY;
+      if (dy > 0) p.py = p.y + BOUNCE * dy;
+      const dx = p.x - p.px;
+      p.px = p.x - dx * (1 - FRICTION);
+    }
+    if (p.x < 0) {
+      const dx = p.x - p.px;
+      p.x = 0;
+      if (dx < 0) p.px = p.x + BOUNCE * dx;
+      const dy = p.y - p.py;
+      p.py = p.y - dy * (1 - FRICTION * 0.5);
+    } else if (p.x > W) {
+      const dx = p.x - p.px;
+      p.x = W;
+      if (dx > 0) p.px = p.x + BOUNCE * dx;
+      const dy = p.y - p.py;
+      p.py = p.y - dy * (1 - FRICTION * 0.5);
+    }
+  }
+}
+
+/** Velocities from positions, then damping: rigid (centroid) motion damped hard, internal wobble less so. */
+function velocities(b, h) {
+  const P = b.p, n = P.length;
+  if (n === 0) return;
+  let cvx = 0, cvy = 0;
+  for (const p of P) {
+    p.vx = (p.x - p.px) / h;
+    p.vy = (p.y - p.py) / h;
+    cvx += p.vx; cvy += p.vy;
+  }
+  cvx /= n; cvy /= n;
+  const kR = params.damping * 8;
+  const kI = 0.3 + params.damping * (1 - params.wobble) * 12;
+  const fR = Math.max(0, 1 - kR * h), fI = Math.max(0, 1 - kI * h);
+  for (const p of P) {
+    let vx = cvx * fR + (p.vx - cvx) * fI;
+    let vy = cvy * fR + (p.vy - cvy) * fI;
+    const sp = Math.sqrt(vx * vx + vy * vy);
+    if (sp < 0.5) { vx = 0; vy = 0; }          // rest: no jitter
+    else if (sp > VMAX) { const k = VMAX / sp; vx *= k; vy *= k; }
+    p.vx = vx; p.vy = vy;
+  }
+}
+
+function substep(h) {
+  const G = 1100 * params.gravity;
+  const h2inv = 1 / (h * h);
+  const aD = 1e-8 * Math.pow(10, 3 * (1 - params.stiffness)) * h2inv;
+  const aA = 1e-8 * Math.pow(10, 3 * (1 - params.volume)) * h2inv;
+  for (const b of bodies) predict(b, h, G);
+  for (const b of bodies) solveEdges(b, aD);
+  for (const b of bodies) solveAreas(b, aA);
+  solveGrabs(h2inv);
+  for (const b of bodies) {
+    solveKnife(b);
+    collide(b);
+    velocities(b, h);
+  }
+}
+
+/* ---------- cutting ---------- */
+
+function cutWith(ax, ay, bx, by) {
+  const next = [];
+  let changed = false;
+  for (const b of bodies) {
+    const cutKeys = new Set();
+    for (const e of b.edges) {
+      const pa = b.p[e.a], pb = b.p[e.b];
+      if (segCross(ax, ay, bx, by, pa.x, pa.y, pb.x, pb.y)) cutKeys.add(edgeKey(e.a, e.b));
+    }
+    if (cutKeys.size === 0) { next.push(b); continue; }
+    changed = true;
+    for (const tris of splitBody(b, cutKeys)) next.push(makePiece(b, tris));
+  }
+  if (changed) bodies = next;
+}
+
+/* ---------- input ---------- */
+
+function pos(e) { return { x: e.clientX, y: e.clientY }; }
+
+/** Grab picks the nearest particle; the soft radius takes neighbours with falloff. Pinch adds a mirrored second region. */
+function startGrab(P, pinch) {
+  let nb = null, bestD = GRAB_PICK;
+  for (const b of bodies) for (const p of b.p) {
+    const d = Math.hypot(p.x - P.x, p.y - P.y);
+    if (d < bestD) { bestD = d; nb = b; }
+  }
+  if (!nb) return null;
+  const c = centroid(nb);
+  const mirror = { x: 2 * c.x - P.x, y: 2 * c.y - P.y };
+  const soft = Math.max(30, melonR * 0.45);
+  const items = [];
+  const collect = (ax, ay, type) => {
+    for (const b of bodies) for (const p of b.p) {
+      const d = Math.hypot(p.x - ax, p.y - ay);
+      if (d < soft) items.push({ p, w: Math.pow(1 - d / soft, 2), type, ox: p.x - ax, oy: p.y - ay });
+    }
+  };
+  collect(P.x, P.y, 0);
+  if (pinch) collect(mirror.x, mirror.y, 1);
+  return { cur: { x: P.x, y: P.y }, c, items, soft };
+}
+
+function setTool(t) {
+  tool = t;
+  grabs.clear();
+  knifeDown = null;
+  knifeSeg = null;
+  btnGrab.classList.toggle('active', t === 'grab');
+  btnKnife.classList.toggle('active', t === 'knife');
+  canvas.style.cursor = t === 'knife' ? 'crosshair' : 'grab';
+}
+
+canvas.addEventListener('pointerdown', (e) => {
+  canvas.setPointerCapture(e.pointerId);
+  const P = pos(e);
+  if (tool === 'knife') {
+    knifeDown = { pid: e.pointerId, x: P.x, y: P.y };
+    knifeSeg = { ax: P.x, ay: P.y, bx: P.x, by: P.y };
+    trail.push({ x: P.x, y: P.y, t: performance.now() });
+    return;
+  }
+  const g = startGrab(P, e.button === 2 || e.shiftKey);
+  if (g) grabs.set(e.pointerId, g);
+});
+
+canvas.addEventListener('pointermove', (e) => {
+  const P = pos(e);
+  const g = grabs.get(e.pointerId);
+  if (g) g.cur = { x: P.x, y: P.y };
+  if (knifeDown && knifeDown.pid === e.pointerId) {
+    const ax = knifeDown.x, ay = knifeDown.y;
+    if (Math.hypot(P.x - ax, P.y - ay) > 0.5) {
+      cutWith(ax, ay, P.x, P.y);
+      knifeSeg = { ax, ay, bx: P.x, by: P.y };
+      trail.push({ x: P.x, y: P.y, t: performance.now() });
+      knifeDown.x = P.x; knifeDown.y = P.y;
+    }
+  }
+});
+
+function endPointer(e) {
+  grabs.delete(e.pointerId);
+  if (knifeDown && knifeDown.pid === e.pointerId) {
+    knifeDown = null;
+    knifeSeg = null;
+  }
+}
+canvas.addEventListener('pointerup', endPointer);
+canvas.addEventListener('pointercancel', endPointer);
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+btnGrab.addEventListener('click', () => setTool('grab'));
+btnKnife.addEventListener('click', () => setTool('knife'));
+btnColor.addEventListener('click', () => { colorPanel.hidden = !colorPanel.hidden; });
+btnReset.addEventListener('click', resetMelon);
+
+/* ---------- colour ---------- */
+
+for (const hex of PRESETS) {
+  const btn = document.createElement('button');
+  btn.style.background = hex;
+  btn.title = hex;
+  btn.setAttribute('aria-label', 'Flesh ' + hex);
+  btn.addEventListener('click', () => {
+    fleshTarget = hexToRgb(hex);
+    picker.value = hex;
+  });
+  swatchesEl.appendChild(btn);
+}
+picker.addEventListener('input', () => { fleshTarget = hexToRgb(picker.value); });
+
+function updateColor() {
+  for (let i = 0; i < 3; i++) fleshCur[i] += (fleshTarget[i] - fleshCur[i]) * 0.12;
+}
+
+/* ---------- settings panel ---------- */
+
+for (const key of Object.keys(params)) {
+  const input = document.getElementById('p_' + key);
+  const out = document.getElementById('o_' + key);
+  input.value = String(params[key]);
+  out.textContent = Number(params[key]).toFixed(2);
+  input.addEventListener('input', () => {
+    params[key] = Number(input.value);
+    out.textContent = params[key].toFixed(2);
+  });
+}
+fpsToggle.addEventListener('change', () => {
+  fpsEl.style.display = fpsToggle.checked ? 'block' : 'none';
+});
+
+/* ---------- rendering ---------- */
+
+function drawShadow(bb) {
+  const height = Math.max(0, floorY - bb.maxY);
+  const a = 0.3 * Math.max(0, 1 - height / 500);
+  if (a < 0.01) return;
+  const rx = (bb.maxX - bb.minX) * 0.55 * (1 - Math.min(0.5, height / 900));
+  ctx.fillStyle = 'rgba(70,45,30,' + a.toFixed(3) + ')';
+  ctx.beginPath();
+  ctx.ellipse((bb.minX + bb.maxX) / 2, floorY + 3, rx, 6, 0, 0, TAU);
+  ctx.fill();
+}
+
+function drawBody(b, bb) {
+  const w = Math.max(1, bb.maxX - bb.minX), h = Math.max(1, bb.maxY - bb.minY);
+  const hx = bb.minX + w * 0.32, hy = bb.minY + h * 0.25;
+  const hr = Math.max(w, h) * 0.22, hr2 = hr * hr;
+  const P = b.p;
+  ctx.lineJoin = 'round';
+  for (const t of b.tris) {
+    const A = P[t.a], B = P[t.b], C = P[t.c];
+    const mx = (A.x + B.x + C.x) / 3, my = (A.y + B.y + C.y) / 3;
+    const s = (my - bb.minY) / h;   // 0 at top, 1 at bottom
+    let fill;
+    if (t.kind === 2) {
+      fill = tint(RIND, 0.9 + 0.2 * (1 - s), 0);
+    } else if (t.kind === 1) {
+      fill = tint(PITH, 0.95 + 0.05 * (1 - s), 0);
+    } else {
+      const dx = mx - hx, dy = my - hy;
+      const spec = Math.exp(-(dx * dx + dy * dy) / hr2);
+      fill = tint(fleshCur, 0.8 + 0.25 * (1 - s), 0.6 * spec);
+    }
+    ctx.beginPath();
+    ctx.moveTo(A.x, A.y);
+    ctx.lineTo(B.x, B.y);
+    ctx.lineTo(C.x, C.y);
+    ctx.closePath();
+    ctx.fillStyle = fill;
+    ctx.strokeStyle = fill;
+    ctx.lineWidth = 1.2;     // hides seams between triangles
+    ctx.fill();
+    ctx.stroke();
+  }
+  ctx.fillStyle = 'rgba(50,22,28,0.85)';
+  for (const p of P) {
+    if (!p.seed) continue;
+    ctx.beginPath();
+    ctx.ellipse(p.x, p.y, 2.6, 1.8, 0, 0, TAU);
+    ctx.fill();
+  }
+}
+
+function drawTrail() {
+  const now = performance.now();
+  while (trail.length && now - trail[0].t > 350) trail.shift();
+  ctx.lineCap = 'round';
+  for (let i = 1; i < trail.length; i++) {
+    const a = trail[i - 1], b = trail[i];
+    const fade = Math.max(0, 1 - (now - b.t) / 350);
+    ctx.strokeStyle = 'rgba(60,40,30,' + (0.5 * fade).toFixed(3) + ')';
+    ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,255,255,' + fade.toFixed(3) + ')';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+  }
+}
+
+function render() {
+  ctx.fillStyle = '#fdf6ec';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#e6d5b8';
+  ctx.fillRect(0, floorY, W, H - floorY);
+  ctx.fillStyle = '#cdb692';
+  ctx.fillRect(0, floorY, W, 2);
+  for (const b of bodies) {
+    const bb = bbox(b);
+    drawShadow(bb);
+  }
+  for (const b of bodies) drawBody(b, bbox(b));
+  drawTrail();
+  for (const g of grabs.values()) {
+    ctx.beginPath();
+    ctx.arc(g.cur.x, g.cur.y, 6, 0, TAU);
+    ctx.fillStyle = 'rgba(46,125,50,0.5)';
+    ctx.fill();
+  }
+}
+
+/* ---------- loop, sizing, fps ---------- */
+
+let fpsFrames = 0, fpsStart = 0;
+function updateFps(now) {
+  if (!fpsStart) fpsStart = now;
+  fpsFrames++;
+  const span = now - fpsStart;
+  if (span >= 500) {
+    const v = fpsFrames * 1000 / span;
+    fpsFrames = 0;
+    fpsStart = now;
+    if (fpsEl.style.display !== 'none') fpsEl.textContent = v.toFixed(0) + ' FPS';
+  }
+}
+
+function frame(now) {
+  const dt = Math.min(0.1, Math.max(0, (now - lastT) / 1000));
+  lastT = now;
+  acc += dt;
+  let ticks = 0;
+  while (acc >= FIXED_DT && ticks < MAX_TICKS) {
+    const h = FIXED_DT / SUBSTEPS;
+    for (let s = 0; s < SUBSTEPS; s++) substep(h);
+    acc -= FIXED_DT;
+    ticks++;
+  }
+  if (ticks === MAX_TICKS) acc = 0;
+  if (!healthy()) {
+    grabs.clear();
+    knifeSeg = null;
+    bodies = [makeMelon()];
+  }
+  updateColor();
+  render();
+  updateFps(now);
+  requestAnimationFrame(frame);
+}
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  floorY = H - 48;
+}
+
+window.addEventListener('resize', resize);
+resize();
+setTool('grab');
+resetMelon();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
