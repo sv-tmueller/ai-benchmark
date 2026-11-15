@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Melon Jelly</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: linear-gradient(#cfe9ff, #f4f9ff 70%); }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+  canvas.knife { cursor: crosshair; }
+  .panel { position: fixed; z-index: 2; background: rgba(255,255,255,0.95); padding: 10px 12px; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.15); font-size: 13px; }
+  #toolbar { top: 12px; left: 50%; transform: translateX(-50%); display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px 10px; }
+  button { font: inherit; padding: 6px 12px; border-radius: 8px; border: 1px solid #bbb; background: #fff; cursor: pointer; }
+  button[aria-pressed="true"] { background: #222; color: #fff; border-color: #222; }
+  #colorPanel { top: 66px; left: 50%; transform: translateX(-50%); display: none; gap: 8px; align-items: center; max-width: 90vw; }
+  #colorPanel.open { display: flex; }
+  #swatches { display: flex; gap: 6px; flex-wrap: wrap; }
+  .swatch { width: 26px; height: 26px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 0 1px #888; padding: 0; cursor: pointer; }
+  #physPanel { left: 12px; bottom: 12px; width: 240px; }
+  #physPanel summary { cursor: pointer; font-weight: 600; }
+  #physPanel label { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; margin-top: 8px; }
+  #physPanel input[type=range] { grid-column: 1 / 3; width: 100%; }
+  #fps { top: 10px; right: 12px; font: 600 13px monospace; background: rgba(0,0,0,0.6); color: #fff; padding: 3px 7px; border-radius: 6px; display: none; }
+  #fps.on { display: block; }
+  #status { right: 12px; bottom: 12px; background: rgba(255,255,255,0.9); padding: 4px 8px; border-radius: 8px; font-size: 13px; }
+</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+
+<div id="toolbar" class="panel" role="toolbar" aria-label="Tools">
+  <button id="btnGrab" type="button" data-mode="grab" aria-pressed="true">Grab</button>
+  <button id="btnKnife" type="button" data-mode="knife" aria-pressed="false">Knife</button>
+  <button id="btnColor" type="button" aria-pressed="false" aria-controls="colorPanel">Color</button>
+  <button id="btnReset" type="button">Reset</button>
+  <label><input id="fpsToggle" type="checkbox" checked /> FPS</label>
+</div>
+
+<div id="colorPanel" class="panel" role="group" aria-label="Flesh color">
+  <input id="colorPicker" type="color" value="#ff4d6d" aria-label="Custom flesh color" />
+  <span id="swatches"></span>
+</div>
+
+<details id="physPanel" class="panel">
+  <summary>Physics</summary>
+  <label>Stiffness <output id="out-stiffness"></output>
+    <input id="stiffness" type="range" min="0" max="1" step="0.01" /></label>
+  <label>Damping <output id="out-damping"></output>
+    <input id="damping" type="range" min="0" max="1" step="0.01" /></label>
+  <label>Gravity <output id="out-gravity"></output>
+    <input id="gravity" type="range" min="200" max="3000" step="50" /></label>
+  <label>Wobble (bounce) <output id="out-wobble"></output>
+    <input id="wobble" type="range" min="0" max="1" step="0.01" /></label>
+  <label>Volume (area) stiffness <output id="out-areaStiffness"></output>
+    <input id="areaStiffness" type="range" min="0" max="1" step="0.01" /></label>
+</details>
+
+<div id="fps" class="panel">--</div>
+<div id="status" class="panel"></div>
+
+<script>
+'use strict';
+/**
+ * Melon Jelly: a 2D XPBD soft body in screen coordinates (y grows downward).
+ * Sections: config, state, geometry, physics, cutting, input, rendering, UI.
+ */
+
+const CFG = Object.freeze({
+  NA: 36,              // angular segments across the half disc
+  NR: 12,              // radial rings; the outermost ring is the rind
+  SUBSTEPS: 10,        // XPBD substeps per fixed step
+  FIXED_DT: 1 / 60,    // fixed simulation step in seconds
+  SOLVER_ITERS: 6,     // constraint sweeps per substep
+  GRAB_RADIUS: 46,     // soft grab radius in CSS px
+  GRAB_COMPLIANCE: 2e-6, // divided by the particle's grab weight, so the rim is softer
+  MAX_SPEED: 3500,     // px/s clamp, guards against blow-ups
+  FRICTION: 0.5,       // share of tangential motion removed on floor contact
+  KNIFE_RADIUS: 7,     // blade half-thickness that pushes flesh aside
+  TRAIL_MS: 450
+});
+
+const RIND_COLOR = '#2e7d32';
+const PITH_COLOR = '#f1f8e4';
+const SWATCHES = [
+  ['Classic red', '#e8334a'],
+  ['Bright pink', '#ff4d6d'],
+  ['Coral', '#ff7f6e'],
+  ['Yellow', '#ffd166'],
+  ['Orange', '#ff9f1c'],
+  ['Mint', '#80ed99'],
+  ['Sky blue', '#4cc9f0'],
+  ['Violet', '#9d4edd']
+];
+
+const params = { stiffness: 0.5, damping: 0.3, gravity: 1400, wobble: 0.35, areaStiffness: 0.5 };
+
+const canvas = /** @type {HTMLCanvasElement} */ (document.getElementById('view'));
+const ctx = /** @type {CanvasRenderingContext2D} */ (canvas.getContext('2d'));
+const statusEl = /** @type {HTMLElement} */ (document.getElementById('status'));
+const fpsEl = /** @type {HTMLElement} */ (document.getElementById('fps'));
+
+/** Layout in CSS px. */
+const view = { W: 0, H: 0, dpr: 1, R: 100, cx: 0, baseY: 0, floorY: 0, minX: 0, maxX: 0 };
+const CEN = { x: 0, y: 0 };      // melon centroid, refreshed each fixed step
+
+let fleshColor = '#ff4d6d';
+let mode = 'grab';
+let edgeAlphaBase = 1e-5;        // XPBD compliance for flesh edges (set per step)
+let areaAlphaBase = 1e-3;        // XPBD compliance for triangle area (set per step)
+let bounce = 0.3;
+
+// Particle arrays (length NP)
+let NP = 0, NT = 0, NE = 0;
+let X, Y, PX, PY, VX, VY;        // Float64Array
+let ACTIVE, CONTACT, SEED;       // Uint8Array
+let SF;                          // Float64Array, stiffness factor (rind stiff, pith mid)
+
+// Triangle arrays (length NT)
+let TRI;                         // Int32Array, 3 vertex ids per triangle
+let TRI_ALIVE, TRI_LAYER;        // Uint8Array: layer 0 flesh, 1 pith, 2 rind
+let TRI_A0, LAMBDA_A;            // Float64Array: rest signed area, multiplier
+
+// Edge arrays (rebuilt after every cut)
+let LIVE;                        // Int32Array of live triangle ids
+let EA, EB, EREST, EFACT, LAMBDA_E;
+let REST_MAP;                    // edgeKey -> rest length, from the uncut mesh
+let PINS = [];                   // grab pins for this fixed step
+let pieces = 1;
+
+const pointers = new Map();      // pointerId -> {x, y, grabs}
+let knife = null;                // {id, x, y} while the blade is held
+let knifeSeg = null;             // {ax, ay, bx, by} segment used for blade contact
+const trail = [];                // {x, y, t}
+
+/* ---------- geometry ---------- */
+
+function computeView() {
+  view.dpr = Math.min(window.devicePixelRatio || 1, 2);
+  view.W = window.innerWidth;
+  view.H = window.innerHeight;
+  canvas.width = Math.round(view.W * view.dpr);
+  canvas.height = Math.round(view.H * view.dpr);
+  view.floorY = view.H * 0.88;
+  view.minX = 6;
+  view.maxX = view.W - 6;
+}
+
+function edgeKey(p, q) {
+  return p < q ? p * NP + q : q * NP + p;
+}
+
+function signedArea(t) {
+  const a = TRI[3 * t], b = TRI[3 * t + 1], c = TRI[3 * t + 2];
+  return 0.5 * ((X[b] - X[a]) * (Y[c] - Y[a]) - (X[c] - X[a]) * (Y[b] - Y[a]));
+}
+
+/** Half disc on a polar grid: flat face at the bottom, rind on the outer ring. */
+function buildMesh() {
+  const NA = CFG.NA, NR = CFG.NR;
+  const rows = NR + 1;
+  NP = (NA + 1) * rows;
+  X = new Float64Array(NP); Y = new Float64Array(NP);
+  PX = new Float64Array(NP); PY = new Float64Array(NP);
+  VX = new Float64Array(NP); VY = new Float64Array(NP);
+  ACTIVE = new Uint8Array(NP).fill(1);
+  CONTACT = new Uint8Array(NP);
+  SEED = new Uint8Array(NP);
+  SF = new Float64Array(NP);
+
+  const R = view.R;
+  const id = (i, j) => i * rows + j;
+  for (let i = 0; i <= NA; i++) {
+    const th = Math.PI * i / NA;
+    for (let j = 0; j <= NR; j++) {
+      const r = R * (0.12 + 0.88 * j / NR);   // inner core keeps triangles non-degenerate
+      const p = id(i, j);
+      X[p] = view.cx + r * Math.cos(th);
+      Y[p] = view.baseY - r * Math.sin(th);
+      PX[p] = X[p]; PY[p] = Y[p];
+      SF[p] = j === NR ? 0.05 : (j === NR - 1 ? 0.3 : 1);
+      SEED[p] = (j >= 2 && j <= NR - 3 && (i * 7 + j * 5) % 11 === 0) ? 1 : 0;
+    }
+  }
+
+  const tri = [];
+  for (let i = 0; i < NA; i++) {
+    for (let j = 0; j < NR; j++) {
+      const a = id(i, j), b = id(i + 1, j), c = id(i + 1, j + 1), d = id(i, j + 1);
+      tri.push(a, b, c, a, c, d);
+    }
+  }
+  NT = tri.length / 3;
+  TRI = Int32Array.from(tri);
+  TRI_ALIVE = new Uint8Array(NT).fill(1);
+  TRI_LAYER = new Uint8Array(NT);
+  TRI_A0 = new Float64Array(NT);
+  LAMBDA_A = new Float64Array(NT);
+  for (let t = 0; t < NT; t++) {
+    let jsum = 0;
+    for (let k = 0; k < 3; k++) jsum += TRI[3 * t + k] % rows;
+    const avg = jsum / 3;
+    TRI_LAYER[t] = avg > NR - 0.5 ? 2 : (avg > NR - 1.5 ? 1 : 0);
+    TRI_A0[t] = signedArea(t);
+  }
+
+  REST_MAP = new Map();
+  for (let t = 0; t < NT; t++) {
+    for (let k = 0; k < 3; k++) {
+      const p = TRI[3 * t + k], q = TRI[3 * t + ((k + 1) % 3)];
+      const key = edgeKey(p, q);
+      if (!REST_MAP.has(key)) REST_MAP.set(key, Math.hypot(X[p] - X[q], Y[p] - Y[q]));
+    }
+  }
+  rebuildTopology();
+}
+
+/** Recomputes live triangles, active particles, unique edges and piece count. */
+function rebuildTopology() {
+  const live = [];
+  for (let t = 0; t < NT; t++) if (TRI_ALIVE[t]) live.push(t);
+  LIVE = Int32Array.from(live);
+
+  ACTIVE.fill(0);
+  for (const t of live) {
+    ACTIVE[TRI[3 * t]] = 1;
+    ACTIVE[TRI[3 * t + 1]] = 1;
+    ACTIVE[TRI[3 * t + 2]] = 1;
+  }
+
+  const seen = new Set();
+  const ea = [], eb = [], er = [], ef = [];
+  for (const t of live) {
+    for (let k = 0; k < 3; k++) {
+      const p = TRI[3 * t + k], q = TRI[3 * t + ((k + 1) % 3)];
+      const key = edgeKey(p, q);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      ea.push(p); eb.push(q);
+      er.push(REST_MAP.get(key));
+      ef.push(0.5 * (SF[p] + SF[q]));
+    }
+  }
+  NE = ea.length;
+  EA = Int32Array.from(ea);
+  EB = Int32Array.from(eb);
+  EREST = Float64Array.from(er);
+  EFACT = Float64Array.from(ef);
+  LAMBDA_E = new Float64Array(NE);
+  pieces = countPieces();
+}
+
+function countPieces() {
+  const parent = new Int32Array(NP);
+  for (let i = 0; i < NP; i++) parent[i] = i;
+  const find = (x) => {
+    while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+    return x;
+  };
+  const union = (u, v) => { parent[find(u)] = find(v); };
+  for (const t of LIVE) {
+    union(TRI[3 * t], TRI[3 * t + 1]);
+    union(TRI[3 * t + 1], TRI[3 * t + 2]);
+  }
+  const roots = new Set();
+  for (const t of LIVE) roots.add(find(TRI[3 * t]));
+  return roots.size;
+}
+
+function updateCentroid() {
+  let sx = 0, sy = 0, n = 0;
+  for (let i = 0; i < NP; i++) {
+    if (!ACTIVE[i]) continue;
+    sx += X[i]; sy += Y[i]; n++;
+  }
+  if (n > 0) { CEN.x = sx / n; CEN.y = sy / n; }
+}
+
+/* ---------- physics (XPBD) ---------- */
+
+/** Advances the simulation by a fixed step split into substeps. */
+function simulate(dt) {
+  edgeAlphaBase = Math.pow(10, -6 + (1 - params.stiffness) * 3);
+  areaAlphaBase = Math.pow(10, -5 + (1 - params.areaStiffness) * 3);
+  bounce = 0.15 + 0.5 * params.wobble;
+  updateCentroid();
+  PINS = buildPins();
+  const h = dt / CFG.SUBSTEPS;
+  for (let s = 0; s < CFG.SUBSTEPS; s++) substep(h);
+  updateCentroid();
+}
+
+function substep(h) {
+  const g = params.gravity;
+  const damp = 1 / (1 + h * params.damping * 6);
+  for (let i = 0; i < NP; i++) {
+    if (!ACTIVE[i]) continue;
+    VX[i] *= damp;
+    VY[i] = VY[i] * damp + g * h;
+    PX[i] = X[i]; PY[i] = Y[i];
+    X[i] += VX[i] * h; Y[i] += VY[i] * h;
+  }
+
+  LAMBDA_E.fill(0);
+  LAMBDA_A.fill(0);
+  for (const pin of PINS) pin.lam = 0;
+  for (let it = 0; it < CFG.SOLVER_ITERS; it++) {
+    solveEdges(h);
+    solveAreas(h);
+    solvePins(h);
+  }
+
+  collide();
+
+  for (let i = 0; i < NP; i++) {
+    if (!ACTIVE[i]) continue;
+    let vx = (X[i] - PX[i]) / h, vy = (Y[i] - PY[i]) / h;
+    const c = CONTACT[i];
+    if ((c & 1) && vy > 0) vy = -vy * bounce;
+    if ((c & 2) && vx < 0) vx = -vx * bounce;
+    if ((c & 4) && vx > 0) vx = -vx * bounce;
+    const sp = Math.hypot(vx, vy);
+    if (sp > CFG.MAX_SPEED) { const k = CFG.MAX_SPEED / sp; vx *= k; vy *= k; }
+    VX[i] = vx; VY[i] = vy;
+  }
+}
+
+/** XPBD distance constraints: rest length per edge, compliance from stiffness and rind factor. */
+function solveEdges(h) {
+  const h2 = h * h;
+  for (let e = 0; e < NE; e++) {
+    const a = EA[e], b = EB[e];
+    const dx = X[b] - X[a], dy = Y[b] - Y[a];
+    const d = Math.sqrt(dx * dx + dy * dy);
+    if (d < 1e-9) continue;
+    const C = d - EREST[e];
+    const alphaT = (edgeAlphaBase * EFACT[e]) / h2;
+    const dl = (-C - alphaT * LAMBDA_E[e]) / (2 + alphaT);
+    LAMBDA_E[e] += dl;
+    const nx = dx / d, ny = dy / d;
+    X[b] += dl * nx; Y[b] += dl * ny;
+    X[a] -= dl * nx; Y[a] -= dl * ny;
+  }
+}
+
+/** XPBD area (volume-in-2D) constraints: keep triangles from collapsing, so the jelly bulges sideways. */
+function solveAreas(h) {
+  const h2 = h * h;
+  for (let k = 0; k < LIVE.length; k++) {
+    const t = LIVE[k];
+    const i0 = TRI[3 * t], i1 = TRI[3 * t + 1], i2 = TRI[3 * t + 2];
+    const x0 = X[i0], y0 = Y[i0], x1 = X[i1], y1 = Y[i1], x2 = X[i2], y2 = Y[i2];
+    const A = 0.5 * ((x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0));
+    const C = A - TRI_A0[t];
+    const g0x = 0.5 * (y1 - y2), g0y = 0.5 * (x2 - x1);
+    const g1x = 0.5 * (y2 - y0), g1y = 0.5 * (x0 - x2);
+    const g2x = 0.5 * (y0 - y1), g2y = 0.5 * (x1 - x0);
+    const wsum = g0x * g0x + g0y * g0y + g1x * g1x + g1y * g1y + g2x * g2x + g2y * g2y;
+    if (wsum < 1e-12) continue;   // degenerate triangle: skip rather than divide by zero
+    const alphaT = areaAlphaBase / h2;
+    const dl = (-C - alphaT * LAMBDA_A[t]) / (wsum + alphaT);
+    LAMBDA_A[t] += dl;
+    X[i0] += dl * g0x; Y[i0] += dl * g0y;
+    X[i1] += dl * g1x; Y[i1] += dl * g1y;
+    X[i2] += dl * g2x; Y[i2] += dl * g2y;
+  }
+}
+
+/** Compliant pins that pull grabbed particles toward their pointer-relative targets. */
+function solvePins(h) {
+  const h2 = h * h;
+  for (const pin of PINS) {
+    const i = pin.i;
+    if (!ACTIVE[i]) continue;
+    const dx = X[i] - pin.tx, dy = Y[i] - pin.ty;
+    const d = Math.sqrt(dx * dx + dy * dy);
+    if (d < 1e-9) continue;
+    const alphaT = pin.alpha / h2;
+    const dl = (-d - alphaT * pin.lam) / (1 + alphaT);
+    pin.lam += dl;
+    X[i] += dl * dx / d;
+    Y[i] += dl * dy / d;
+  }
+}
+
+/** Floor, walls, ceiling and the moving blade. Friction removes tangential motion on floor contact. */
+function collide() {
+  const floor = view.floorY, minX = view.minX, maxX = view.maxX;
+  for (let i = 0; i < NP; i++) {
+    if (!ACTIVE[i]) continue;
+    let c = 0;
+    if (Y[i] > floor) {
+      Y[i] = floor;
+      c |= 1;
+      X[i] -= (X[i] - PX[i]) * CFG.FRICTION;
+    }
+    if (Y[i] < 0) Y[i] = 0;
+    if (X[i] < minX) { X[i] = minX; c |= 2; }
+    else if (X[i] > maxX) { X[i] = maxX; c |= 4; }
+    CONTACT[i] = c;
+    if (knifeSeg) pushFromBlade(i, knifeSeg);
+  }
+}
+
+function pushFromBlade(i, s) {
+  const dx = s.bx - s.ax, dy = s.by - s.ay;
+  const len2 = dx * dx + dy * dy;
+  let t = len2 > 0 ? ((X[i] - s.ax) * dx + (Y[i] - s.ay) * dy) / len2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  const ex = X[i] - (s.ax + t * dx), ey = Y[i] - (s.ay + t * dy);
+  const d = Math.hypot(ex, ey);
+  if (d > 1e-6 && d < CFG.KNIFE_RADIUS) {
+    const k = (CFG.KNIFE_RADIUS - d) / d;
+    X[i] += ex * k; Y[i] += ey * k;
+  }
+}
+
+/** Grab pins for every active pointer. Mirrored pins (Shift / right button) pull the opposite side of the melon. */
+function buildPins() {
+  const pins = [];
+  for (const p of pointers.values()) {
+    for (const gr of p.grabs) {
+      const tx = gr.mirrored ? 2 * CEN.x - p.x + gr.ox : p.x + gr.ox;
+      const ty = gr.mirrored ? 2 * CEN.y - p.y + gr.oy : p.y + gr.oy;
+      pins.push({ i: gr.i, tx, ty, alpha: CFG.GRAB_COMPLIANCE / Math.max(0.05, gr.w), lam: 0 });
+    }
+  }
+  return pins;
+}
+
+function isHealthy() {
+  for (let i = 0; i < NP; i++) {
+    if (ACTIVE[i] && !(Number.isFinite(X[i]) && Number.isFinite(Y[i]))) return false;
+  }
+  return true;
+}
+
+/* ---------- cutting ---------- */
+
+function orient(ax, ay, bx, by, cx, cy) {
+  return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+}
+
+function segmentsIntersect(ax, ay, bx, by, cx, cy, dx, dy) {
+  const d1 = orient(cx, cy, dx, dy, ax, ay);
+  const d2 = orient(cx, cy, dx, dy, bx, by);
+  const d3 = orient(ax, ay, bx, by, cx, cy);
+  const d4 = orient(ax, ay, bx, by, dx, dy);
+  return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+}
+
+function crossesSegment(ax, ay, bx, by, i, j) {
+  return segmentsIntersect(ax, ay, bx, by, X[i], Y[i], X[j], Y[j]);
+}
+
+/**
+ * Removes every live triangle that has an edge crossing the swept blade segment.
+ * The removed triangles leave a gap, so the two sides keep no shared particles and simulate separately.
+ */
+function cutAlong(ax, ay, bx, by) {
+  if (Math.hypot(bx - ax, by - ay) < 0.5) return;
+  let killed = 0;
+  for (let t = 0; t < NT; t++) {
+    if (!TRI_ALIVE[t]) continue;
+    const a = TRI[3 * t], b = TRI[3 * t + 1], c = TRI[3 * t + 2];
+    if (crossesSegment(ax, ay, bx, by, a, b) ||
+        crossesSegment(ax, ay, bx, by, b, c) ||
+        crossesSegment(ax, ay, bx, by, c, a)) {
+      TRI_ALIVE[t] = 0;
+      killed++;
+    }
+  }
+  if (killed > 0) {
+    rebuildTopology();
+    updateStatus();
+  }
+}
+
+/* ---------- input ---------- */
+
+/** Particles within the soft radius of a point; weight falls off linearly with distance. */
+function pickGrabs(x, y, mirrored) {
+  const cx = mirrored ? 2 * CEN.x - x : x;
+  const cy = mirrored ? 2 * CEN.y - y : y;
+  const R = CFG.GRAB_RADIUS;
+  const grabs = [];
+  for (let i = 0; i < NP; i++) {
+    if (!ACTIVE[i]) continue;
+    const d = Math.hypot(X[i] - cx, Y[i] - cy);
+    if (d < R) grabs.push({ i, ox: X[i] - cx, oy: Y[i] - cy, w: 1 - d / R, mirrored });
+  }
+  return grabs;
+}
+
+function toLocal(e) {
+  const r = canvas.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+function addTrail(x, y) {
+  trail.push({ x, y, t: performance.now() });
+}
+
+canvas.addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  canvas.setPointerCapture(e.pointerId);
+  const p = toLocal(e);
+  if (mode === 'knife') {
+    knife = { id: e.pointerId, x: p.x, y: p.y };
+    knifeSeg = { ax: p.x, ay: p.y, bx: p.x, by: p.y };
+    addTrail(p.x, p.y);
+    return;
+  }
+  const pinch = e.button === 2 || e.shiftKey;
+  const grabs = pickGrabs(p.x, p.y, false);
+  if (pinch) grabs.push(...pickGrabs(p.x, p.y, true));
+  pointers.set(e.pointerId, { x: p.x, y: p.y, grabs });
+});
+
+canvas.addEventListener('pointermove', (e) => {
+  const p = toLocal(e);
+  if (knife && e.pointerId === knife.id) {
+    knifeSeg = { ax: knife.x, ay: knife.y, bx: p.x, by: p.y };
+    cutAlong(knife.x, knife.y, p.x, p.y);
+    knife.x = p.x; knife.y = p.y;
+    addTrail(p.x, p.y);
+    return;
+  }
+  const ptr = pointers.get(e.pointerId);
+  if (ptr) { ptr.x = p.x; ptr.y = p.y; }
+});
+
+function endPointer(e) {
+  pointers.delete(e.pointerId);
+  if (knife && knife.id === e.pointerId) {
+    knife = null;
+    knifeSeg = null;
+  }
+}
+canvas.addEventListener('pointerup', endPointer);
+canvas.addEventListener('pointercancel', endPointer);
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+/* ---------- rendering ---------- */
+
+function render(now) {
+  ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
+  ctx.clearRect(0, 0, view.W, view.H);
+  drawFloor();
+  drawShadow();
+  drawMelon();
+  drawSeeds();
+  drawGrabRings();
+  drawKnife(now);
+}
+
+function drawFloor() {
+  const g = ctx.createLinearGradient(0, view.floorY, 0, view.H);
+  g.addColorStop(0, '#e9d7ab');
+  g.addColorStop(1, '#cdb47e');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, view.floorY, view.W, view.H - view.floorY);
+  ctx.fillStyle = 'rgba(120,90,40,0.35)';
+  ctx.fillRect(0, view.floorY, view.W, 1);
+}
+
+/** Soft contact shadow that fades as the melon rises. */
+function drawShadow() {
+  const height = Math.max(0, view.floorY - CEN.y);
+  const alpha = Math.max(0, 0.45 - height / (view.R * 4));
+  if (alpha <= 0) return;
+  const w = view.R * 1.1;
+  ctx.save();
+  ctx.translate(CEN.x, view.floorY);
+  ctx.scale(1, 0.18);
+  const g = ctx.createRadialGradient(0, 0, 0, 0, 0, w);
+  g.addColorStop(0, `rgba(60,40,20,${alpha})`);
+  g.addColorStop(1, 'rgba(60,40,20,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(0, 0, w, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+/** Each live triangle is filled and stroked in its own colour, which hides hairline seams. */
+function drawMelon() {
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = 1;
+  ctx.globalAlpha = 0.96;
+  for (let k = 0; k < LIVE.length; k++) {
+    const t = LIVE[k];
+    const layer = TRI_LAYER[t];
+    const col = layer === 0 ? fleshColor : (layer === 1 ? PITH_COLOR : RIND_COLOR);
+    const a = TRI[3 * t], b = TRI[3 * t + 1], c = TRI[3 * t + 2];
+    ctx.beginPath();
+    ctx.moveTo(X[a], Y[a]);
+    ctx.lineTo(X[b], Y[b]);
+    ctx.lineTo(X[c], Y[c]);
+    ctx.closePath();
+    ctx.fillStyle = col;
+    ctx.strokeStyle = col;
+    ctx.fill();
+    ctx.stroke();
+  }
+  // Gloss: a translucent white layer over the upper flesh.
+  ctx.fillStyle = 'rgba(255,255,255,0.16)';
+  const glossY = CEN.y - view.R * 0.12;
+  for (let k = 0; k < LIVE.length; k++) {
+    const t = LIVE[k];
+    if (TRI_LAYER[t] !== 0) continue;
+    const a = TRI[3 * t], b = TRI[3 * t + 1], c = TRI[3 * t + 2];
+    if ((Y[a] + Y[b] + Y[c]) / 3 > glossY) continue;
+    ctx.beginPath();
+    ctx.moveTo(X[a], Y[a]);
+    ctx.lineTo(X[b], Y[b]);
+    ctx.lineTo(X[c], Y[c]);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawSeeds() {
+  const rs = view.R * 0.018;
+  ctx.fillStyle = '#1f1a1a';
+  ctx.beginPath();
+  for (let i = 0; i < NP; i++) {
+    if (!ACTIVE[i] || !SEED[i]) continue;
+    ctx.moveTo(X[i] + rs, Y[i]);
+    ctx.arc(X[i], Y[i], rs, 0, Math.PI * 2);
+  }
+  ctx.fill();
+}
+
+function drawGrabRings() {
+  ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+  ctx.lineWidth = 1.5;
+  for (const p of pointers.values()) {
+    if (p.grabs.length === 0) continue;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, CFG.GRAB_RADIUS * 0.5, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+}
+
+function drawKnife(now) {
+  while (trail.length && now - trail[0].t > CFG.TRAIL_MS) trail.shift();
+  ctx.lineCap = 'round';
+  ctx.lineWidth = 3;
+  for (let k = 1; k < trail.length; k++) {
+    const a = trail[k - 1], b = trail[k];
+    const alpha = Math.max(0, 1 - (now - b.t) / CFG.TRAIL_MS);
+    ctx.strokeStyle = `rgba(40,44,60,${alpha})`;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+  if (knifeSeg) {
+    ctx.strokeStyle = '#2c3140';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(knifeSeg.ax, knifeSeg.ay);
+    ctx.lineTo(knifeSeg.bx, knifeSeg.by);
+    ctx.stroke();
+  }
+}
+
+/* ---------- main loop ---------- */
+
+let last = performance.now();
+let acc = 0;
+let fpsAcc = 0, fpsFrames = 0;
+
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  acc += dt;
+  while (acc >= CFG.FIXED_DT) {
+    simulate(CFG.FIXED_DT);
+    acc -= CFG.FIXED_DT;
+  }
+  if (!isHealthy()) {
+    reset();
+    showNotice('Recovered from a numerical blow-up');
+  }
+  render(now);
+
+  fpsAcc += dt;
+  fpsFrames++;
+  if (fpsAcc >= 0.5) {
+    fpsEl.textContent = `${Math.round(fpsFrames / fpsAcc)} FPS`;
+    fpsAcc = 0;
+    fpsFrames = 0;
+  }
+  requestAnimationFrame(frame);
+}
+
+/* ---------- reset, status, UI ---------- */
+
+function reset() {
+  computeView();
+  view.R = Math.max(60, Math.min(view.W * 0.14, view.H * 0.2, 200));
+  view.cx = view.W / 2;
+  view.baseY = view.H * 0.3;    // starts high so it falls, bounces and settles
+  buildMesh();
+  for (const p of pointers.values()) p.grabs = [];
+  knife = null;
+  knifeSeg = null;
+  trail.length = 0;
+  updateCentroid();
+  updateStatus();
+}
+
+let noticeTimer = 0;
+function showNotice(text) {
+  statusEl.textContent = text;
+  clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(updateStatus, 2500);
+}
+
+function updateStatus() {
+  const hint = mode === 'knife'
+    ? 'Drag across the melon to cut'
+    : 'Drag to pull, Shift or right-drag to pinch';
+  statusEl.textContent = `Pieces: ${pieces} · ${hint}`;
+}
+
+function setMode(m) {
+  mode = m;
+  for (const b of document.querySelectorAll('[data-mode]')) {
+    b.setAttribute('aria-pressed', String(b.dataset.mode === m));
+  }
+  canvas.classList.toggle('knife', m === 'knife');
+  updateStatus();
+}
+
+const colorPanel = /** @type {HTMLElement} */ (document.getElementById('colorPanel'));
+const colorPicker = /** @type {HTMLInputElement} */ (document.getElementById('colorPicker'));
+const btnColor = /** @type {HTMLElement} */ (document.getElementById('btnColor'));
+
+function setFleshColor(c) {
+  fleshColor = c;
+  colorPicker.value = c;
+}
+
+const swatchHost = /** @type {HTMLElement} */ (document.getElementById('swatches'));
+for (const [name, c] of SWATCHES) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'swatch';
+  b.title = name;
+  b.setAttribute('aria-label', name);
+  b.style.background = c;
+  b.addEventListener('click', () => setFleshColor(c));
+  swatchHost.appendChild(b);
+}
+
+btnColor.addEventListener('click', () => {
+  const open = !colorPanel.classList.contains('open');
+  colorPanel.classList.toggle('open', open);
+  btnColor.setAttribute('aria-pressed', String(open));
+});
+colorPicker.addEventListener('input', () => setFleshColor(colorPicker.value));
+
+for (const b of document.querySelectorAll('[data-mode]')) {
+  b.addEventListener('click', () => setMode(/** @type {HTMLElement} */ (b).dataset.mode));
+}
+document.getElementById('btnReset').addEventListener('click', reset);
+
+const fpsToggle = /** @type {HTMLInputElement} */ (document.getElementById('fpsToggle'));
+fpsEl.classList.toggle('on', fpsToggle.checked);
+fpsToggle.addEventListener('change', () => fpsEl.classList.toggle('on', fpsToggle.checked));
+
+for (const key of Object.keys(params)) {
+  const input = /** @type {HTMLInputElement} */ (document.getElementById(key));
+  const out = document.getElementById('out-' + key);
+  input.value = String(params[key]);
+  const show = () => {
+    out.textContent = Number(input.value).toFixed(input.step.includes('.') ? 2 : 0);
+  };
+  input.addEventListener('input', () => {
+    params[key] = Number(input.value);
+    show();
+  });
+  show();
+}
+
+window.addEventListener('resize', computeView);
+
+computeView();
+reset();
+setMode('grab');
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
