@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'sha256-fVlEGhJzE8Gv8F5NRtkO8BVtV28dJtNxZpUKLAb8uMU='">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-HqZzfZMRBb+2EONEYhO0LIyudJqPKC+6MftfXiTuEbE='; style-src 'sha256-fVlEGhJzE8Gv8F5NRtkO8BVtV28dJtNxZpUKLAb8uMU='">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Benchmark results</title>
 <style>
@@ -25,6 +25,154 @@ tr.group-heading th{background:#2b3345}
 </head>
 <body>
 <h1>Benchmark results</h1>
-<p class="empty">No results found under results/ in this checkout.</p>
+<p>3 results from results/ in this checkout. Duration, output tokens and cost come from each result's .run.json; — means not recorded.</p>
+<p><label for="group-by">Group by</label> <select id="group-by" autocomplete="off"><option value="">none</option><option value="prompt">prompt</option><option value="model">model</option><option value="effort">effort</option></select></p>
+<table id="results">
+<thead><tr><th scope="col" data-key="prompt" data-type="text"><button type="button">Prompt</button></th><th scope="col" data-key="model" data-type="text"><button type="button">Model</button></th><th scope="col" data-key="effort" data-type="num" class="num"><button type="button">Effort</button></th><th scope="col" data-key="generated" data-type="text"><button type="button">Generated (UTC)</button></th><th scope="col" data-key="duration" data-type="num" class="num"><button type="button">Duration</button></th><th scope="col" data-key="output_tokens" data-type="num" class="num"><button type="button">Output tokens</button></th><th scope="col" data-key="cost" data-type="num" class="num"><button type="button">Cost (USD)</button></th><th scope="col" data-key="file" data-type="text"><button type="button">Result</button></th></tr></thead>
+<tbody>
+<tr data-index="0"><td data-sort="game-melon-jelly" title="Melon Jelly: XPBD soft-body watermelon slice">game-melon-jelly</td><td data-sort="claude-opus-4-8">claude-opus-4-8</td><td class="num" data-sort="2">high</td><td data-sort="2026-11-15T13:09:00Z">2026-11-15 13:09</td><td class="num" data-sort="867.3">14m 27s</td><td class="num" data-sort="64094">64,094</td><td class="num" data-sort="3.203972">$3.20</td><td data-sort="melon-jelly_claude_opus_4_8_high.html"><a href="results/melon-jelly/melon-jelly_claude_opus_4_8_high.html" target="_blank" rel="noopener noreferrer">melon-jelly_claude_opus_4_8_high.html</a></td></tr>
+<tr data-index="1"><td data-sort="game-melon-jelly" title="Melon Jelly: XPBD soft-body watermelon slice">game-melon-jelly</td><td data-sort="claude-opus-5-5">claude-opus-5-5</td><td class="num" data-sort="1">medium</td><td data-sort="2026-11-15T13:11:18Z">2026-11-15 13:11</td><td class="num" data-sort="1020.5">17m 00s</td><td class="num" data-sort="107229">107,229</td><td class="num" data-sort="3.536627">$3.54</td><td data-sort="melon-jelly_claude_opus_5_5_medium.html"><a href="results/melon-jelly/melon-jelly_claude_opus_5_5_medium.html" target="_blank" rel="noopener noreferrer">melon-jelly_claude_opus_5_5_medium.html</a></td></tr>
+<tr data-index="2"><td data-sort="game-melon-jelly" title="Melon Jelly: XPBD soft-body watermelon slice">game-melon-jelly</td><td data-sort="claude-sonnet-5">claude-sonnet-5</td><td class="num" data-sort="2">high</td><td data-sort="2026-11-15T13:10:38Z">2026-11-15 13:10</td><td class="num" data-sort="840.7">14m 01s</td><td class="num" data-sort="83001">83,001</td><td class="num" data-sort="1.686031">$1.69</td><td data-sort="melon-jelly_claude_sonnet_5_high.html"><a href="results/melon-jelly/melon-jelly_claude_sonnet_5_high.html" target="_blank" rel="noopener noreferrer">melon-jelly_claude_sonnet_5_high.html</a></td></tr>
+</tbody>
+</table>
+<script>
+"use strict";
+var MISSING_LABEL = "—";
+
+function isMissing(value) {
+  return value === null || value === undefined;
+}
+
+// Ascending comparison of two data-sort values; a missing value sorts last.
+function compareValues(a, b, type) {
+  var aMissing = isMissing(a);
+  var bMissing = isMissing(b);
+  if (aMissing || bMissing) {
+    return aMissing === bMissing ? 0 : (aMissing ? 1 : -1);
+  }
+  if (type === "num") {
+    return parseFloat(a) - parseFloat(b);
+  }
+  return a.localeCompare(b, "en", {numeric: true});
+}
+
+// items: [{index, values: {key: string|null}, texts: {key: string}}].
+// Returns {items, groups: [{label, count}]}; items are ordered so each group's
+// members are contiguous. Missing values stay last in both sort directions.
+function orderRows(items, sortKey, sortDir, groupKey, types) {
+  var direction = sortDir === "desc" ? -1 : 1;
+  function byRow(x, y) {
+    if (sortKey) {
+      var a = x.values[sortKey];
+      var b = y.values[sortKey];
+      var c = compareValues(a, b, types[sortKey]);
+      if (c !== 0) {
+        return isMissing(a) || isMissing(b) ? c : c * direction;
+      }
+    }
+    return x.index - y.index;
+  }
+  if (!groupKey) {
+    return {items: items.slice().sort(byRow), groups: []};
+  }
+  var buckets = new Map();
+  items.forEach(function (item) {
+    var value = item.values[groupKey];
+    var key = isMissing(value) ? null : value;
+    if (!buckets.has(key)) {
+      buckets.set(key, []);
+    }
+    buckets.get(key).push(item);
+  });
+  var keys = Array.from(buckets.keys()).sort(function (a, b) {
+    return compareValues(a, b, types[groupKey]);
+  });
+  var ordered = [];
+  var groups = [];
+  keys.forEach(function (key) {
+    var members = buckets.get(key).sort(byRow);
+    ordered = ordered.concat(members);
+    groups.push({
+      label: key === null ? MISSING_LABEL : members[0].texts[groupKey],
+      count: members.length
+    });
+  });
+  return {items: ordered, groups: groups};
+}
+
+if (typeof document !== "undefined") {
+  document.addEventListener("DOMContentLoaded", function () {
+    var table = document.getElementById("results");
+    var select = document.getElementById("group-by");
+    if (!table || !select) {
+      return;
+    }
+    var body = table.tBodies[0];
+    var headers = Array.from(table.tHead.rows[0].cells);
+    var types = {};
+    headers.forEach(function (th) {
+      types[th.dataset.key] = th.dataset.type;
+    });
+    var items = Array.from(body.rows).map(function (row) {
+      var values = {};
+      var texts = {};
+      headers.forEach(function (th, i) {
+        var cell = row.cells[i];
+        values[th.dataset.key] = cell.dataset.sort === undefined ? null : cell.dataset.sort;
+        texts[th.dataset.key] = cell.textContent;
+      });
+      return {index: Number(row.dataset.index), row: row, values: values, texts: texts};
+    });
+    var sortKey = null;
+    var sortDir = "asc";
+
+    function render() {
+      var result = orderRows(items, sortKey, sortDir, select.value, types);
+      while (body.firstChild) {
+        body.removeChild(body.firstChild);
+      }
+      var position = 0;
+      var groups = result.groups.length ? result.groups : [null];
+      groups.forEach(function (group) {
+        var count = group ? group.count : result.items.length;
+        if (group) {
+          var tr = document.createElement("tr");
+          tr.className = "group-heading";
+          var th = document.createElement("th");
+          th.colSpan = headers.length;
+          th.scope = "colgroup";
+          th.textContent = group.label + " (" + group.count + ")";
+          tr.appendChild(th);
+          body.appendChild(tr);
+        }
+        for (var i = 0; i < count; i++) {
+          body.appendChild(result.items[position].row);
+          position += 1;
+        }
+      });
+      headers.forEach(function (th) {
+        if (th.dataset.key === sortKey) {
+          th.setAttribute("aria-sort", sortDir === "asc" ? "ascending" : "descending");
+        } else {
+          th.removeAttribute("aria-sort");
+        }
+      });
+    }
+
+    headers.forEach(function (th) {
+      th.querySelector("button").addEventListener("click", function () {
+        if (sortKey === th.dataset.key) {
+          sortDir = sortDir === "asc" ? "desc" : "asc";
+        } else {
+          sortKey = th.dataset.key;
+          sortDir = "asc";
+        }
+        render();
+      });
+    });
+    select.addEventListener("change", render);
+  });
+}
+</script>
 </body>
 </html>
