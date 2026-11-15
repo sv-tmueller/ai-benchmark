@@ -23,6 +23,7 @@ import tempfile
 import unittest
 import urllib.parse
 from pathlib import Path
+from unittest import mock
 
 from harness import dashboard
 
@@ -786,3 +787,582 @@ class MainTest(TempRootCase):
                                 capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("dashboard.html", result.stdout)
+
+
+# --- reading the results from a git tree --------------------------------------
+
+def _blob_oid(data):
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+class FakeGit:
+    """The two git commands ``collect_rows_at`` may issue, answered from ``entries``.
+
+    ``entries`` is a list of ``(path bytes, content bytes)`` or
+    ``(path bytes, content bytes, mode)``; the mode defaults to ``100644``. A
+    ``160000`` entry is a gitlink: it lists with type ``commit`` and has no
+    blob. The listing is in byte order, which is git's order for these names
+    (folder ``a.b`` before folder ``a``). Anything but the two commands, with
+    exactly the expected arguments, fails the test.
+    """
+
+    def __init__(self, entries, missing=()):
+        self.entries = sorted((e + (b"100644",) if len(e) == 2 else e) for e in entries)
+        self.missing = set(missing)
+        self.calls = []
+
+    def ls_tree_output(self):
+        out = b""
+        for path, content, mode in self.entries:
+            kind, oid = (b"commit", b"%040x" % 7) if mode == b"160000" else (
+                b"blob", _blob_oid(content).encode("ascii"))
+            out += b"%s %s %s\t%s\0" % (mode, kind, oid, path)
+        return out
+
+    def cat_file_output(self, request):
+        blobs = {_blob_oid(c): c for _, c, mode in self.entries if mode != b"160000"}
+        out = b""
+        for oid in request.decode("ascii").split("\n")[:-1]:
+            if oid in self.missing or oid not in blobs:
+                out += b"%s missing\n" % oid.encode("ascii")
+            else:
+                out += b"%s blob %d\n%s\n" % (oid.encode("ascii"), len(blobs[oid]), blobs[oid])
+        return out
+
+    def __call__(self, args, input=None):
+        self.calls.append((list(args), input))
+        if args == ["ls-tree", "-r", "-z", "REV", "--", "results"]:
+            return self.ls_tree_output()
+        if args == ["cat-file", "--batch"]:
+            return self.cat_file_output(input)
+        raise AssertionError("unexpected git call: %r" % (args,))
+
+    def cat_file_requests(self):
+        return [input for args, input in self.calls if args == ["cat-file", "--batch"]]
+
+
+def _json_bytes(value):
+    return json.dumps(value).encode("utf-8")
+
+
+def _meta(prompt="p", model="m", effort="low", title="T"):
+    return _json_bytes({"prompt_id": prompt, "model": model, "title": title,
+                        "params": {"reasoning_effort": effort},
+                        "generated_utc": "2026-11-14T18:00:00Z"})
+
+
+def _write_entries(root, entries):
+    """Write ``(path bytes, content[, mode])`` entries under ``root`` as regular files."""
+    root_b = os.fsencode(root)
+    for entry in entries:
+        path, content = entry[0], entry[1]
+        full = os.path.join(root_b, path)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "wb") as handle:
+            handle.write(content)
+
+
+def _parity_entries():
+    run = _json_bytes({"duration_seconds": 754, "output_tokens": 12345, "cost_usd": 1.234})
+    return [
+        # Folders a and a.b hold results that tie on every sort key but the folder.
+        (b"results/a/p_m_low.html", b"<html>a</html>"),
+        (b"results/a/p_m_low.meta.json", _meta()),
+        (b"results/a/p_m_low.run.json", run),
+        (b"results/a.b/p_m_low.html", b"<html>a.b</html>"),
+        (b"results/a.b/p_m_low.meta.json", _meta()),
+        (b"results/a.b/p_m_low.run.json", run),
+        # A second row in the same folder, with a non-ASCII title.
+        (b"results/a/p_m_high.html", b"<html>h</html>"),
+        (b"results/a/p_m_high.meta.json", _meta(effort="high", title="Größe ✓")),
+        # Not results: harness output, no meta, meta without a deliverable.
+        (b"results/a/p_m_low_grading.json", b"{}"),
+        (b"results/a/p_m_low_review.html", b"<p>"),
+        (b"results/a/p_m_low.png", b"\x89PNG"),
+        (b"results/a/orphan.html", b"<p>"),
+        (b"results/a/gone.meta.json", b"{}"),
+        # Directly under results/ and below a results folder: not results.
+        (b"results/loose.html", b"<p>"),
+        (b"results/loose.meta.json", b"{}"),
+        (b"results/a/deeper/x.html", b"<p>"),
+        (b"results/a/deeper/x.meta.json", b"{}"),
+        # Sidecars that cannot be read: still rows, with warnings.
+        (b"results/b/q_n_low.html", b"<p>"),
+        (b"results/b/q_n_low.meta.json", b"{not json"),
+        (b"results/b/q_n_low.run.json", b"[1]"),
+        (b"results/b/q_o_low.html", b"<p>"),
+        (b"results/b/q_o_low.meta.json", b"[1, 2]"),
+        (b"results/b/q_o_low.run.json", b'{"duration_seconds": 1%s}' % (b"0" * 400)),
+        (b"results/b/q_u_low.html", b"<p>"),
+        (b"results/b/q_u_low.meta.json", json.dumps({"model": "u"}).encode("utf-16")),
+        (b"results/b/q_u_low.run.json", b"\xff\xfe"),
+        (b"results/b/q_deep_low.html", b"<p>"),
+        (b"results/b/q_deep_low.meta.json", b"[" * 100000),
+    ]
+
+
+class ReaderParityTest(TempRootCase):
+    """The working-tree reader and the git-tree reader share one core."""
+
+    def _both(self, entries, **fake_kwargs):
+        _write_entries(self.root, entries)
+        fake = FakeGit(entries, **fake_kwargs)
+        return dashboard.collect_rows(self.root), dashboard.collect_rows_at("REV", fake), fake
+
+    def test_same_rows_and_warnings_for_the_same_files(self):
+        by_hand, from_git, _ = self._both(_parity_entries())
+        self.assertEqual(from_git, by_hand)
+        rows, warnings = from_git
+        self.assertEqual(len(rows), 7)
+        self.assertEqual(len(warnings), 7)
+        self.assertEqual(dashboard.render(rows), dashboard.render(by_hand[0]))
+
+    def test_rows_that_tie_keep_the_folder_name_order_not_git_tree_order(self):
+        _, (rows, _), fake = self._both(_parity_entries())
+        # git lists results/a.b/ before results/a/ ...
+        listed = [e[0] for e in fake.entries if e[0].endswith(b"p_m_low.html")]
+        self.assertEqual(listed, [b"results/a.b/p_m_low.html", b"results/a/p_m_low.html"])
+        # ... the rows must come out folder a first, as a directory walk gives them.
+        tied = [r.relpath for r in rows if r.file == "p_m_low.html"]
+        self.assertEqual(tied, ["results/a/p_m_low.html", "results/a.b/p_m_low.html"])
+
+    def test_non_utf8_names_give_the_same_rows_in_both_readers(self):
+        entries = [
+            (b"results/bad\xffdir/bad\xffdir_claude_low.html", b"<p>"),
+            (b"results/bad\xffdir/bad\xffdir_claude_low.meta.json", b"{}"),
+            (b"results/good/g\xff_claude_low.html", b"<p>"),
+            (b"results/good/g\xff_claude_low.meta.json", b"{}"),
+        ]
+        try:
+            _write_entries(self.root, entries)
+        except (OSError, UnicodeError) as exc:
+            self.skipTest("filesystem refuses non-UTF-8 names: %s" % exc)
+        by_hand = dashboard.collect_rows(self.root)
+        from_git = dashboard.collect_rows_at("REV", FakeGit(entries))
+        self.assertEqual(from_git, by_hand)
+        self.assertEqual(len(from_git[0]), 2)
+        self.assertEqual(len(from_git[1]), 2)
+
+    def test_no_results_gives_no_rows(self):
+        rows, warnings = dashboard.collect_rows_at("REV", FakeGit([]))
+        self.assertEqual((rows, warnings), ([], []))
+
+    def test_a_missing_run_file_has_no_warning_and_a_missing_meta_blob_has_one(self):
+        entries = [
+            (b"results/a/p_m_low.html", b"<p>"),
+            (b"results/a/p_m_low.meta.json", _meta()),
+            (b"results/a/p_m_low.run.json", b'{"output_tokens": 3}'),
+        ]
+        meta_oid = _blob_oid(_meta())
+        rows, warnings = dashboard.collect_rows_at("REV", FakeGit(entries, missing={meta_oid}))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].output_tokens, 3)
+        self.assertEqual(warnings, ["results/a/p_m_low.meta.json: cannot read meta file"])
+        run_oid = _blob_oid(b'{"output_tokens": 3}')
+        rows, warnings = dashboard.collect_rows_at("REV", FakeGit(entries, missing={run_oid}))
+        self.assertEqual(rows[0].output_tokens, None)
+        self.assertEqual(len(warnings), 1)
+        self.assertTrue(warnings[0].startswith("results/a/p_m_low.run.json: cannot read run file ("))
+
+
+class SymlinkTest(TempRootCase):
+    """A symlink under ``results/`` is never a result, in either reader."""
+
+    def _link(self, link, target):
+        link.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.symlink(target, link)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest("cannot create symlinks: %s" % exc)
+
+    def test_a_symlinked_deliverable_is_not_a_result(self):
+        outside = _write(self.root / "outside.html", "<p>")
+        _write(self.root / "results" / "a" / "p_m_low.meta.json", "{}")
+        self._link(self.root / "results" / "a" / "p_m_low.html", outside)
+        self.assertEqual(dashboard.collect_rows(self.root), ([], []))
+
+    def test_a_symlinked_meta_file_is_not_a_pairing(self):
+        outside = _write(self.root / "outside.json", "{}")
+        _write(self.root / "results" / "a" / "p_m_low.html", "<p>")
+        self._link(self.root / "results" / "a" / "p_m_low.meta.json", outside)
+        self.assertEqual(dashboard.collect_rows(self.root), ([], []))
+
+    def test_a_symlinked_run_file_is_not_read(self):
+        outside = _write(self.root / "outside.json", '{"output_tokens": 99}')
+        _add_result(self.root, "a", "p_m_low.html", meta={})
+        self._link(self.root / "results" / "a" / "p_m_low.run.json", outside)
+        rows, warnings = dashboard.collect_rows(self.root)
+        self.assertEqual((len(rows), warnings), (1, []))
+        self.assertIsNone(rows[0].output_tokens)
+
+    def test_a_symlinked_folder_is_not_walked(self):
+        _add_result(self.root, "real", "p_m_low.html", meta={})
+        self._link(self.root / "results" / "alias", self.root / "results" / "real")
+        rows, _ = dashboard.collect_rows(self.root)
+        self.assertEqual([r.relpath for r in rows], ["results/real/p_m_low.html"])
+
+    def test_a_results_folder_that_is_itself_a_symlink_is_no_results_in_both_readers(self):
+        real = self.root / "elsewhere"
+        _add_result(real, "a", "p_m_low.html", meta={})
+        # results -> a folder that holds a real, readable result.
+        self._link(self.root / "results", real / "results")
+        self.assertTrue((self.root / "results" / "a" / "p_m_low.html").is_file())
+        from_tree = dashboard.collect_rows(self.root)
+        # The same tree as git stores it: `results` itself is one 120000 entry.
+        from_git = dashboard.collect_rows_at(
+            "REV", FakeGit([(b"results", b"elsewhere/results", b"120000")]))
+        self.assertEqual(from_tree, ([], []))
+        self.assertEqual(from_git, ([], []))
+        self.assertEqual(dashboard.render(from_tree[0]), dashboard.render(from_git[0]))
+
+    def test_git_symlinks_and_gitlinks_are_not_results(self):
+        meta = _meta()
+        entries = [
+            (b"results/real/p_m_low.html", b"<p>", b"100755"),
+            (b"results/real/p_m_low.meta.json", meta),
+            # a symlink deliverable, a symlink meta, a gitlink
+            (b"results/link/p_m_low.html", b"../real/p_m_low.html", b"120000"),
+            (b"results/link/p_m_low.meta.json", meta),
+            (b"results/linkmeta/p_m_low.html", b"<p>"),
+            (b"results/linkmeta/p_m_low.meta.json", b"../real/p_m_low.meta.json", b"120000"),
+            (b"results/sub/p_m_low.html", b"", b"160000"),
+            (b"results/sub/p_m_low.meta.json", b"", b"160000"),
+        ]
+        fake = FakeGit(entries)
+        rows, warnings = dashboard.collect_rows_at("REV", fake)
+        self.assertEqual([r.relpath for r in rows], ["results/real/p_m_low.html"])
+        self.assertEqual(warnings, [])
+        # Only the regular meta blob was requested: never a symlink's or a gitlink's.
+        requested = fake.cat_file_requests()
+        self.assertEqual(len(requested), 1)
+        self.assertEqual(requested[0].decode("ascii").split("\n")[:-1], [_blob_oid(meta)])
+
+
+class GitReaderTest(unittest.TestCase):
+    def test_ls_tree_is_asked_for_results_only_with_nul_separated_output(self):
+        fake = FakeGit([])
+        dashboard.collect_rows_at("REV", fake)
+        self.assertEqual(fake.calls, [(["ls-tree", "-r", "-z", "REV", "--", "results"], None)])
+
+    def test_only_meta_and_run_blobs_are_requested_once_in_one_call(self):
+        meta, run = _meta(), _json_bytes({"output_tokens": 1})
+        entries = [
+            (b"results/a/p_m_low.html", b"DELIVERABLE-ONE"),
+            (b"results/a/p_m_low.meta.json", meta),
+            (b"results/a/p_m_low.run.json", run),
+            (b"results/a/p_m_high.html", b"DELIVERABLE-TWO"),
+            (b"results/a/p_m_high.meta.json", meta),  # the same blob again
+            (b"results/a/p_m_low_grading.json", b"GRADING"),
+            (b"results/a/p_m_low.png", b"PNG"),
+        ]
+        fake = FakeGit(entries)
+        rows, warnings = dashboard.collect_rows_at("REV", fake)
+        self.assertEqual((len(rows), warnings), (2, []))
+        requests = fake.cat_file_requests()
+        self.assertEqual(len(requests), 1)
+        asked = requests[0].decode("ascii").split("\n")[:-1]
+        self.assertEqual(sorted(asked), sorted({_blob_oid(meta), _blob_oid(run)}))
+        for other in (b"DELIVERABLE-ONE", b"DELIVERABLE-TWO", b"GRADING", b"PNG"):
+            self.assertNotIn(_blob_oid(other), asked)
+
+    def test_no_meta_or_run_blobs_means_no_cat_file_call(self):
+        fake = FakeGit([(b"results/a/p_m_low.html", b"<p>")])
+        self.assertEqual(dashboard.collect_rows_at("REV", fake), ([], []))
+        self.assertEqual(fake.cat_file_requests(), [])
+
+    def test_blob_sizes_are_counted_in_bytes_not_characters(self):
+        title = "Größe ✓ 日本語"
+        entries = [(b"results/a/p_m_low.html", b"<p>"),
+                   (b"results/a/p_m_low.meta.json", _json_bytes({"title": title})),
+                   (b"results/a/p_m_low.run.json", b'{"output_tokens": 7}')]
+        rows, warnings = dashboard.collect_rows_at("REV", FakeGit(entries))
+        self.assertEqual((rows[0].title, rows[0].output_tokens, warnings), (title, 7, []))
+
+    def test_a_blob_whose_content_looks_like_a_header_is_still_read_by_size(self):
+        tricky = b'{"title": "x"}\n' + _blob_oid(b"y").encode("ascii") + b" missing\n"
+        entries = [(b"results/a/p_m_low.html", b"<p>"),
+                   (b"results/a/p_m_low.meta.json", tricky),
+                   (b"results/a/p_m_low.run.json", b'{"output_tokens": 7}')]
+        rows, warnings = dashboard.collect_rows_at("REV", FakeGit(entries))
+        # The extra text after the JSON value makes the meta unreadable; the run file
+        # that follows it in the stream is read correctly.
+        self.assertEqual(rows[0].output_tokens, 7)
+        self.assertEqual(warnings, ["results/a/p_m_low.meta.json: cannot read meta file"])
+
+    def test_a_failing_git_call_propagates(self):
+        def failing(args, input=None):
+            raise dashboard.GitReadError("git ls-tree failed: boom")
+
+        with self.assertRaises(dashboard.GitReadError):
+            dashboard.collect_rows_at("REV", failing)
+
+    def test_malformed_listing_and_stream_raise_git_read_error(self):
+        meta = _meta()
+        entries = [(b"results/a/p_m_low.html", b"<p>"), (b"results/a/p_m_low.meta.json", meta)]
+        with self.assertRaises(dashboard.GitReadError):
+            dashboard.collect_rows_at("REV", lambda args, input=None: b"not a listing\0")
+        good = FakeGit(entries)
+        complete = good.cat_file_output((_blob_oid(meta) + "\n").encode("ascii"))
+        for broken in (b"", b"garbage\n", complete[:-8], complete[:-1] + b"X"):
+            def git(args, input=None, broken=broken):
+                return good.ls_tree_output() if args[0] == "ls-tree" else broken
+            with self.subTest(stream=broken[:20]):
+                with self.assertRaises(dashboard.GitReadError):
+                    dashboard.collect_rows_at("REV", git)
+
+
+class MainWritesBytesTest(TempRootCase):
+    def test_the_page_is_written_with_lf_line_ends_and_no_translation(self):
+        _add_result(self.root, "alpha", "alpha_m_low.html", meta={})
+        real_write_text = type(self.root).write_text
+        seen = []
+
+        def spy(path, data, *args, **kwargs):
+            seen.append(kwargs)
+            return real_write_text(path, data, *args, **kwargs)
+
+        with mock.patch.object(type(self.root), "write_text", spy):
+            code = dashboard.main([], repo_root=self.root, out=io.StringIO(), err=io.StringIO())
+        self.assertEqual(code, 0)
+        # Platform newline translation is the one thing that could make two
+        # machines write different bytes for the same page.
+        self.assertEqual(seen, [{"encoding": "utf-8", "newline": "\n"}])
+        data = (self.root / "dashboard.html").read_bytes()
+        self.assertNotIn(b"\r", data)
+        self.assertTrue(data.endswith(b"</html>\n"))
+
+
+class MainSkipsUnchangedWriteTest(TempRootCase):
+    """An up-to-date ``dashboard.html`` is left alone, so git does not re-stat it."""
+
+    def _main(self):
+        out = io.StringIO()
+        code = dashboard.main([], repo_root=self.root, out=out, err=io.StringIO())
+        return code, out.getvalue()
+
+    def test_a_current_file_is_not_rewritten_but_the_path_is_printed(self):
+        _add_result(self.root, "alpha", "alpha_m_low.html", meta={})
+        self._main()
+        target = self.root / "dashboard.html"
+        before = target.read_bytes()
+        os.utime(target, ns=(10**18, 10**18))  # a modification time no write would keep
+
+        real_write_text = type(self.root).write_text
+        writes = []
+
+        def spy(path, *args, **kwargs):
+            writes.append(path)
+            return real_write_text(path, *args, **kwargs)
+
+        with mock.patch.object(type(self.root), "write_text", spy):
+            code, out = self._main()
+
+        self.assertEqual((code, out), (0, "%s\n" % target))
+        self.assertEqual(writes, [])
+        self.assertEqual(target.stat().st_mtime_ns, 10**18)
+        self.assertEqual(target.read_bytes(), before)
+
+    def test_a_stale_file_is_rewritten(self):
+        _add_result(self.root, "alpha", "alpha_m_low.html", meta={})
+        self._main()
+        target = self.root / "dashboard.html"
+        current = target.read_bytes()
+        for stale in (b"", b"PLANTED", current + b"\n", current.replace(b"\n", b"\r\n")):
+            with self.subTest(stale=stale[:12]):
+                target.write_bytes(stale)
+                os.utime(target, ns=(10**18, 10**18))
+                code, _ = self._main()
+                self.assertEqual(code, 0)
+                self.assertEqual(target.read_bytes(), current)
+                self.assertNotEqual(target.stat().st_mtime_ns, 10**18)
+
+    def test_a_missing_file_is_written(self):
+        _add_result(self.root, "alpha", "alpha_m_low.html", meta={})
+        code, _ = self._main()
+        self.assertEqual(code, 0)
+        self.assertTrue((self.root / "dashboard.html").is_file())
+
+    def _mode_has_effect(self, target, mode, *, read=False, write=False):
+        """Skip unless chmod ``mode`` really denies the requested access here."""
+        target.chmod(mode)
+        self.addCleanup(target.chmod, 0o600)
+        if read:
+            try:
+                target.read_bytes()
+            except OSError:
+                pass
+            else:
+                self.skipTest("file modes do not block reading here (root or no mode support)")
+        if write:
+            try:
+                with open(target, "ab"):
+                    pass
+            except OSError:
+                pass
+            else:
+                self.skipTest("file modes do not block writing here (root or no mode support)")
+
+    def test_a_writable_but_unreadable_stale_file_is_rewritten(self):
+        _add_result(self.root, "alpha", "alpha_m_low.html", meta={})
+        target = self.root / "dashboard.html"
+        target.write_text("old", encoding="utf-8")
+        self._mode_has_effect(target, 0o200, read=True)
+        err = io.StringIO()
+        code = dashboard.main([], repo_root=self.root, out=io.StringIO(), err=err)
+        self.assertEqual((code, err.getvalue()), (0, ""))
+        target.chmod(0o600)
+        self.assertTrue(target.read_text(encoding="utf-8").startswith("<!DOCTYPE html>"))
+
+    def test_a_target_that_can_be_neither_read_nor_written_is_one_error_line(self):
+        target = self.root / "dashboard.html"
+        target.write_text("old", encoding="utf-8")
+        self._mode_has_effect(target, 0o000, read=True, write=True)
+        out, err = io.StringIO(), io.StringIO()
+        code = dashboard.main([], repo_root=self.root, out=out, err=err)
+        self.assertEqual((code, out.getvalue()), (1, ""))
+        self.assertEqual(len(err.getvalue().splitlines()), 1)
+        self.assertTrue(err.getvalue().startswith("error: "))
+        self.assertNotIn("Traceback", err.getvalue())
+        target.chmod(0o600)
+        self.assertEqual(target.read_text(encoding="utf-8"), "old")
+
+    def test_a_folder_at_the_target_path_is_one_error_line(self):
+        (self.root / "dashboard.html").mkdir()
+        out, err = io.StringIO(), io.StringIO()
+        code = dashboard.main([], repo_root=self.root, out=out, err=err)
+        self.assertEqual((code, out.getvalue()), (1, ""))
+        self.assertEqual(len(err.getvalue().splitlines()), 1)
+        self.assertTrue(err.getvalue().startswith("error: "))
+        self.assertNotIn("Traceback", err.getvalue())
+
+
+@unittest.skipUnless(shutil.which("git"), "git is not installed")
+class RealGitReaderTest(unittest.TestCase):
+    """``collect_rows_at`` against real git in a throwaway repo (no remote)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = Path(self.tmp.name).resolve() / "repo"
+        self.repo.mkdir()
+        env = {"HOME": str(self.repo.parent), "GIT_CONFIG_GLOBAL": os.devnull,
+               "GIT_CONFIG_SYSTEM": os.devnull,
+               "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.test",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.test"}
+        patcher = mock.patch.dict(os.environ, env)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.git("init", "-q", "-b", "main")
+
+    def git(self, *cmd, binary=False):
+        done = subprocess.run(["git", *cmd], cwd=self.repo, capture_output=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return done.stdout if binary else done.stdout.decode("utf-8").strip()
+
+    def reader(self, args, input=None):
+        done = subprocess.run(["git", *args], cwd=self.repo, capture_output=True, input=input)
+        if done.returncode:
+            raise dashboard.GitReadError(done.stderr.decode("utf-8", "replace"))
+        return done.stdout
+
+    def test_git_tree_page_equals_the_page_main_writes_and_regenerating_changes_nothing(self):
+        entries = _parity_entries()
+        entries.append((b"results/.gitkeep", b""))
+        _write_entries(self.repo, entries)
+        # A symlink deliverable with a regular meta: not a result in either reader.
+        try:
+            os.symlink("p_m_low.html", self.repo / "results" / "a" / "link.html")
+        except (OSError, NotImplementedError):
+            pass
+        (self.repo / "results" / "a" / "link.meta.json").write_text("{}")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "results")
+
+        rows, _ = dashboard.collect_rows_at("HEAD", self.reader)
+        from_git = dashboard.render(rows).encode("utf-8")
+
+        code = dashboard.main([], repo_root=self.repo, out=io.StringIO(), err=io.StringIO())
+        self.assertEqual(code, 0)
+        self.assertEqual((self.repo / "dashboard.html").read_bytes(), from_git)
+        self.assertNotIn("link.html", from_git.decode("utf-8"))
+
+        # Committed, the file is exactly what a second run writes again.
+        self.git("add", "dashboard.html")
+        self.git("commit", "-q", "-m", "dashboard")
+        code = dashboard.main([], repo_root=self.repo, out=io.StringIO(), err=io.StringIO())
+        self.assertEqual(code, 0)
+        self.assertEqual(self.git("status", "--porcelain"), "")
+        self.assertEqual(self.git("show", "HEAD:dashboard.html", binary=True), from_git)
+
+    def _clone_and_hand_run(self, autocrlf, with_attributes):
+        """Commit a current dashboard in ``repo``, clone it, hand-run in the clone.
+
+        ``autocrlf`` is ``"true"``, ``"input"`` or ``None`` (unset); it is set
+        at clone time and in the clone's config. Returns the clone's
+        ``git status --porcelain`` after the run.
+        """
+        _write_entries(self.repo, [(b"results/.gitkeep", b"")] + _parity_entries()[:3])
+        code = dashboard.main([], repo_root=self.repo, out=io.StringIO(), err=io.StringIO())
+        self.assertEqual(code, 0)
+        if with_attributes:
+            shutil.copyfile(dashboard.REPO_ROOT / ".gitattributes", self.repo / ".gitattributes")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "results and dashboard")
+        clone = Path(self.tmp.name) / "clone"
+        flags = ["-c", "core.autocrlf=%s" % autocrlf] if autocrlf else []
+        done = subprocess.run(["git", *flags, "clone", "-q", str(self.repo), str(clone)],
+                              capture_output=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+        def in_clone(*cmd):
+            done = subprocess.run(["git", *cmd], cwd=clone, capture_output=True)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            return done.stdout.decode("utf-8").strip()
+
+        if autocrlf:
+            in_clone("config", "core.autocrlf", autocrlf)
+        code = dashboard.main([], repo_root=clone, out=io.StringIO(), err=io.StringIO())
+        self.assertEqual(code, 0)
+        return in_clone("status", "--porcelain")
+
+    def test_a_hand_run_on_a_clean_current_clone_leaves_git_status_empty(self):
+        # With core.autocrlf=true and no attribute, git checks the file out
+        # with CRLF line ends, so a hand run (LF) always differs from it. The
+        # repo's .gitattributes pins dashboard.html to LF in every checkout.
+        for autocrlf in ("true", "input", None):
+            with self.subTest(autocrlf=autocrlf):
+                if self.repo.exists():
+                    shutil.rmtree(self.repo)
+                shutil.rmtree(Path(self.tmp.name) / "clone", ignore_errors=True)
+                self.repo.mkdir()
+                self.git("init", "-q", "-b", "main")
+                self.assertEqual(self._clone_and_hand_run(autocrlf, True), "")
+
+    def test_without_the_attribute_autocrlf_true_is_the_case_that_breaks(self):
+        # Documents why .gitattributes is there: it is not a no-op.
+        self.assertEqual(self._clone_and_hand_run("true", False).strip(), "M dashboard.html")
+
+    def test_without_the_attribute_input_and_unset_are_clean(self):
+        for autocrlf in ("input", None):
+            with self.subTest(autocrlf=autocrlf):
+                if self.repo.exists():
+                    shutil.rmtree(self.repo)
+                shutil.rmtree(Path(self.tmp.name) / "clone", ignore_errors=True)
+                self.repo.mkdir()
+                self.git("init", "-q", "-b", "main")
+                self.assertEqual(self._clone_and_hand_run(autocrlf, False), "")
+
+    def test_the_repo_gitattributes_pins_only_dashboard_html_to_lf(self):
+        text = (dashboard.REPO_ROOT / ".gitattributes").read_text(encoding="utf-8")
+        self.assertEqual(text, "dashboard.html text eol=lf\n")
+        _write_entries(self.repo, [(b"dashboard.html", b"<p>\n"), (b"other.txt", b"x\n")])
+        shutil.copyfile(dashboard.REPO_ROOT / ".gitattributes", self.repo / ".gitattributes")
+        out = self.git("check-attr", "text", "eol", "--", "dashboard.html", "other.txt")
+        self.assertEqual(out.splitlines(), [
+            "dashboard.html: text: set", "dashboard.html: eol: lf",
+            "other.txt: text: unspecified", "other.txt: eol: unspecified"])
+
+    def test_an_unknown_revision_is_a_git_read_error(self):
+        self.git("commit", "-q", "--allow-empty", "-m", "empty")
+        with self.assertRaises(dashboard.GitReadError):
+            dashboard.collect_rows_at("no-such-rev", self.reader)

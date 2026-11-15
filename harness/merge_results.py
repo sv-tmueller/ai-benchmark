@@ -23,20 +23,28 @@ the gate runs again and only the new head is vouched for, and a last read of the
 PR must still show the gated head before anything is posted. A failed post
 leaves the PR open; nothing is retried.
 
-Afterwards the README ledger rows of the model are brought up to date through
-a docs PR: a row's status lists the effort levels whose files are on ``main``
-(``not run`` becomes ``generated (high), review pending``, later
-``generated (high, max), review pending``). The docs PR is opened with the
-GitHub API so the working tree is untouched. Without ``--post-statuses`` that
-PR is never merged here. With it, the docs PR (the one
-just opened, or exactly one left by an earlier run) is merged only after proof
-that its diff is the rewrite this run computed: one commit on top of
-``origin/main`` that changes only ``README.md`` to exactly the new text, whose
-base text is main's README byte for byte (compared as git blob ids), with a
+Afterwards the README ledger rows of the model are brought up to date, and the
+committed ``dashboard.html`` with them, through a docs PR: a row's status lists
+the effort levels whose files are on ``main`` (``not run`` becomes ``generated
+(high), review pending``, later ``generated (high, max), review pending``), and
+the dashboard is regenerated from the results on ``origin/main``, read from git
+objects at one pinned commit (the working tree is never read or written). The
+docs PR changes ``README.md``, ``dashboard.html`` or both, whichever is out of
+date, and none is opened when both are current. It is one commit on top of the
+pinned ``origin/main``, built with the GitHub git data API (blobs, tree, commit,
+and the branch last, so a branch only ever exists with its commit on it).
+Without ``--post-statuses`` that PR is never merged here. With it, the docs PR
+(the one just opened, or exactly one left by an earlier run) is merged only
+after proof that its diff is exactly what this run computed: one commit whose
+only parent is the pinned ``origin/main``, whose changed files are exactly the
+expected ones, each ``modified`` and byte for byte this run's content (compared
+as git blob ids), where main's README is the base text byte for byte, with a
 ``docs/ledger-<tag>-<sha7>`` branch and green checks. It then gets the same two
 statuses and a squash merge pinned to that commit. A docs PR is never brought up
-to date, closed or deleted; one that fails the proof, or a second open docs PR,
-stays open and is reported.
+to date, closed or deleted; one that fails the proof (an extra or missing file,
+other content, an older base), or a second open docs PR, stays open and is
+reported. A ``dashboard.html`` missing on ``origin/main`` is reported and never
+re-added here.
 
 Exit codes: 0 all merged (or nothing to do); 1 a PR was left open or the docs
 PR step failed (with ``--post-statuses`` a docs PR left open counts); 2 bad
@@ -62,12 +70,17 @@ PROMPTS_DIR = REPO_ROOT / "prompts"
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from harness import dashboard  # noqa: E402
 from harness.modes._common import EFFORT_LEVELS, derive_model  # noqa: E402
 
 META_SUFFIX = ".meta.json"
 GRADING_SUFFIX = "_grading.json"
 RUN_SUFFIX = ".run.json"
+README_FILE = "README.md"
+DASHBOARD_FILE = "dashboard.html"
+DOCS_FILES = (README_FILE, DASHBOARD_FILE)  # the only files a docs PR may ever change
 OK_BUCKETS = {"pass", "skipping"}
+FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
 
 _TITLE_RE = re.compile(
     r"^(?P<prefix>[^\s()]+) \((?P<model>[^,()]+), (?P<effort>%s), one-shot\): result$"
@@ -309,34 +322,47 @@ def git_blob_sha(data):
     return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
 
 
-def docs_gate(pr, commit, main_sha, main_blob, text, new_text, tag):
-    """Return every reason the ledger docs PR may not be vouched for; empty means pass.
+def docs_gate(pr, commit, main_sha, main_blob, text, changes, dashboard_sha, tag):
+    """Return every reason the docs PR may not be vouched for; empty means pass.
 
     ``pr`` is the ``gh pr view`` payload, ``commit`` the commits API payload of
-    its head, ``main_sha`` and ``main_blob`` the ids of ``origin/main`` and of
-    its ``README.md``, ``text`` the README the rewrite read and ``new_text`` its
-    result. A head with the single parent ``main_sha`` that changes only
-    ``README.md`` to exactly ``new_text``, where ``text`` is main's README byte
-    for byte, has the diff ``text -> new_text`` and nothing else. No I/O here.
+    its head, ``main_sha`` the pinned ``origin/main`` and ``main_blob`` the id
+    of its ``README.md``, ``text`` the README the rewrite read. ``changes`` is
+    ``{file name: bytes}`` for the expected file set E that this run computed:
+    ``README.md``, ``dashboard.html`` or both, never anything else.
+    ``dashboard_sha`` is the commit the dashboard was computed from.
+
+    A head with the single parent ``main_sha`` whose changed files are exactly
+    E, each ``modified`` to exactly this run's bytes, has the diff this run
+    computed and nothing else: with ``text`` main's README byte for byte, the
+    README's diff is ``text -> new text``. Every failure is collected. No I/O.
     """
     reasons = []
-    if git_blob_sha(text.encode("utf-8")) != main_blob:
+    for name in sorted(set(changes) - set(DOCS_FILES)):
+        reasons.append("internal error: %r may not be in a docs PR" % name)
+    if README_FILE in changes and git_blob_sha(text.encode("utf-8")) != main_blob:
         reasons.append("base README is not the README on origin/main")
+    if DASHBOARD_FILE in changes and dashboard_sha != main_sha:
+        reasons.append("dashboard.html was not computed from origin/main %s" % main_sha[:7])
     parents = [p.get("sha") for p in commit.get("parents") or []]
     if parents != [main_sha]:
         reasons.append("commit parents %s are not exactly [origin/main %s]" % (
             [str(p)[:7] for p in parents], main_sha[:7]))
-    files = commit.get("files") or []
-    if len(files) != 1:
-        reasons.append("commit must change exactly one file (README.md), found %d" % len(files))
-    else:
-        entry = files[0]
-        if entry.get("filename") != "README.md":
-            reasons.append("changed file is %r, not README.md" % entry.get("filename"))
-        elif entry.get("status") != "modified":
-            reasons.append("README.md status is %r, not modified" % entry.get("status"))
-        if entry.get("sha") != git_blob_sha(new_text.encode("utf-8")):
-            reasons.append("README.md blob is not this rewrite")
+    entries = [e if isinstance(e, dict) else {} for e in commit.get("files") or []]
+    names = [e.get("filename") if isinstance(e.get("filename"), str) else None for e in entries]
+    for name in sorted({n for n in names if n not in changes}, key=str):
+        reasons.append("extra file: %s" % name)
+    for name in sorted(set(changes) - set(names)):
+        reasons.append("missing: %s" % name)
+    for name in sorted({n for n in names if n in changes and names.count(n) > 1}):
+        reasons.append("%s listed more than once" % name)
+    for entry, name in zip(entries, names):
+        if name not in changes:
+            continue
+        if entry.get("status") != "modified":
+            reasons.append("%s status is %r, not modified" % (name, entry.get("status")))
+        if entry.get("sha") != git_blob_sha(changes[name]):
+            reasons.append("%s blob is not this run's content" % name)
     branch_re = r"docs/ledger-%s-[0-9a-f]{7}" % re.escape(tag.replace("_", "-"))
     if not re.fullmatch(branch_re, pr.get("headRefName", "")):
         reasons.append("branch %r does not match docs/ledger-%s-<7 hex>" % (
@@ -346,6 +372,16 @@ def docs_gate(pr, commit, main_sha, main_blob, text, new_text, tag):
     if pr.get("isCrossRepository"):
         reasons.append("PR comes from a fork")
     return reasons
+
+
+def docs_title(model_id, row_count, names):
+    """Return the docs PR title (and squash subject) for the files in ``names``."""
+    ledger = "docs(readme): mark %d %s ledger rows generated" % (row_count, model_id)
+    if DASHBOARD_FILE not in names:
+        return ledger
+    if README_FILE in names:
+        return ledger + ", regenerate dashboard"
+    return "docs(dashboard): regenerate dashboard.html from main"
 
 
 # --- gh / git access --------------------------------------------------------
@@ -366,11 +402,19 @@ UNKNOWN_RETRIES = 3
 UNKNOWN_SECONDS = 2
 
 
-def default_run(argv, input=None):
-    """Run ``argv`` in the repo root; the one place that touches the system."""
+def default_run(argv, input=None, binary=False):
+    """Run ``argv`` in the repo root; the one place that touches the system.
+
+    Text mode (the default) takes and returns strings. ``binary=True`` takes
+    bytes ``input`` and returns bytes stdout and stderr, untouched: the
+    dashboard reads names and blobs that need not be valid UTF-8.
+    """
     try:
-        return subprocess.run(argv, cwd=REPO_ROOT, capture_output=True, text=True, input=input)
+        return subprocess.run(argv, cwd=REPO_ROOT, capture_output=True, text=not binary,
+                              input=input)
     except FileNotFoundError as exc:
+        if binary:
+            return subprocess.CompletedProcess(argv, 127, b"", str(exc).encode("utf-8", "replace"))
         return subprocess.CompletedProcess(argv, 127, "", str(exc))
 
 
@@ -590,24 +634,91 @@ class Merger:
 
     # -- ledger --------------------------------------------------------------
 
-    def ledger(self, open_prs, had_candidates):
-        readme = self.run(("git", "show", "origin/main:README.md"))
+    def git_reader(self, args, input=None):
+        """The ``git(args, input)`` seam of :func:`dashboard.collect_rows_at`: bytes out, raise on failure."""
+        proc = self.run(("git",) + tuple(args), input=input, binary=True)
+        if proc.returncode:
+            stderr = proc.stderr
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode("utf-8", "replace")
+            raise dashboard.GitReadError("git %s failed: %s" % (args[0], first_line(stderr)))
+        return proc.stdout
+
+    def read_base(self):
+        """Pin ``origin/main`` once and read everything the docs PR is built from at it.
+
+        All worktrees share ``refs/remotes/origin/main``, so another run's fetch
+        can move it at any moment; every read below names the one resolved sha,
+        and that sha becomes the parent of the docs commit. Returns the pinned
+        facts, or ``None`` after a report (nothing has been written then).
+        ``dashboard.html`` missing on ``origin/main`` is a failure, not a file
+        to add.
+        """
+        proc = self.run(("git", "rev-parse", "origin/main"))
+        sha = proc.stdout.strip()
+        if proc.returncode or not FULL_SHA_RE.fullmatch(sha):
+            self.say("could not resolve origin/main: " + (first_line(proc.stderr) or "not a commit id"))
+            return None
+        readme = self.run(("git", "show", sha + ":" + README_FILE))
         if readme.returncode:
             self.say("could not read README.md from origin/main: " + first_line(readme.stderr))
+            return None
+        base = {"sha": sha, "text": readme.stdout}
+        for key, rev, label in (
+                ("tree", sha + "^{tree}", "the tree of origin/main"),
+                ("readme_blob", sha + ":" + README_FILE, "README.md from origin/main"),
+                ("dashboard_blob", sha + ":" + DASHBOARD_FILE, "dashboard.html from origin/main")):
+            proc = self.run(("git", "rev-parse", rev))
+            value = proc.stdout.strip()
+            if proc.returncode or not FULL_SHA_RE.fullmatch(value):
+                self.say("could not read %s: %s" % (label, first_line(proc.stderr)))
+                return None
+            base[key] = value
+        try:
+            rows, warnings = dashboard.collect_rows_at(sha, self.git_reader)
+        except dashboard.GitReadError as exc:
+            self.say("could not read the results on origin/main: %s" % exc)
+            return None
+        if warnings:
+            # Only the count: the texts carry names and values from untrusted files.
+            self.say("dashboard: %d warning(s) while reading the results on origin/main; "
+                     "text not shown" % len(warnings))
+        base["page"] = dashboard.render(rows).encode("utf-8")
+        base["page_sha"] = sha  # the commit the page was computed from
+        return base
+
+    def ledger(self, open_prs, had_candidates):
+        base = self.read_base()
+        if base is None:
             return 1
-        text = readme.stdout
+        text = base["text"]
         new_text, rows, skipped = rewrite_ledger(text, self.tag, self.by_id, self.main_paths)
         for message in skipped:
             self.say(message)
+        stale = git_blob_sha(base["page"]) != base["dashboard_blob"]
         if self.dry_run:
             self.say("ledger rows eligible now: " + describe_rows(rows))
             _, rows, _ = rewrite_ledger(
                 text, self.tag, self.by_id, self.main_paths | self.planned_files)
             self.say("ledger rows eligible after planned merges: " + describe_rows(rows))
-            new_text = None
+            self.say("dashboard.html on origin/main is " + ("stale" if stale else "current"))
+            if self.planned:
+                self.say("dashboard.html would be regenerated after the planned merges")
+            # Planned merges change the results, so the page would be out of date again.
+            stale = stale or bool(self.planned)
+        # E: the files this run would change. Only ever these two names.
+        changes = {}
+        if rows:
+            changes[README_FILE] = new_text.encode("utf-8")
+        if stale:
+            changes[DASHBOARD_FILE] = base["page"]
+        assert set(changes) <= set(DOCS_FILES), sorted(changes)
         if not rows:
             self.say("ledger up to date" if had_candidates
                      else "nothing to merge; ledger up to date")
+        if not stale and not self.dry_run:
+            self.say("dashboard.html up to date")
+        if not changes:
             return 1 if self.failed else 0
         prefix = "docs/ledger-%s-" % self.tag.replace("_", "-")
         open_docs = [pr for pr in open_prs if pr.get("headRefName", "").startswith(prefix)]
@@ -620,39 +731,31 @@ class Merger:
                 ", ".join("#%d" % pr["number"] for pr in open_docs),
                 "would be posted" if self.dry_run else "posted"))
             return 1
+        title = docs_title(self.model_id, len(rows), changes)
         if open_docs:
-            return self.vouch_open_docs(open_docs[0]["number"], text, new_text, rows)
+            return self.vouch_open_docs(open_docs[0]["number"], base, changes, title)
         if self.dry_run:
-            self.say("would open a docs PR marking %d row(s) generated%s" % (
-                len(rows), ", then post orchestrai/test and orchestrai/review on it and "
-                "merge it once its diff is verified and its checks are green"
-                if self.post_statuses else ""))
+            what = []
+            if README_FILE in changes:
+                what.append("marking %d row(s) generated" % len(rows))
+            if DASHBOARD_FILE in changes:
+                what.append("regenerating dashboard.html")
+            self.say("would open a docs PR %s%s" % (" and ".join(what),
+                     ", then post orchestrai/test and orchestrai/review on it and "
+                     "merge it once its diff is verified and its checks are green"
+                     if self.post_statuses else ""))
             return 1 if self.failed else 0
-        return 0 if self.docs_pr(prefix, text, new_text, rows) and not self.failed else 1
+        return 0 if self.docs_pr(prefix, base, changes, title, rows) and not self.failed else 1
 
-    def vouch_open_docs(self, number, text, new_text, rows):
-        """Opt-in: an earlier run's docs PR is merged only if it is exactly this rewrite."""
+    def vouch_open_docs(self, number, base, changes, title):
+        """Opt-in: an earlier run's docs PR is merged only if it is exactly this run's changes."""
         if self.dry_run:
             self.say("ledger PR #%d already open; would post orchestrai/test and "
                      "orchestrai/review on it and merge it only if it is exactly this "
                      "rewrite on origin/main and its checks are green" % number)
             return 1 if self.failed else 0
-        refs = self.main_refs()
-        if refs is not None:
-            self.docs_sequence(number, refs, text, new_text, rows)
+        self.docs_sequence(number, base, changes, title)
         return 1 if self.failed else 0
-
-    def main_refs(self):
-        """Return ``{"main sha", "README blob"}`` of ``origin/main``, or ``None`` after a report."""
-        refs = {}
-        for key, argv in (("main sha", ("git", "rev-parse", "origin/main")),
-                          ("README blob", ("git", "rev-parse", "origin/main:README.md"))):
-            proc = self.run(argv)
-            if proc.returncode or not proc.stdout.strip():
-                self.docs_failed(key, proc, None)
-                return None
-            refs[key] = proc.stdout.strip()
-        return refs
 
     def ledger_open(self, number, reason):
         self.failed = True
@@ -668,8 +771,8 @@ class Merger:
                 self.sleep(POLL_SECONDS)
         return ["timed out waiting for checks"]
 
-    def docs_sequence(self, number, refs, text, new_text, rows):
-        """Opt-in: prove the docs PR is exactly the rewrite, wait for checks, vouch, merge.
+    def docs_sequence(self, number, base, changes, title):
+        """Opt-in: prove the docs PR is exactly this run's changes, wait for checks, vouch, merge.
 
         Never ``update-branch``: a merge commit would break the single-parent proof,
         so a docs PR that falls behind ``main`` stays open (``strict`` refuses it).
@@ -681,8 +784,8 @@ class Merger:
         commit = self.json_call(("gh", "api", "repos/{owner}/{repo}/commits/" + sha), dict)
         if commit is None:
             return self.ledger_open(number, "could not read its head commit")
-        reasons = docs_gate(view, commit, refs["main sha"], refs["README blob"], text,
-                            new_text, self.tag)
+        reasons = docs_gate(view, commit, base["sha"], base["readme_blob"], base["text"],
+                            changes, base["page_sha"], self.tag)
         if reasons:
             return self.ledger_open(
                 number, "fails docs gate: %s; close it and re-run" % "; ".join(reasons))
@@ -694,45 +797,92 @@ class Merger:
             return self.ledger_open(number, reason)
         proc = self.run((
             "gh", "pr", "merge", str(number), "--squash", "--match-head-commit", sha,
-            "--subject", "docs(readme): mark %d %s ledger rows generated (#%d)" % (
-                len(rows), self.model_id, number)))
+            "--subject", "%s (#%d)" % (title, number)))
         if proc.returncode:
             return self.ledger_open(number, "refused by GitHub: " + first_line(proc.stderr))
         self.say("docs PR #%d merged (%s)" % (number, sha[:7]))
 
-    def docs_pr(self, prefix, text, new_text, rows):
-        """Open the ledger docs PR through the API; report the failing step."""
-        steps = self.main_refs()
-        if steps is None:
+    def api_post(self, step, endpoint, body):
+        """POST ``body`` to a repo endpoint; return the answer (a dict), or ``None`` after a report."""
+        proc = self.run(
+            ("gh", "api", "--method", "POST", "repos/{owner}/{repo}/" + endpoint, "--input", "-"),
+            input=json.dumps(body))
+        if proc.returncode:
+            return self.docs_failed(step, first_line(proc.stderr))
+        try:
+            data = json.loads(proc.stdout)
+        except ValueError:
+            data = None
+        if not isinstance(data, dict):
+            return self.docs_failed(step, "unexpected answer (not a JSON object)")
+        return data
+
+    def new_sha(self, step, answer):
+        """Return the full sha in an API answer, or ``None`` after a report."""
+        sha = answer.get("sha") if answer else None
+        if not isinstance(sha, str) or not FULL_SHA_RE.fullmatch(sha):
+            if answer is not None:
+                self.docs_failed(step, "unexpected answer (no commit id)")
+            return None
+        return sha
+
+    def docs_pr(self, prefix, base, changes, title, rows):
+        """Open the docs PR through the git data API; report the failing step.
+
+        Blobs, tree and commit are unreferenced until the ref call, which comes
+        last: a failure before it leaves nothing visible, and a branch only ever
+        exists with the complete commit on it. An existing branch of that name
+        makes the ref call fail (422) and is left as it was.
+        """
+        branch = prefix + base["sha"][:7]
+        tree = []
+        for name in sorted(changes):  # README.md before dashboard.html
+            step = "create blob " + name
+            data = changes[name]
+            answer = self.api_post(step, "git/blobs", {
+                "content": base64.b64encode(data).decode("ascii"), "encoding": "base64"})
+            if answer is None:
+                return False
+            sha = answer.get("sha")
+            if not isinstance(sha, str):
+                self.docs_failed(step, "unexpected answer (no blob id)")
+                return False
+            if sha != git_blob_sha(data):
+                self.docs_failed(step, "GitHub returned blob %s, expected %s" % (
+                    sha[:7], git_blob_sha(data)[:7]))
+                return False
+            tree.append({"path": name, "mode": "100644", "type": "blob", "sha": sha})
+        answer = self.api_post("create tree", "git/trees", {"base_tree": base["tree"], "tree": tree})
+        tree_sha = self.new_sha("create tree", answer)
+        if tree_sha is None:
             return False
-        branch = prefix + steps["main sha"][:7]
-        proc = self.run(
-            ("gh", "api", "--method", "POST", "repos/{owner}/{repo}/git/refs", "--input", "-"),
-            input=json.dumps({"ref": "refs/heads/" + branch, "sha": steps["main sha"]}))
-        if proc.returncode:
-            return self.docs_failed("create branch", proc, None)
-        title = "docs(readme): mark %d %s ledger rows generated" % (len(rows), self.model_id)
-        proc = self.run(
-            ("gh", "api", "--method", "PUT", "repos/{owner}/{repo}/contents/README.md",
-             "--input", "-"),
-            input=json.dumps({
-                "message": title,
-                "content": base64.b64encode(new_text.encode("utf-8")).decode("ascii"),
-                "sha": steps["README blob"],
-                "branch": branch,
-            }))
-        if proc.returncode:
-            return self.docs_failed("update README", proc, branch)
-        body = ["Marks the %s ledger rows generated now that their result PRs are merged."
-                % self.model_id, "", "Rows:"]
-        body += ["- `%s`: `%s` (%s)" % (row["pid"], row["path"], ", ".join(row["efforts"]))
-                 for row in rows]
+        answer = self.api_post("create commit", "git/commits", {
+            "message": title, "tree": tree_sha, "parents": [base["sha"]]})
+        commit_sha = self.new_sha("create commit", answer)
+        if commit_sha is None:
+            return False
+        if self.api_post("create branch", "git/refs",
+                         {"ref": "refs/heads/" + branch, "sha": commit_sha}) is None:
+            return False
+        body = []
+        if rows:
+            body += ["Marks the %s ledger rows generated now that their result PRs are merged."
+                     % self.model_id, "", "Rows:"]
+            body += ["- `%s`: `%s` (%s)" % (row["pid"], row["path"], ", ".join(row["efforts"]))
+                     for row in rows]
+        if DASHBOARD_FILE in changes:
+            body += ([""] if body else []) + [
+                "Regenerates `dashboard.html` from the results on `origin/main` at %s."
+                % base["sha"][:7]]
+            if not rows:
+                body += ["The ledger rows are already current."]
         if self.merged:
             body += ["", "Merged result PRs: " + ", ".join("#%d" % n for n in self.merged)]
         proc = self.run(("gh", "pr", "create", "--base", "main", "--head", branch,
                          "--title", title, "--body", "\n".join(body)))
         if proc.returncode:
-            return self.docs_failed("open PR", proc, branch)
+            self.docs_failed("open PR", first_line(proc.stderr), branch)
+            return False
         url = first_line(proc.stdout)
         self.say("docs PR opened: " + url)
         if self.post_statuses:
@@ -741,15 +891,16 @@ class Merger:
                 self.failed = True
                 self.say("ledger PR left open: could not read its number from: " + url)
             else:
-                self.docs_sequence(int(match.group(1)), steps, text, new_text, rows)
+                self.docs_sequence(int(match.group(1)), base, changes, title)
         return True
 
-    def docs_failed(self, step, proc, leftover):
+    def docs_failed(self, step, detail, leftover=None):
+        """Report a failed docs PR step (and a branch left behind, if any); returns ``None``."""
         self.failed = True
-        self.say("docs PR step failed: %s: %s" % (step, first_line(proc.stderr)))
+        self.say("docs PR step failed: %s: %s" % (step, detail))
         if leftover:
             self.say("leftover branch: " + leftover)
-        return False
+        return None
 
 
 def describe_rows(rows):

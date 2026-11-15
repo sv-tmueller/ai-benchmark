@@ -11,11 +11,14 @@ import io
 import json
 import re
 import subprocess
+import sys
 import tempfile
 import tomllib
 import unittest
+import urllib.parse
 from pathlib import Path
 
+from harness import dashboard
 from harness import merge_results as mr
 
 MODEL_ID = "claude-fable-5-2"
@@ -591,26 +594,43 @@ WRITE_PREFIXES = (
 FETCH = ("git", "fetch", "origin", "main")
 LS_TREE = ("git", "ls-tree", "-r", "--name-only", "origin/main", "--", "results")
 MAIN_SHA = "c" * 40
+MAIN_TREE = "7" * 40  # the tree of MAIN_SHA
 README_BLOB = "d" * 40
+D = "e" * 40  # head of the docs PR; also the commit the fake's git/commits call creates
+NEW_TREE = "4" * 40
+NEW_COMMIT = D
+PIN = MAIN_SHA + ":"  # the pinned reads: every read after the resolve names the sha
 
 
 def ok(stdout=""):
     return (0, stdout, "")
 
 
+def okb(stdout=b""):
+    return (0, stdout, b"")
+
+
 class FakeRunner:
-    """Scripted ``run`` seam: longest argv-prefix match (latest rule wins ties)."""
+    """Scripted ``run`` seam: longest argv-prefix match (latest rule wins ties).
+
+    A response is ``(returncode, stdout, stderr)`` or a function of
+    ``(argv, input)`` returning one. A call with ``binary=True`` must get bytes
+    and any other call text, as ``default_run`` gives them.
+    """
 
     def __init__(self):
         self.rules = []
         self.calls = []
+        self.binary_argvs = []
 
     def on(self, *prefix, responses):
         self.rules.append((prefix, list(responses)))
 
-    def __call__(self, argv, input=None):
+    def __call__(self, argv, input=None, binary=False):
         argv = tuple(argv)
         self.calls.append((argv, input))
+        if binary:
+            self.binary_argvs.append(argv)
         best = None
         for prefix, queue in self.rules:
             if argv[:len(prefix)] == prefix and (best is None or len(prefix) >= len(best[0])):
@@ -618,7 +638,10 @@ class FakeRunner:
         if best is None:
             raise AssertionError("unscripted call: %r" % (argv,))
         queue = best[1]
-        rc, stdout, stderr = queue.pop(0) if len(queue) > 1 else queue[0]
+        item = queue.pop(0) if len(queue) > 1 else queue[0]
+        rc, stdout, stderr = item(argv, input) if callable(item) else item
+        if not isinstance(stdout, bytes if binary else str):
+            raise AssertionError("wrong stdout type for binary=%r: %r" % (binary, argv))
         return subprocess.CompletedProcess(argv, rc, stdout, stderr)
 
     def argvs(self):
@@ -646,14 +669,89 @@ def blob_sha(data):
     return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
 
 
+def result_entries(paths):
+    """``[(path bytes, content bytes)]`` for result ``paths``: a small sidecar or a marker."""
+    entries = []
+    for path in sorted(paths):
+        if path.endswith(".meta.json"):
+            folder, name = path.split("/")[1:]
+            content = json.dumps({"prompt_id": "pid-" + folder,
+                                  "title": "Title of " + name}).encode("utf-8")
+        else:
+            content = ("DELIVERABLE " + path).encode("utf-8")
+        entries.append((path.encode("utf-8"), content))
+    return entries
+
+
+def expected_page(paths):
+    """The dashboard bytes for result ``paths``, built through the working-tree reader.
+
+    It reads a temporary folder, not the git tree, so the tests do not lean on
+    the git reader they check.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        for path, content in result_entries(paths):
+            target = Path(tmp, path.decode("utf-8"))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+        rows, _ = dashboard.collect_rows(tmp)
+    return dashboard.render(rows).encode("utf-8")
+
+
+def ls_tree_z(entries):
+    """``git ls-tree -r -z`` output for ``(path, content)`` entries, all regular files."""
+    return b"".join(b"100644 blob %s\t%s\0" % (blob_sha(content).encode("ascii"), path)
+                    for path, content in sorted(entries))
+
+
+def cat_file_reply(entries):
+    """A scripted ``git cat-file --batch``: answers the oids it is given, from ``entries``."""
+    blobs = {blob_sha(content): content for _, content in entries}
+
+    def reply(argv, input):
+        out = b""
+        for oid in input.decode("ascii").split("\n")[:-1]:
+            if oid in blobs:
+                out += b"%s blob %d\n%s\n" % (oid.encode("ascii"), len(blobs[oid]), blobs[oid])
+            else:
+                out += b"%s missing\n" % oid.encode("ascii")
+        return okb(out)
+
+    return reply
+
+
+def blob_reply(argv, input):
+    """``POST git/blobs``: the id GitHub would answer for the posted content."""
+    body = json.loads(input)
+    assert body["encoding"] == "base64", body
+    return ok(json.dumps({"sha": blob_sha(base64.b64decode(body["content"]))}))
+
+
+GIT_DATA = "repos/{owner}/{repo}/git/"
+
+
+def post_argv(endpoint):
+    return ("gh", "api", "--method", "POST", "repos/{owner}/{repo}/" + endpoint, "--input", "-")
+
+
+NO_DASHBOARD = (128, "", "fatal: path 'dashboard.html' does not exist in '%s'\n" % MAIN_SHA)
+
+
 def build_fake(prs=(), main_before=MAIN_PATHS, main_after=None, readme=README,
-               views=None, checks=None, extra_list=(), merge=None, strict_api=False):
+               views=None, checks=None, extra_list=(), merge=None, strict_api=False,
+               dashboard_on_main="current", results_at_sha=None):
     """Script a world: ``prs`` are open; ``views``/``checks``/``merge`` override per PR.
 
-    ``strict_api`` scripts the write endpoints by full path instead of the
-    catch-all ``gh api --method POST|PUT`` rules, so an unscripted endpoint
-    (a status post to the wrong sha, say) raises, and answers the README blob
+    ``strict_api`` scripts the status endpoint by full path instead of the
+    catch-all ``gh api --method POST`` rule, so an unscripted endpoint (a
+    status post to the wrong sha, say) raises, and answers the README blob
     with the fixture's real blob id.
+
+    The results at ``MAIN_SHA`` are ``main_after`` (``results_at_sha`` to
+    override). ``dashboard_on_main`` is the ``dashboard.html`` committed there:
+    ``"current"`` is the page of those results, ``"before"`` the page of
+    ``main_before`` (stale once results merged), ``"stale"`` some other page,
+    ``None`` no such file, or a ready ``(rc, stdout, stderr)`` reply.
     """
     fake = FakeRunner()
     views, checks, merge = views or {}, checks or {}, merge or {}
@@ -662,10 +760,27 @@ def build_fake(prs=(), main_before=MAIN_PATHS, main_after=None, readme=README,
     fake.on(*LIST_ARGV, responses=[listing(prs, extra_list)])
     after = main_before if main_after is None else main_after
     fake.on(*LS_TREE, responses=[tree(main_before), tree(after)])
-    fake.on("git", "show", "origin/main:README.md", responses=[ok(readme)])
-    blob = blob_sha(readme.encode("utf-8")) if strict_api else README_BLOB
-    fake.on("git", "rev-parse", "origin/main:README.md", responses=[ok(blob + "\n")])
+    # Everything the ledger reads is read at the one resolved commit.
     fake.on("git", "rev-parse", "origin/main", responses=[ok(MAIN_SHA + "\n")])
+    fake.on("git", "rev-parse", MAIN_SHA + "^{tree}", responses=[ok(MAIN_TREE + "\n")])
+    fake.on("git", "show", PIN + "README.md", responses=[ok(readme)])
+    blob = blob_sha(readme.encode("utf-8")) if strict_api else README_BLOB
+    fake.on("git", "rev-parse", PIN + "README.md", responses=[ok(blob + "\n")])
+    at_sha = after if results_at_sha is None else results_at_sha
+    entries = result_entries(at_sha)
+    fake.on("git", "ls-tree", "-r", "-z", MAIN_SHA, "--", "results",
+            responses=[okb(ls_tree_z(entries))])
+    fake.on("git", "cat-file", "--batch", responses=[cat_file_reply(entries)])
+    if dashboard_on_main is None:
+        reply = NO_DASHBOARD
+    elif isinstance(dashboard_on_main, tuple):
+        reply = dashboard_on_main
+    else:
+        page = {"current": lambda: expected_page(at_sha),
+                "before": lambda: expected_page(main_before),
+                "stale": lambda: b"<html>an old page</html>\n"}[dashboard_on_main]()
+        reply = ok(blob_sha(page) + "\n")
+    fake.on("git", "rev-parse", PIN + "dashboard.html", responses=[reply])
     for pr in prs:
         n = str(pr["number"])
         fake.on("gh", "pr", "view", n, "--json", VIEW_FIELDS,
@@ -674,14 +789,12 @@ def build_fake(prs=(), main_before=MAIN_PATHS, main_after=None, readme=README,
                 responses=checks.get(pr["number"], [ok(json.dumps(GREEN))]))
         fake.on("gh", "pr", "merge", n, responses=merge.get(pr["number"], [ok()]))
         fake.on("gh", "pr", "update-branch", n, responses=[ok()])
-    if strict_api:
-        fake.on("gh", "api", "--method", "POST", "repos/{owner}/{repo}/git/refs",
-                responses=[ok("{}")])
-        fake.on("gh", "api", "--method", "PUT", "repos/{owner}/{repo}/contents/README.md",
-                responses=[ok("{}")])
-    else:
+    fake.on(*post_argv("git/blobs"), responses=[blob_reply])
+    fake.on(*post_argv("git/trees"), responses=[ok(json.dumps({"sha": NEW_TREE}))])
+    fake.on(*post_argv("git/commits"), responses=[ok(json.dumps({"sha": NEW_COMMIT}))])
+    fake.on(*post_argv("git/refs"), responses=[ok("{}")])
+    if not strict_api:
         fake.on("gh", "api", "--method", "POST", responses=[ok("{}")])
-        fake.on("gh", "api", "--method", "PUT", responses=[ok("{}")])
     fake.on("gh", "pr", "create", responses=[ok("https://github.com/o/r/pull/99\n")])
     return fake
 
@@ -709,21 +822,22 @@ SHA40 = r"[0-9a-f]{40}"
 def api_call_problem(argv):
     """Return why a ``gh api`` argv is not one the command makes, else ``None``.
 
-    The command makes four: the ref POST and the README PUT (``--input -``), a
-    status POST on a full sha, and the bare commit read (a read: any extra
-    field would make ``gh`` send a POST). Other argvs are not this check's concern.
+    The command makes these: the blob, tree, commit and ref POSTs that build
+    the docs commit (each ``--input -``, exactly the endpoint, nothing else),
+    a status POST on a full sha, and the bare commit read (a read: any extra
+    field would make ``gh`` send a POST). There is no PUT: the contents
+    endpoint is no longer used. Other argvs are not this check's concern.
     """
     if argv[:2] != ("gh", "api"):
         return None
     if len(argv) == 3 and re.fullmatch(REPO_API + "commits/" + SHA40, argv[2]):
         return None
-    if argv[2:4] in (("--method", "POST"), ("--method", "PUT")) and len(argv) > 4:
-        method, endpoint = argv[3], argv[4]
-        if method == "POST" and endpoint == REPO_API + "git/refs":
-            return None
-        if method == "PUT" and endpoint == REPO_API + "contents/README.md":
-            return None
-        if method == "POST" and re.fullmatch(REPO_API + "statuses/" + SHA40, endpoint):
+    if argv[2:4] == ("--method", "POST") and len(argv) > 4:
+        endpoint = argv[4]
+        if endpoint in (REPO_API + "git/" + name for name in ("blobs", "trees", "commits", "refs")):
+            if argv[5:] == ("--input", "-"):
+                return None
+        elif re.fullmatch(REPO_API + "statuses/" + SHA40, endpoint):
             return None
     return "gh api call outside the allowlist: %r" % (argv,)
 
@@ -779,9 +893,10 @@ class ApiCallProblemTests(unittest.TestCase):
 
     def test_endpoints_the_command_uses_are_allowed(self):
         for argv in (
+            ("gh", "api", "--method", "POST", self.REPO + "git/blobs", "--input", "-"),
+            ("gh", "api", "--method", "POST", self.REPO + "git/trees", "--input", "-"),
+            ("gh", "api", "--method", "POST", self.REPO + "git/commits", "--input", "-"),
             ("gh", "api", "--method", "POST", self.REPO + "git/refs", "--input", "-"),
-            ("gh", "api", "--method", "PUT", self.REPO + "contents/README.md",
-             "--input", "-"),
             ("gh", "api", "--method", "POST", self.REPO + "statuses/" + self.SHA,
              "-f", "state=success", "-f", "context=orchestrai/test"),
             ("gh", "api", self.REPO + "commits/" + self.SHA),
@@ -791,6 +906,12 @@ class ApiCallProblemTests(unittest.TestCase):
 
     def test_any_other_gh_api_call_is_flagged(self):
         for argv in (
+            ("gh", "api", "--method", "PUT", self.REPO + "contents/README.md", "--input", "-"),
+            ("gh", "api", "--method", "PUT", self.REPO + "contents/dashboard.html"),
+            ("gh", "api", "--method", "POST", self.REPO + "git/blobs"),
+            ("gh", "api", "--method", "POST", self.REPO + "git/trees", "--input", "x"),
+            ("gh", "api", "--method", "POST", self.REPO + "git/tags", "--input", "-"),
+            ("gh", "api", "--method", "PATCH", self.REPO + "git/refs/heads/main", "--input", "-"),
             ("gh", "api", "--method", "PUT", self.REPO + "pulls/7/merge"),
             ("gh", "api", "--method", "POST", self.REPO + "issues/7/comments"),
             ("gh", "api", "--method", "POST", self.REPO + "git/refs/heads/main"),
@@ -813,6 +934,7 @@ class ApiAllowlistWiringTests(OrchestrationBase):
     def test_teardown_rejects_a_write_to_an_unlisted_endpoint(self):
         # The default fake's catch-all rules accept this call; only tearDown objects.
         self.fake = build_fake()
+        self.fake.on("gh", "api", "--method", "PUT", responses=[ok("{}")])
         self.fake(("gh", "api", "--method", "PUT", "repos/{owner}/{repo}/pulls/7/merge"))
         with self.assertRaises(AssertionError):
             self.tearDown()
@@ -833,7 +955,14 @@ class NoOpTests(OrchestrationBase):
         self.assertEqual(
             set(self.fake.argvs()),
             {("gh", "auth", "status"), FETCH, LIST_ARGV, LS_TREE,
-             ("git", "show", "origin/main:README.md")})
+             ("git", "rev-parse", "origin/main"),
+             ("git", "rev-parse", MAIN_SHA + "^{tree}"),
+             ("git", "show", PIN + "README.md"),
+             ("git", "rev-parse", PIN + "README.md"),
+             ("git", "rev-parse", PIN + "dashboard.html"),
+             ("git", "ls-tree", "-r", "-z", MAIN_SHA, "--", "results"),
+             ("git", "cat-file", "--batch")})
+        self.assertIn("dashboard.html up to date", out)
 
     def test_pr_for_another_model_is_never_touched(self):
         other = make_pr(number=5, model_id="other-model", tag="other_model")
@@ -875,7 +1004,9 @@ class NoOpTests(OrchestrationBase):
 class MergeTests(OrchestrationBase):
     def test_gated_pr_is_squash_merged_then_docs_pr_opened(self):
         pr = make_pr(number=7)
-        self.fake = build_fake(prs=[pr], main_after=MAIN_PATHS | set(ALPHA_FILES))
+        # The dashboard committed on main predates the merge: it is stale now.
+        self.fake = build_fake(prs=[pr], main_after=MAIN_PATHS | set(ALPHA_FILES),
+                               dashboard_on_main="before")
         code, out, _ = run_main(self.fake)
         self.assertEqual(code, 0, out)
         merge_call = self.fake.find("gh", "pr", "merge")
@@ -884,26 +1015,25 @@ class MergeTests(OrchestrationBase):
             "gh", "pr", "merge", "7", "--squash", "--match-head-commit", "a" * 40,
             "--subject", "feat(results): add alpha %s high one-shot result (#7)" % MODEL_ID))
         branch = "docs/ledger-claude-fable-5-2-" + MAIN_SHA[:7]
-        ref_call = self.fake.find("gh", "api", "--method", "POST")
-        self.assertIn("repos/{owner}/{repo}/git/refs", ref_call[0][0])
-        self.assertEqual(json.loads(ref_call[0][1]),
-                         {"ref": "refs/heads/" + branch, "sha": MAIN_SHA})
-        put_call = self.fake.find("gh", "api", "--method", "PUT")
-        self.assertIn("repos/{owner}/{repo}/contents/README.md", put_call[0][0])
-        body = json.loads(put_call[0][1])
-        self.assertEqual(body["branch"], branch)
-        self.assertEqual(body["sha"], README_BLOB)
-        new_readme = base64.b64decode(body["content"]).decode("utf-8")
+        posts = [(argv[4], json.loads(body)) for argv, body in self.fake.calls
+                 if argv[:4] == ("gh", "api", "--method", "POST")]
+        self.assertEqual([endpoint.split("/")[-1] for endpoint, _ in posts],
+                         ["blobs", "blobs", "trees", "commits", "refs"])
+        contents = [base64.b64decode(body["content"]) for _, body in posts[:2]]
+        new_readme = contents[0].decode("utf-8")
         self.assertEqual(
             status_cell(new_readme, "results/alpha/alpha_claude_fable_5_2_<effort>.html"),
             "generated (high), review pending")
         self.assertEqual(
             status_cell(new_readme, "results/beta/beta_claude_fable_5_2_<effort>.md"), "not run")
+        self.assertEqual(contents[1], expected_page(MAIN_PATHS | set(ALPHA_FILES)))
+        self.assertEqual(posts[4][1], {"ref": "refs/heads/" + branch, "sha": NEW_COMMIT})
         create = self.fake.find("gh", "pr", "create")[0][0]
         self.assertEqual(create[create.index("--head") + 1], branch)
         self.assertEqual(create[create.index("--base") + 1], "main")
         self.assertEqual(create[create.index("--title") + 1],
-                         "docs(readme): mark 1 claude-fable-5-2 ledger rows generated")
+                         "docs(readme): mark 1 claude-fable-5-2 ledger rows generated, "
+                         "regenerate dashboard")
         self.assertIn("#7", create[create.index("--body") + 1])
         self.assertIn("https://github.com/o/r/pull/99", out)
 
@@ -1311,23 +1441,6 @@ class DocsPrTests(OrchestrationBase):
         self.assertIn("high not listed: sidecar missing", out)
         self.assertEqual(self.fake.writes(), [])
 
-    def test_ref_creation_failure_exits_1_naming_the_step(self):
-        self.fake = build_fake(main_before=MAIN_PATHS | set(ALPHA_FILES))
-        self.fake.on("gh", "api", "--method", "POST", responses=[(1, "", "HTTP 422\n")])
-        code, out, _ = run_main(self.fake)
-        self.assertEqual(code, 1)
-        self.assertIn("docs PR step failed: create branch: HTTP 422", out)
-        self.assertEqual(self.fake.find("gh", "pr", "create"), [])
-
-    def test_commit_failure_names_the_leftover_branch(self):
-        self.fake = build_fake(main_before=MAIN_PATHS | set(ALPHA_FILES))
-        self.fake.on("gh", "api", "--method", "PUT", responses=[(1, "", "HTTP 409\n")])
-        code, out, _ = run_main(self.fake)
-        self.assertEqual(code, 1)
-        self.assertIn("docs PR step failed: update README: HTTP 409", out)
-        self.assertIn("leftover branch: docs/ledger-claude-fable-5-2-" + MAIN_SHA[:7], out)
-        self.assertEqual(self.fake.find("gh", "pr", "create"), [])
-
     def test_docs_pr_is_never_merged(self):
         self.fake = build_fake(main_before=MAIN_PATHS | set(ALPHA_FILES))
         code, _, _ = run_main(self.fake)
@@ -1348,9 +1461,21 @@ class GitBlobShaTests(unittest.TestCase):
 
 DOCS_MAIN = MAIN_PATHS | set(ALPHA_FILES)
 DOCS_NEW = rewrite(main_paths=DOCS_MAIN)[0]
+DOCS_PAGE = expected_page(DOCS_MAIN)  # the dashboard of the results at MAIN_SHA
 DOCS_BRANCH = "docs/ledger-claude-fable-5-2-" + MAIN_SHA[:7]
 DOCS_TITLE = "docs(readme): mark 1 claude-fable-5-2 ledger rows generated"
-D = "e" * 40
+DOCS_TITLE_BOTH = DOCS_TITLE + ", regenerate dashboard"
+DOCS_TITLE_DASHBOARD = "docs(dashboard): regenerate dashboard.html from main"
+
+
+def file_entry(name, data, status="modified"):
+    """A ``files[]`` entry of the commits API for ``name`` with content ``data``."""
+    return {"filename": name, "status": status, "sha": blob_sha(data)}
+
+
+README_ENTRY = file_entry("README.md", DOCS_NEW.encode("utf-8"))
+DASHBOARD_ENTRY = file_entry("dashboard.html", DOCS_PAGE)
+DOCS_CHANGES = {"README.md": DOCS_NEW.encode("utf-8"), "dashboard.html": DOCS_PAGE}
 
 
 def make_docs_pr(number=99, **overrides):
@@ -1362,9 +1487,9 @@ def make_docs_pr(number=99, **overrides):
 
 
 def docs_commit(parents=(MAIN_SHA,), files=None):
+    """The commits API payload of a docs PR head; README.md alone unless ``files`` says more."""
     if files is None:
-        files = [{"filename": "README.md", "status": "modified",
-                  "sha": blob_sha(DOCS_NEW.encode("utf-8"))}]
+        files = [README_ENTRY]
     return {"sha": D, "parents": [{"sha": p} for p in parents], "files": files}
 
 
@@ -1390,17 +1515,18 @@ class DocsStatusTests(OrchestrationBase):
         if statuses:
             script_status(fake, pr["headRefOid"])
 
-    def fresh(self, **kw):
+    def fresh(self, world=None, **kw):
         """A result PR merges, then this run opens docs PR #99 (create prints its URL)."""
-        self.fake = build_fake(prs=[make_pr(number=7)], main_after=DOCS_MAIN, strict_api=True)
+        self.fake = build_fake(prs=[make_pr(number=7)], main_after=DOCS_MAIN, strict_api=True,
+                               **(world or {}))
         script_status(self.fake, A)
         self.script_docs(self.fake, **kw)
         return self.fake
 
-    def rerun(self, listed=(99,), **kw):
+    def rerun(self, listed=(99,), world=None, **kw):
         """No result PRs open; docs PR(s) from an earlier run are still open."""
         self.fake = build_fake(main_before=DOCS_MAIN, strict_api=True,
-                               extra_list=docs_listing(*listed))
+                               extra_list=docs_listing(*listed), **(world or {}))
         self.script_docs(self.fake, **kw)
         return self.fake
 
@@ -1460,7 +1586,7 @@ class DocsStatusTests(OrchestrationBase):
         self.assertEqual(len(self.docs_posts(fake)), 2)
         self.assertEqual(len(self.docs_merge(fake)), 1)
         self.assertEqual(fake.find("gh", "pr", "create"), [])
-        self.assertEqual(fake.find("gh", "api", "--method", "POST", "repos/{owner}/{repo}/git/refs"), [])
+        self.assertEqual(fake.find(*post_argv("git/refs")), [])
         self.assertIn("docs PR #99 merged (eeeeeee)", out)
 
     def test_extra_file_keeps_the_docs_pr_open(self):
@@ -1468,13 +1594,14 @@ class DocsStatusTests(OrchestrationBase):
             {"filename": "results/x.md", "status": "added", "sha": "1" * 40}]
         fake = self.fresh(commit=docs_commit(files=files), statuses=False)
         code, out, _ = run_main(fake, "--post-statuses")
-        self.assert_left_open(fake, code, out, "fails docs gate: .*one file")
+        self.assert_left_open(fake, code, out, "fails docs gate: .*extra file: results/x.md")
 
     def test_wrong_readme_blob_keeps_the_docs_pr_open(self):
         files = [{"filename": "README.md", "status": "modified", "sha": "1" * 40}]
         fake = self.fresh(commit=docs_commit(files=files), statuses=False)
         code, out, _ = run_main(fake, "--post-statuses")
-        self.assert_left_open(fake, code, out, "fails docs gate: .*not this rewrite")
+        self.assert_left_open(fake, code, out,
+                              "fails docs gate: .*README.md blob is not this run's content")
 
     def test_stale_parent_keeps_the_docs_pr_open(self):
         fake = self.rerun(commit=docs_commit(parents=("f" * 40,)), statuses=False)
@@ -1488,7 +1615,7 @@ class DocsStatusTests(OrchestrationBase):
 
     def test_base_readme_that_differs_from_main_keeps_the_docs_pr_open(self):
         fake = self.fresh(statuses=False)
-        fake.on("git", "rev-parse", "origin/main:README.md", responses=[ok("1" * 40 + "\n")])
+        fake.on("git", "rev-parse", PIN + "README.md", responses=[ok("1" * 40 + "\n")])
         code, out, _ = run_main(fake, "--post-statuses")
         self.assert_left_open(fake, code, out, "fails docs gate: .*base README")
 
@@ -1518,6 +1645,101 @@ class DocsStatusTests(OrchestrationBase):
                 responses=[ok(json.dumps(make_docs_pr())), moved])
         code, out, _ = run_main(fake, "--post-statuses")
         self.assert_left_open(fake, code, out, "head moved after the gate read")
+
+    # -- the two-file proof ---------------------------------------------------
+
+    BOTH = [README_ENTRY, DASHBOARD_ENTRY]
+
+    def test_new_two_file_docs_pr_is_verified_vouched_and_merged(self):
+        fake = self.fresh(world={"dashboard_on_main": "before"},
+                          pr=make_docs_pr(title=DOCS_TITLE_BOTH),
+                          commit=docs_commit(files=self.BOTH))
+        code, out, _ = run_main(fake, "--post-statuses")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(self.docs_posts(fake)), 2)
+        self.assertEqual(self.docs_merge(fake), [(
+            "gh", "pr", "merge", "99", "--squash", "--match-head-commit", D, "--subject",
+            DOCS_TITLE_BOTH + " (#99)")])
+        self.assertEqual(fake.find("gh", "pr", "update-branch", "99"), [])
+
+    def test_new_dashboard_only_docs_pr_is_verified_vouched_and_merged(self):
+        self.fake = build_fake(main_before=DOCS_MAIN, readme=DONE_README, strict_api=True,
+                               dashboard_on_main="stale")
+        self.script_docs(self.fake, pr=make_docs_pr(title=DOCS_TITLE_DASHBOARD),
+                         commit=docs_commit(files=[DASHBOARD_ENTRY]))
+        code, out, _ = run_main(self.fake, "--post-statuses")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(self.docs_posts(self.fake)), 2)
+        self.assertEqual(self.docs_merge(self.fake), [(
+            "gh", "pr", "merge", "99", "--squash", "--match-head-commit", D, "--subject",
+            DOCS_TITLE_DASHBOARD + " (#99)")])
+        self.assertEqual(len(self.fake.find(*post_argv("git/blobs"))), 1)  # the page only
+
+    def test_two_file_pr_from_an_earlier_run_is_verified_vouched_and_merged(self):
+        fake = self.rerun(world={"dashboard_on_main": "stale"},
+                          commit=docs_commit(files=self.BOTH))
+        code, out, _ = run_main(fake, "--post-statuses")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(self.docs_merge(fake)), 1)
+        self.assertEqual(len(self.docs_posts(fake)), 2)
+
+    def test_earlier_one_file_pr_still_merges_when_the_dashboard_is_current(self):
+        fake = self.rerun(world={"dashboard_on_main": "current"})
+        code, out, _ = run_main(fake, "--post-statuses")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(self.docs_merge(fake)), 1)
+
+    def test_earlier_one_file_pr_stays_open_when_the_dashboard_is_stale_too(self):
+        fake = self.rerun(world={"dashboard_on_main": "stale"}, statuses=False)
+        code, out, _ = run_main(fake, "--post-statuses")
+        self.assert_left_open(fake, code, out, "fails docs gate: .*missing: dashboard.html")
+
+    def test_two_file_pr_stays_open_when_only_the_readme_is_expected(self):
+        fake = self.rerun(world={"dashboard_on_main": "current"}, statuses=False,
+                          commit=docs_commit(files=self.BOTH))
+        code, out, _ = run_main(fake, "--post-statuses")
+        self.assert_left_open(fake, code, out, "fails docs gate: .*extra file: dashboard.html")
+
+    def test_a_third_file_keeps_the_two_file_pr_open(self):
+        files = self.BOTH + [{"filename": "results/x.md", "status": "added", "sha": "1" * 40}]
+        fake = self.fresh(world={"dashboard_on_main": "before"}, statuses=False,
+                          commit=docs_commit(files=files))
+        code, out, _ = run_main(fake, "--post-statuses")
+        self.assert_left_open(fake, code, out, "fails docs gate: .*extra file: results/x.md")
+
+    def test_wrong_dashboard_content_keeps_the_two_file_pr_open(self):
+        files = [README_ENTRY, file_entry("dashboard.html", b"<html>edited by hand</html>")]
+        fake = self.fresh(world={"dashboard_on_main": "before"}, statuses=False,
+                          commit=docs_commit(files=files))
+        code, out, _ = run_main(fake, "--post-statuses")
+        self.assert_left_open(
+            fake, code, out, "fails docs gate: .*dashboard.html blob is not this run's content")
+
+    def test_a_dashboard_not_built_from_this_runs_results_keeps_the_pr_open(self):
+        # The PR carries the page of the results before the merge: stale by one result.
+        stale = file_entry("dashboard.html", expected_page(MAIN_PATHS))
+        fake = self.fresh(world={"dashboard_on_main": "before"}, statuses=False,
+                          commit=docs_commit(files=[README_ENTRY, stale]))
+        code, out, _ = run_main(fake, "--post-statuses")
+        self.assert_left_open(fake, code, out, "dashboard.html blob is not this run's content")
+
+    def test_dashboard_that_is_not_modified_keeps_the_pr_open(self):
+        files = [README_ENTRY, dict(DASHBOARD_ENTRY, status="added")]
+        fake = self.fresh(world={"dashboard_on_main": "before"}, statuses=False,
+                          commit=docs_commit(files=files))
+        code, out, _ = run_main(fake, "--post-statuses")
+        self.assert_left_open(fake, code, out, "dashboard.html status is 'added'")
+
+    def test_without_the_flag_a_two_file_pr_is_opened_and_never_merged_or_vouched(self):
+        self.vouched = frozenset({A})
+        self.fake = build_fake(prs=[make_pr(number=7)], main_after=DOCS_MAIN, strict_api=True,
+                               dashboard_on_main="before")
+        code, out, _ = run_main(self.fake)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(self.fake.find("gh", "pr", "create")), 1)
+        self.assertEqual(len(self.fake.find("gh", "pr", "merge")), 1)  # the result PR only
+        self.assertEqual(status_posts(self.fake), [])
+        self.assertEqual(self.fake.find("gh", "pr", "view", "99"), [])
 
     def test_two_open_docs_prs_stay_open_without_statuses(self):
         self.fake = build_fake(main_before=DOCS_MAIN, strict_api=True,
@@ -1575,33 +1797,142 @@ class DocsStatusTests(OrchestrationBase):
 
 
 class DocsGateTests(unittest.TestCase):
+    """The pure proof, over the expected file set E (README.md, dashboard.html, or both)."""
+
+    README_ONLY = {"README.md": DOCS_CHANGES["README.md"]}
+    DASHBOARD_ONLY = {"dashboard.html": DOCS_PAGE}
+    SHAPES = {"both": (DOCS_CHANGES, [README_ENTRY, DASHBOARD_ENTRY]),
+              "README only": (README_ONLY, [README_ENTRY]),
+              "dashboard only": (DASHBOARD_ONLY, [DASHBOARD_ENTRY])}
+
     def gate(self, pr=None, commit=None, main_sha=MAIN_SHA, main_blob=None, text=README,
-             new_text=DOCS_NEW):
-        return mr.docs_gate(pr or make_docs_pr(), commit or docs_commit(), main_sha,
-                            main_blob or blob_sha(text.encode("utf-8")), text, new_text, TAG)
+             changes=None, dashboard_sha=MAIN_SHA):
+        return mr.docs_gate(pr or make_docs_pr(), commit or docs_commit(files=[
+            README_ENTRY, DASHBOARD_ENTRY]), main_sha,
+            main_blob or blob_sha(text.encode("utf-8")), text,
+            DOCS_CHANGES if changes is None else changes, dashboard_sha, TAG)
+
+    def shape(self, name, **kw):
+        changes, files = self.SHAPES[name]
+        return self.gate(commit=kw.pop("commit", None) or docs_commit(files=files),
+                         changes=changes, **kw)
 
     def assertReason(self, reasons, fragment):
         self.assertTrue(any(fragment in r for r in reasons), (fragment, reasons))
 
-    def test_exact_rewrite_on_main_passes(self):
-        self.assertEqual(self.gate(), [])
+    def test_each_of_the_three_exact_shapes_passes(self):
+        for name in self.SHAPES:
+            with self.subTest(shape=name):
+                self.assertEqual(self.shape(name), [])
 
     def test_draft_and_fork_are_refused(self):
-        reasons = self.gate(pr=make_docs_pr(isDraft=True, isCrossRepository=True))
-        self.assertReason(reasons, "draft")
-        self.assertReason(reasons, "fork")
+        for name in self.SHAPES:
+            with self.subTest(shape=name):
+                reasons = self.shape(name, pr=make_docs_pr(isDraft=True, isCrossRepository=True))
+                self.assertReason(reasons, "draft")
+                self.assertReason(reasons, "fork")
 
-    def test_other_file_set_is_refused(self):
-        self.assertReason(self.gate(commit=docs_commit(files=[])), "one file")
-        self.assertReason(self.gate(commit=docs_commit(files=[
-            {"filename": "notes.md", "status": "modified",
-             "sha": blob_sha(DOCS_NEW.encode())}])), "README.md")
-        self.assertReason(self.gate(commit=docs_commit(files=[
-            {"filename": "README.md", "status": "added",
-             "sha": blob_sha(DOCS_NEW.encode())}])), "modified")
+    def test_a_third_file_is_refused_in_every_shape(self):
+        extra = {"filename": "notes.md", "status": "added", "sha": "1" * 40}
+        for name, (_, files) in self.SHAPES.items():
+            with self.subTest(shape=name):
+                reasons = self.shape(name, commit=docs_commit(files=files + [extra]))
+                self.assertReason(reasons, "extra file: notes.md")
 
-    def test_text_that_is_not_main_s_readme_is_refused(self):
-        self.assertReason(self.gate(main_blob="1" * 40), "base README")
+    def test_the_other_expected_file_is_an_extra_file(self):
+        self.assertReason(self.shape("README only", commit=docs_commit(
+            files=[README_ENTRY, DASHBOARD_ENTRY])), "extra file: dashboard.html")
+        self.assertReason(self.shape("dashboard only", commit=docs_commit(
+            files=[README_ENTRY, DASHBOARD_ENTRY])), "extra file: README.md")
+
+    def test_an_expected_file_that_is_absent_is_missing(self):
+        self.assertReason(self.shape("both", commit=docs_commit(files=[README_ENTRY])),
+                          "missing: dashboard.html")
+        self.assertReason(self.shape("both", commit=docs_commit(files=[DASHBOARD_ENTRY])),
+                          "missing: README.md")
+        self.assertReason(self.shape("README only", commit=docs_commit(files=[])),
+                          "missing: README.md")
+        self.assertReason(self.shape("dashboard only", commit=docs_commit(files=[])),
+                          "missing: dashboard.html")
+
+    def test_wrong_content_in_either_file_is_refused(self):
+        wrong = file_entry("README.md", b"something else")
+        self.assertReason(self.shape("both", commit=docs_commit(
+            files=[wrong, DASHBOARD_ENTRY])), "README.md blob is not this run's content")
+        wrong = file_entry("dashboard.html", b"something else")
+        self.assertReason(self.shape("both", commit=docs_commit(
+            files=[README_ENTRY, wrong])), "dashboard.html blob is not this run's content")
+        self.assertReason(self.shape("dashboard only", commit=docs_commit(
+            files=[wrong])), "dashboard.html blob is not this run's content")
+
+    def test_a_status_other_than_modified_is_refused_for_either_file(self):
+        for status in ("added", "removed", "renamed", None):
+            with self.subTest(status=status):
+                readme = dict(README_ENTRY, status=status)
+                dash = dict(DASHBOARD_ENTRY, status=status)
+                self.assertReason(self.shape("both", commit=docs_commit(
+                    files=[readme, DASHBOARD_ENTRY])), "README.md status is")
+                self.assertReason(self.shape("both", commit=docs_commit(
+                    files=[README_ENTRY, dash])), "dashboard.html status is")
+
+    def test_a_file_listed_twice_is_refused(self):
+        self.assertReason(self.shape("both", commit=docs_commit(
+            files=[README_ENTRY, DASHBOARD_ENTRY, README_ENTRY])),
+            "README.md listed more than once")
+        self.assertReason(self.shape("dashboard only", commit=docs_commit(
+            files=[DASHBOARD_ENTRY, DASHBOARD_ENTRY])), "dashboard.html listed more than once")
+
+    def test_entries_without_a_file_name_are_an_extra_file(self):
+        self.assertReason(self.shape("README only", commit=docs_commit(
+            files=[README_ENTRY, {"status": "modified", "sha": "1" * 40}])), "extra file")
+
+    def test_parent_must_be_exactly_the_pinned_main(self):
+        for parents in (("f" * 40,), (MAIN_SHA, "f" * 40), ()):
+            with self.subTest(parents=parents):
+                self.assertReason(self.shape("both", commit=docs_commit(
+                    parents=parents, files=[README_ENTRY, DASHBOARD_ENTRY])), "parent")
+
+    def test_text_that_is_not_main_s_readme_is_refused_when_readme_is_in_the_set(self):
+        self.assertReason(self.shape("both", main_blob="1" * 40), "base README")
+        self.assertReason(self.shape("README only", main_blob="1" * 40), "base README")
+
+    def test_the_base_readme_is_not_checked_when_only_the_dashboard_changes(self):
+        self.assertEqual(self.shape("dashboard only", main_blob="1" * 40), [])
+
+    def test_the_dashboard_must_have_been_computed_from_the_pinned_main(self):
+        self.assertReason(self.shape("both", dashboard_sha="f" * 40), "dashboard.html")
+        self.assertReason(self.shape("dashboard only", dashboard_sha="f" * 40), "computed from")
+        # Not in the set: its source does not matter.
+        self.assertEqual(self.shape("README only", dashboard_sha="f" * 40), [])
+
+    def test_a_name_outside_the_two_files_can_never_be_in_the_set(self):
+        reasons = self.gate(changes={"README.md": DOCS_CHANGES["README.md"],
+                                     "notes.md": b"x"},
+                            commit=docs_commit(files=[README_ENTRY]))
+        self.assertReason(reasons, "notes.md")
+
+    def test_branch_must_name_this_model_and_a_short_sha_in_every_shape(self):
+        for shape in self.SHAPES:
+            for name in ("docs/ledger-claude-fable-5-2-abc123", "docs/ledger-other-abcdef1",
+                         "docs/ledger-claude-fable-5-2-abcdef12", "feat/1-x"):
+                with self.subTest(shape=shape, name=name):
+                    self.assertReason(
+                        self.shape(shape, pr=make_docs_pr(headRefName=name)), "branch")
+
+    def test_every_failure_is_collected(self):
+        reasons = self.gate(pr=make_docs_pr(isDraft=True), main_blob="1" * 40,
+                            commit=docs_commit(parents=("f" * 40,), files=[
+                                file_entry("README.md", b"x", status="added"),
+                                file_entry("notes.md", b"y")]))
+        for fragment in ("draft", "base README", "parent", "extra file: notes.md",
+                         "missing: dashboard.html", "README.md status is",
+                         "README.md blob is not"):
+            self.assertReason(reasons, fragment)
+
+    def test_gate_never_touches_the_inputs(self):
+        changes = dict(DOCS_CHANGES)
+        self.gate(changes=changes)
+        self.assertEqual(changes, DOCS_CHANGES)
 
     def test_branch_must_name_this_model_and_a_short_sha(self):
         for name in ("docs/ledger-claude-fable-5-2-abc123", "docs/ledger-other-abcdef1",
@@ -1647,6 +1978,382 @@ class DocsStatusDryRunTests(OrchestrationBase):
         self.fake = build_fake(main_before=DOCS_MAIN)
         code, out, _ = run_main(self.fake, "--dry-run")
         self.assertIn("would open a docs PR marking 1 row(s) generated\n", out)
+
+
+def posts(fake):
+    """``[(endpoint name, body)]`` of every git data API POST, in call order."""
+    return [(argv[4].rsplit("/", 1)[1], json.loads(body)) for argv, body in fake.calls
+            if argv[:4] == ("gh", "api", "--method", "POST") and argv[4].startswith(REPO_API + "git/")]
+
+
+class DashboardPrTests(OrchestrationBase):
+    """The docs PR carries README.md, dashboard.html or both, and none when both are current."""
+
+    def both(self, **kw):
+        # A result merges; the dashboard committed on main predates it.
+        kw.setdefault("dashboard_on_main", "before")
+        self.fake = build_fake(prs=[make_pr(number=7)], main_after=DOCS_MAIN, **kw)
+        return self.fake
+
+    def readme_only(self, **kw):
+        self.fake = build_fake(main_before=DOCS_MAIN, **kw)  # dashboard current
+        return self.fake
+
+    def dashboard_only(self, **kw):
+        kw.setdefault("dashboard_on_main", "stale")
+        self.fake = build_fake(main_before=DOCS_MAIN, readme=DONE_README, **kw)
+        return self.fake
+
+    def neither(self, **kw):
+        self.fake = build_fake(main_before=DOCS_MAIN, readme=DONE_README, **kw)
+        return self.fake
+
+    def assert_one_commit(self, fake, files, title):
+        """The API sequence builds one commit on the pinned main with exactly ``files``."""
+        made = posts(fake)
+        self.assertEqual([name for name, _ in made],
+                         ["blobs"] * len(files) + ["trees", "commits", "refs"])
+        for (_, body), (_, data) in zip(made, files):
+            self.assertEqual(body, {"content": base64.b64encode(data).decode("ascii"),
+                                    "encoding": "base64"})
+        self.assertEqual(made[len(files)][1], {
+            "base_tree": MAIN_TREE,
+            "tree": [{"path": name, "mode": "100644", "type": "blob", "sha": blob_sha(data)}
+                     for name, data in files]})
+        self.assertEqual(made[-2][1], {"message": title, "tree": NEW_TREE, "parents": [MAIN_SHA]})
+        self.assertEqual(made[-1][1], {"ref": "refs/heads/" + DOCS_BRANCH, "sha": NEW_COMMIT})
+        argvs = fake.argvs()
+        last_post = max(i for i, a in enumerate(argvs) if a[:4] == ("gh", "api", "--method", "POST"))
+        create_at = argvs.index(fake.find("gh", "pr", "create")[0][0])
+        self.assertLess(last_post, create_at)  # the branch exists only with its commit on it
+        create = argvs[create_at]
+        self.assertEqual(create[create.index("--head") + 1], DOCS_BRANCH)
+        self.assertEqual(create[create.index("--base") + 1], "main")
+        self.assertEqual(create[create.index("--title") + 1], title)
+        self.assertEqual(fake.find("gh", "api", "--method", "PUT"), [])
+        self.assertEqual(fake.find("gh", "pr", "merge", "99"), [])
+
+    def test_both_files_go_into_one_commit(self):
+        fake = self.both()
+        code, out, _ = run_main(fake)
+        self.assertEqual(code, 0, out)
+        self.assert_one_commit(fake, [("README.md", DOCS_NEW.encode("utf-8")),
+                                      ("dashboard.html", DOCS_PAGE)], DOCS_TITLE_BOTH)
+        self.assertIn("docs PR opened: https://github.com/o/r/pull/99", out)
+
+    def test_ledger_only_goes_into_one_commit_with_the_readme_title(self):
+        fake = self.readme_only()
+        code, out, _ = run_main(fake)
+        self.assertEqual(code, 0, out)
+        self.assert_one_commit(fake, [("README.md", DOCS_NEW.encode("utf-8"))], DOCS_TITLE)
+
+    def test_dashboard_only_goes_into_one_commit_with_the_dashboard_title(self):
+        fake = self.dashboard_only()
+        code, out, _ = run_main(fake)
+        self.assertEqual(code, 0, out)
+        self.assert_one_commit(fake, [("dashboard.html", DOCS_PAGE)], DOCS_TITLE_DASHBOARD)
+        self.assertIn("ledger up to date", out)
+        body = fake.find("gh", "pr", "create")[0][0]
+        body = body[body.index("--body") + 1]
+        self.assertIn("dashboard.html", body)
+        self.assertNotIn("Rows:", body)
+
+    def test_nothing_is_opened_when_ledger_and_dashboard_are_current(self):
+        fake = self.neither()
+        code, out, _ = run_main(fake)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(fake.writes(), [])
+        self.assertEqual(posts(fake), [])
+        self.assertIn("ledger up to date", out)
+        self.assertIn("dashboard.html up to date", out)
+
+    def test_the_page_is_the_page_of_the_results_on_main_not_of_the_working_tree(self):
+        # Nothing in the fake touches a disk folder: the only source of rows is the git tree.
+        fake = self.dashboard_only()
+        run_main(fake)
+        (_, body), = posts(fake)[:1]
+        page = base64.b64decode(body["content"]).decode("utf-8")
+        for path in DOCS_MAIN:
+            if not path.endswith(".meta.json"):
+                self.assertIn(urllib.parse.quote(path, safe="/"), page)
+
+    def test_only_sidecar_and_run_blobs_are_read_from_main(self):
+        fake = self.dashboard_only()
+        run_main(fake)
+        entries = result_entries(DOCS_MAIN)
+        sidecars = {blob_sha(c) for p, c in entries if p.endswith((b".meta.json", b".run.json"))}
+        others = {blob_sha(c) for p, c in entries} - sidecars
+        requests = [i for a, i in fake.calls if a == ("git", "cat-file", "--batch")]
+        self.assertEqual(len(requests), 1)
+        asked = set(requests[0].decode("ascii").split("\n")[:-1])
+        self.assertEqual(asked, sidecars)
+        self.assertTrue(others)
+        self.assertFalse(asked & others)
+
+    def test_the_two_listing_and_blob_reads_are_binary_and_every_other_call_is_text(self):
+        fake = self.both()
+        run_main(fake)
+        self.assertEqual(set(fake.binary_argvs), {
+            ("git", "ls-tree", "-r", "-z", MAIN_SHA, "--", "results"),
+            ("git", "cat-file", "--batch")})
+
+    def test_origin_main_is_resolved_once_and_every_later_read_names_the_sha(self):
+        fake = self.both()
+        run_main(fake)
+        argvs = fake.argvs()
+        resolves = [i for i, a in enumerate(argvs) if a == ("git", "rev-parse", "origin/main")]
+        self.assertEqual(len(resolves), 1)
+        after = [a for a in argvs[resolves[0] + 1:] if a[0] == "git"]
+        self.assertTrue(after)
+        for argv in after:
+            self.assertFalse(any("origin/main" in part for part in argv), argv)
+            if argv != ("git", "cat-file", "--batch"):  # that one is fed object ids
+                self.assertIn(MAIN_SHA, " ".join(argv))
+        # The new commit is the child of exactly the commit everything was read at.
+        self.assertEqual(posts(fake)[-2][1]["parents"], [MAIN_SHA])
+
+    def test_a_moved_origin_main_is_never_read_midway(self):
+        fake = self.readme_only()
+        fake.on("git", "rev-parse", "origin/main",
+                responses=[ok(MAIN_SHA + "\n"), ok("b" * 40 + "\n")])
+        code, out, _ = run_main(fake)
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("b" * 40, " ".join(" ".join(a) for a in fake.argvs()))
+        self.assertEqual(posts(fake)[-2][1]["parents"], [MAIN_SHA])
+
+    def test_warnings_while_reading_the_results_are_counted_never_printed(self):
+        fake = self.readme_only()
+        entries = result_entries(DOCS_MAIN)
+        broken = [(p, b"{not json" if p == b"results/alpha/alpha_other_model.meta.json" else c)
+                  for p, c in entries]
+        fake.on("git", "ls-tree", "-r", "-z", MAIN_SHA, "--", "results",
+                responses=[okb(ls_tree_z(broken))])
+        fake.on("git", "cat-file", "--batch", responses=[cat_file_reply(broken)])
+        code, out, _ = run_main(fake)
+        self.assertEqual(code, 0, out)
+        self.assertIn("dashboard: 1 warning(s) while reading the results on origin/main; "
+                      "text not shown", out)
+        self.assertNotIn("alpha_other_model", out)
+        self.assertNotIn("cannot read", out)
+
+    # -- failures ---------------------------------------------------------------
+
+    def failing(self, fake, endpoint, reply):
+        fake.on(*post_argv(endpoint), responses=[reply])
+
+    def assert_step_failed(self, code, out, fake, step, detail, leftover=False):
+        self.assertEqual(code, 1, out)
+        self.assertIn("docs PR step failed: %s: %s" % (step, detail), out)
+        if leftover:
+            self.assertIn("leftover branch: " + DOCS_BRANCH, out)
+        else:
+            self.assertNotIn("leftover branch", out)
+
+    def test_a_failing_blob_call_stops_the_sequence_and_leaves_nothing_visible(self):
+        for index, step in ((0, "create blob README.md"), (1, "create blob dashboard.html")):
+            with self.subTest(step=step):
+                fake = self.both()
+                calls = []
+
+                def reply(argv, input, index=index, calls=calls):
+                    calls.append(input)
+                    if len(calls) - 1 == index:
+                        return (1, "", "HTTP 500\n")
+                    return blob_reply(argv, input)
+
+                self.failing(fake, "git/blobs", reply)
+                code, out, _ = run_main(fake)
+                self.assert_step_failed(code, out, fake, step, "HTTP 500")
+                self.assertEqual([n for n, _ in posts(fake)], ["blobs"] * (index + 1))
+                self.assertEqual(fake.find("gh", "pr", "create"), [])
+
+    def test_a_blob_id_that_is_not_the_local_one_is_a_failure(self):
+        fake = self.readme_only()
+        self.failing(fake, "git/blobs", ok(json.dumps({"sha": "9" * 40})))
+        code, out, _ = run_main(fake)
+        self.assert_step_failed(code, out, fake, "create blob README.md",
+                                "GitHub returned blob 9999999, expected %s" % (
+                                    blob_sha(DOCS_NEW.encode("utf-8"))[:7]))
+        self.assertEqual([n for n, _ in posts(fake)], ["blobs"])
+        self.assertEqual(fake.find("gh", "pr", "create"), [])
+
+    def test_an_answer_that_is_not_json_with_a_sha_is_a_failure(self):
+        for reply in (ok("not json"), ok("[]"), ok("{}"), ok(json.dumps({"sha": 7}))):
+            with self.subTest(reply=reply):
+                fake = self.readme_only()
+                self.failing(fake, "git/blobs", reply)
+                code, out, _ = run_main(fake)
+                self.assert_step_failed(code, out, fake, "create blob README.md",
+                                        "unexpected answer")
+                self.assertEqual(fake.find("gh", "pr", "create"), [])
+
+    def test_a_failing_tree_call_leaves_nothing_visible(self):
+        fake = self.both()
+        self.failing(fake, "git/trees", (1, "", "HTTP 422\n"))
+        code, out, _ = run_main(fake)
+        self.assert_step_failed(code, out, fake, "create tree", "HTTP 422")
+        self.assertEqual([n for n, _ in posts(fake)], ["blobs", "blobs", "trees"])
+        self.assertEqual(fake.find("gh", "pr", "create"), [])
+
+    def test_a_failing_commit_call_leaves_nothing_visible(self):
+        fake = self.both()
+        self.failing(fake, "git/commits", (1, "", "HTTP 409\n"))
+        code, out, _ = run_main(fake)
+        self.assert_step_failed(code, out, fake, "create commit", "HTTP 409")
+        self.assertEqual([n for n, _ in posts(fake)], ["blobs", "blobs", "trees", "commits"])
+        self.assertEqual(fake.find("gh", "pr", "create"), [])
+
+    def test_a_failing_ref_call_leaves_no_branch(self):
+        fake = self.both()
+        self.failing(fake, "git/refs", (1, "", "HTTP 422 Reference already exists\n"))
+        code, out, _ = run_main(fake)
+        self.assert_step_failed(code, out, fake, "create branch",
+                                "HTTP 422 Reference already exists")
+        self.assertEqual(fake.find("gh", "pr", "create"), [])
+
+    def test_a_tree_or_commit_answer_without_a_full_sha_is_a_failure(self):
+        for endpoint, step in (("git/trees", "create tree"), ("git/commits", "create commit")):
+            for reply in (ok("{}"), ok(json.dumps({"sha": "abc"})), ok("nope")):
+                with self.subTest(step=step, reply=reply):
+                    fake = self.readme_only()
+                    self.failing(fake, endpoint, reply)
+                    code, out, _ = run_main(fake)
+                    self.assert_step_failed(code, out, fake, step, "unexpected answer")
+                    self.assertEqual(fake.find(*post_argv("git/refs")), [])
+
+    def test_a_failing_pr_create_names_the_leftover_branch(self):
+        fake = self.both()
+        fake.on("gh", "pr", "create", responses=[(1, "", "HTTP 502\n")])
+        code, out, _ = run_main(fake)
+        self.assert_step_failed(code, out, fake, "open PR", "HTTP 502", leftover=True)
+        self.assertEqual([n for n, _ in posts(fake)],
+                         ["blobs", "blobs", "trees", "commits", "refs"])
+
+    def test_unreadable_origin_main_exits_1_and_writes_nothing(self):
+        cases = {
+            "resolve": (("git", "rev-parse", "origin/main"), (128, "", "fatal: bad revision\n"),
+                        "could not resolve origin/main: fatal: bad revision"),
+            "garbage sha": (("git", "rev-parse", "origin/main"), ok("not a sha\n"),
+                            "could not resolve origin/main"),
+            "tree": (("git", "rev-parse", MAIN_SHA + "^{tree}"), (128, "", "fatal: nope\n"),
+                     "could not read the tree of origin/main: fatal: nope"),
+            "README": (("git", "show", PIN + "README.md"), (128, "", "fatal: no README\n"),
+                       "could not read README.md from origin/main: fatal: no README"),
+            "README blob": (("git", "rev-parse", PIN + "README.md"), (128, "", "fatal: no blob\n"),
+                            "could not read README.md from origin/main: fatal: no blob"),
+            "listing": (("git", "ls-tree", "-r", "-z", MAIN_SHA, "--", "results"),
+                        (128, b"", b"fatal: not a tree object\xff\n"),
+                        "could not read the results on origin/main: git ls-tree failed: "
+                        "fatal: not a tree object�"),
+            "listing shape": (("git", "ls-tree", "-r", "-z", MAIN_SHA, "--", "results"),
+                              okb(b"junk\0"), "could not read the results on origin/main: "
+                              "unexpected git ls-tree output"),
+            "blobs": (("git", "cat-file", "--batch"), okb(b"junk\n"),
+                      "could not read the results on origin/main: unexpected git cat-file output"),
+        }
+        for name, (prefix, reply, message) in cases.items():
+            with self.subTest(case=name):
+                fake = self.both()
+                fake.on(*prefix, responses=[reply])
+                code, out, _ = run_main(fake)
+                self.assertEqual(code, 1, out)
+                self.assertIn(message, out)
+                self.assertEqual(posts(fake), [])
+                self.assertEqual(fake.find("gh", "pr", "create"), [])
+
+    def test_a_dashboard_missing_on_main_is_reported_and_never_re_added(self):
+        self.vouched = frozenset({A})  # the result PR of the 'both' world is still gated and vouched
+        for kind in (self.both, self.readme_only, self.dashboard_only, self.neither):
+            with self.subTest(world=kind.__name__):
+                fake = kind(dashboard_on_main=None)
+                code, out, _ = run_main(fake, "--post-statuses")
+                self.assertEqual(code, 1, out)
+                self.assertIn("could not read dashboard.html from origin/main: "
+                              "fatal: path 'dashboard.html' does not exist", out)
+                self.assertEqual(posts(fake), [])
+                self.assertEqual(fake.find("gh", "pr", "create"), [])
+                self.assertEqual([p for p in status_posts(fake) if p[0] != A], [])
+                self.assertEqual(fake.find("gh", "pr", "merge", "99"), [])
+
+
+class DashboardDryRunTests(OrchestrationBase):
+    def dry(self, *args, **world):
+        self.fake = build_fake(**world)
+        code, out, _ = run_main(self.fake, "--dry-run", *args)
+        self.assertEqual(self.fake.writes(), [])
+        self.assertEqual(posts(self.fake), [])
+        self.assertEqual(status_posts(self.fake), [])
+        return code, out
+
+    def test_a_current_dashboard_and_ledger_are_reported_as_nothing_to_do(self):
+        code, out = self.dry(main_before=DOCS_MAIN, readme=DONE_README)
+        self.assertEqual(code, 0, out)
+        self.assertIn("dashboard.html on origin/main is current\n", out)
+        self.assertIn("ledger up to date", out)
+        self.assertNotIn("would open", out)
+        self.assertNotIn("would be regenerated", out)
+
+    def test_a_stale_dashboard_alone_would_get_a_dashboard_pr(self):
+        code, out = self.dry(main_before=DOCS_MAIN, readme=DONE_README, dashboard_on_main="stale")
+        self.assertEqual(code, 0, out)
+        self.assertIn("dashboard.html on origin/main is stale\n", out)
+        self.assertIn("would open a docs PR regenerating dashboard.html\n", out)
+
+    def test_a_stale_dashboard_and_open_rows_would_get_a_two_file_pr(self):
+        code, out = self.dry(main_before=DOCS_MAIN, dashboard_on_main="stale")
+        self.assertIn("would open a docs PR marking 1 row(s) generated and regenerating "
+                      "dashboard.html\n", out)
+
+    def test_planned_merges_mean_the_dashboard_would_be_regenerated_afterwards(self):
+        code, out = self.dry(prs=[make_pr(number=7)])
+        self.assertEqual(code, 0, out)
+        self.assertIn("dashboard.html on origin/main is current\n", out)
+        self.assertIn("dashboard.html would be regenerated after the planned merges\n", out)
+        self.assertIn("would open a docs PR marking 1 row(s) generated and regenerating "
+                      "dashboard.html\n", out)
+
+    def test_planned_merges_with_a_current_ledger_still_plan_a_dashboard_pr(self):
+        code, out = self.dry(prs=[make_pr(number=7)], readme=DONE_README)
+        self.assertIn("would open a docs PR regenerating dashboard.html\n", out)
+
+    def test_a_dry_run_with_the_flag_reports_the_vouching_for_a_dashboard_pr(self):
+        code, out = self.dry("--post-statuses", main_before=DOCS_MAIN, readme=DONE_README,
+                             dashboard_on_main="stale", strict_api=True)
+        self.assertIn("would open a docs PR regenerating dashboard.html, then post "
+                      "orchestrai/test and orchestrai/review on it and merge it once its diff "
+                      "is verified and its checks are green\n", out)
+
+    def test_a_missing_dashboard_exits_1_without_writes(self):
+        code, out = self.dry(main_before=DOCS_MAIN, dashboard_on_main=None)
+        self.assertEqual(code, 1, out)
+        self.assertIn("could not read dashboard.html from origin/main", out)
+
+    def test_an_open_docs_pr_is_reported_before_a_dashboard_only_plan(self):
+        code, out = self.dry(main_before=DOCS_MAIN, readme=DONE_README,
+                             dashboard_on_main="stale", extra_list=docs_listing(31))
+        self.assertIn("ledger PR #31 already open; merge it, then re-run\n", out)
+        self.assertNotIn("would open a docs PR", out)
+
+
+class DefaultRunTests(unittest.TestCase):
+    """The one real seam: binary mode returns bytes, text mode strings."""
+
+    def test_binary_mode_passes_bytes_in_and_out_unchanged(self):
+        code = "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())"
+        data = b"\xff\x00caf\xc3\xa9\r\n\xfe"
+        proc = mr.default_run([sys.executable, "-c", code], input=data, binary=True)
+        self.assertEqual((proc.returncode, proc.stdout), (0, data))
+
+    def test_text_mode_is_the_default(self):
+        proc = mr.default_run([sys.executable, "-c", "print('hi')"])
+        self.assertEqual(proc.stdout, "hi\n")
+
+    def test_a_missing_program_is_a_127_in_either_mode(self):
+        for binary, empty in ((False, ""), (True, b"")):
+            with self.subTest(binary=binary):
+                proc = mr.default_run(["no-such-program-for-this-test"], binary=binary)
+                self.assertEqual((proc.returncode, proc.stdout), (127, empty))
+                self.assertIsInstance(proc.stderr, bytes if binary else str)
 
 
 if __name__ == "__main__":
