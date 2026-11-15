@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Melon Jelly</title>
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: #11141a; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  canvas { display: block; position: fixed; top: 0; left: 0; }
+  #toolbar { position: fixed; top: 12px; left: 12px; z-index: 10; display: flex; gap: 8px; align-items: flex-start; flex-wrap: wrap; max-width: 92vw; }
+  .tool-btn { background: rgba(20,22,28,0.85); color: #eee; border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; padding: 8px 12px; font-size: 14px; cursor: pointer; user-select: none; }
+  .tool-btn.active { background: rgba(90,140,255,0.35); border-color: rgba(140,180,255,0.65); }
+  .panel-details { position: relative; }
+  .panel-details summary { list-style: none; }
+  .panel-details summary::-webkit-details-marker { display: none; }
+  .panel-body { position: absolute; top: calc(100% + 6px); left: 0; background: rgba(20,22,28,0.94); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 8px; min-width: 190px; color: #eee; font-size: 13px; }
+  .swatches { display: flex; flex-wrap: wrap; gap: 6px; }
+  .swatch { width: 22px; height: 22px; border-radius: 5px; border: 1px solid rgba(255,255,255,0.4); cursor: pointer; padding: 0; }
+  .params-body label { display: flex; flex-direction: column; gap: 3px; }
+  .checkbox-label { flex-direction: row !important; align-items: center; gap: 6px !important; }
+  input[type=range] { width: 170px; }
+  #fpsDisplay { position: fixed; top: 12px; right: 12px; z-index: 10; color: #eee; background: rgba(20,22,28,0.7); padding: 6px 10px; border-radius: 6px; font-size: 12px; font-family: "Courier New", monospace; }
+</style>
+</head>
+<body>
+<div id="toolbar">
+  <button class="tool-btn active" data-tool="grab" title="Grab and drag the melon">Grab</button>
+  <button class="tool-btn" data-tool="knife" title="Drag across the melon to cut">Knife</button>
+  <details id="colorPanel" class="panel-details">
+    <summary class="tool-btn">Color</summary>
+    <div class="panel-body">
+      <input type="color" id="colorPicker" value="#ff5b6e">
+      <div class="swatches" id="swatches"></div>
+    </div>
+  </details>
+  <button id="resetBtn" class="tool-btn" title="Restore the initial melon">Reset</button>
+  <details id="paramsPanel" class="panel-details">
+    <summary class="tool-btn">Params</summary>
+    <div class="panel-body params-body">
+      <label>Stiffness <input type="range" id="sStiff" min="0.3" max="3" step="0.05" value="1"></label>
+      <label>Damping <input type="range" id="sDamp" min="0" max="2" step="0.05" value="0.5"></label>
+      <label>Gravity <input type="range" id="sGrav" min="0" max="2.5" step="0.05" value="1"></label>
+      <label>Wobble <input type="range" id="sWobble" min="0.2" max="2.5" step="0.05" value="1"></label>
+      <label class="checkbox-label"><input type="checkbox" id="fpsToggle" checked> Show FPS</label>
+    </div>
+  </details>
+</div>
+<div id="fpsDisplay">FPS: 60</div>
+<canvas id="c"></canvas>
+<script>
+"use strict";
+
+/* ============================ Constants ============================ */
+var NUM_RINGS = 18;
+var NUM_ANGLES = 26;
+var RING_INNER_FRAC = 0.15;
+var SUBSTEPS = 8;
+var FIXED_DT = 1 / 60;
+var GRAVITY = 1400;
+var FRICTION = 0.28;
+var SLEEP_EPS = 4;
+var MAX_SPEED = 5000;
+var GRAB_RADIUS = 50;
+var GRAB_BASE_COMPLIANCE = 0.00022;
+var PINCH_COMPLIANCE = 0.00018;
+var PINCH_RANGE = 130;
+
+var ZONE_EDGE_COMPLIANCE = [0.0012, 0.00035, 0.00006];   /* flesh, pith, rind */
+var ZONE_AREA_COMPLIANCE = [0.0035, 0.0012, 0.00025];    /* flesh, pith, rind */
+var SHEAR_MULT = 1.4;
+
+var DEFAULT_FLESH = "#ff5b6e";
+var RIND_COLOR = "#2f7d32";
+var PITH_COLOR = "#f4ecd8";
+var SEED_COLOR = "#241209";
+var PRESET_COLORS = ["#ff5b6e", "#ff8fa3", "#ffd166", "#ef476f", "#06d6a0", "#118ab2", "#9d4edd", "#e63946"];
+
+/** @type {Object} tunable simulation parameters, bound to the UI sliders */
+var CONFIG = { stiffness: 1, damping: 0.5, gravity: 1, wobble: 1, fleshColor: DEFAULT_FLESH };
+
+/**
+ * Linear particle index for ring i (0..NUM_RINGS-1) and angle step j (0..NUM_ANGLES-1).
+ * Index 0 is reserved for the single apex/center particle.
+ * @param {number} i @param {number} j @returns {number}
+ */
+function idx(i, j) { return 1 + i * NUM_ANGLES + j; }
+
+function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+/* ============================ Mesh state ============================ */
+var N = 0, NE = 0, NT = 0;
+var posX, posY, prevX, prevY, velX, velY, invMass, zone;
+var initPosX, initPosY;
+var edgeA, edgeB, restLen, edgeBaseCompliance, edgeActive, edgeLambda;
+var triA, triB, triC, restArea2, triBaseCompliance, triZone, triActive, triLambda;
+var seedByTri;
+var seeds = [];
+var groundedFlag, wallFlag;
+
+/**
+ * Builds the half-disc particle/edge/triangle mesh centered at (cx, cy) with outer radius R.
+ * @param {number} cx @param {number} cy @param {number} R
+ */
+function buildMesh(cx, cy, R) {
+  N = 1 + NUM_RINGS * NUM_ANGLES;
+  posX = new Float64Array(N);
+  posY = new Float64Array(N);
+  zone = new Uint8Array(N);
+  invMass = new Float32Array(N);
+  invMass.fill(1);
+
+  posX[0] = cx; posY[0] = cy; zone[0] = 0;
+
+  for (var i = 0; i < NUM_RINGS; i++) {
+    var r = R * (RING_INNER_FRAC + (1 - RING_INNER_FRAC) * i / (NUM_RINGS - 1));
+    var z = (i === NUM_RINGS - 1) ? 2 : (i === NUM_RINGS - 2 ? 1 : 0);
+    for (var j = 0; j < NUM_ANGLES; j++) {
+      var theta = Math.PI * j / (NUM_ANGLES - 1);
+      var id = idx(i, j);
+      posX[id] = cx + r * Math.cos(theta);
+      posY[id] = cy + r * Math.sin(theta);
+      zone[id] = z;
+    }
+  }
+
+  /* ---- edges: structural (angular, radial, fan) + shear (diagonals) ---- */
+  var eaArr = [], ebArr = [], esArr = [];
+  for (var j0 = 0; j0 < NUM_ANGLES; j0++) { eaArr.push(0); ebArr.push(idx(0, j0)); esArr.push(0); }
+  for (var i1 = 0; i1 < NUM_RINGS; i1++) {
+    for (var j1 = 0; j1 < NUM_ANGLES - 1; j1++) {
+      eaArr.push(idx(i1, j1)); ebArr.push(idx(i1, j1 + 1)); esArr.push(0);
+    }
+    if (i1 < NUM_RINGS - 1) {
+      for (var j2 = 0; j2 < NUM_ANGLES; j2++) {
+        eaArr.push(idx(i1, j2)); ebArr.push(idx(i1 + 1, j2)); esArr.push(0);
+      }
+      for (var j3 = 0; j3 < NUM_ANGLES - 1; j3++) {
+        eaArr.push(idx(i1, j3)); ebArr.push(idx(i1 + 1, j3 + 1)); esArr.push(1);
+        eaArr.push(idx(i1, j3 + 1)); ebArr.push(idx(i1 + 1, j3)); esArr.push(1);
+      }
+    }
+  }
+  NE = eaArr.length;
+  edgeA = Int32Array.from(eaArr);
+  edgeB = Int32Array.from(ebArr);
+  restLen = new Float32Array(NE);
+  edgeBaseCompliance = new Float32Array(NE);
+  edgeActive = new Uint8Array(NE); edgeActive.fill(1);
+  edgeLambda = new Float32Array(NE);
+  for (var e = 0; e < NE; e++) {
+    var a = edgeA[e], b = edgeB[e];
+    var dx = posX[a] - posX[b], dy = posY[a] - posY[b];
+    restLen[e] = Math.hypot(dx, dy);
+    var base = (ZONE_EDGE_COMPLIANCE[zone[a]] + ZONE_EDGE_COMPLIANCE[zone[b]]) / 2;
+    edgeBaseCompliance[e] = esArr[e] ? base * SHEAR_MULT : base;
+  }
+
+  /* ---- triangles: center fan + ring-to-ring quad strips ---- */
+  var taArr = [], tbArr = [], tcArr = [], trlArr = [];
+  for (var jf = 0; jf < NUM_ANGLES - 1; jf++) {
+    taArr.push(0); tbArr.push(idx(0, jf)); tcArr.push(idx(0, jf + 1)); trlArr.push(-1);
+  }
+  for (var ig = 0; ig < NUM_RINGS - 1; ig++) {
+    for (var jg = 0; jg < NUM_ANGLES - 1; jg++) {
+      taArr.push(idx(ig, jg)); tbArr.push(idx(ig, jg + 1)); tcArr.push(idx(ig + 1, jg)); trlArr.push(ig);
+      taArr.push(idx(ig, jg + 1)); tbArr.push(idx(ig + 1, jg + 1)); tcArr.push(idx(ig + 1, jg)); trlArr.push(ig);
+    }
+  }
+  NT = taArr.length;
+  triA = Int32Array.from(taArr);
+  triB = Int32Array.from(tbArr);
+  triC = Int32Array.from(tcArr);
+  restArea2 = new Float32Array(NT);
+  triBaseCompliance = new Float32Array(NT);
+  triZone = new Uint8Array(NT);
+  triActive = new Uint8Array(NT); triActive.fill(1);
+  triLambda = new Float32Array(NT);
+  for (var t = 0; t < NT; t++) {
+    var pa = triA[t], pb = triB[t], pc = triC[t];
+    var x1 = posX[pa], y1 = posY[pa], x2 = posX[pb], y2 = posY[pb], x3 = posX[pc], y3 = posY[pc];
+    restArea2[t] = (x2 - x1) * (y3 - y1) - (x3 - x1) * (y2 - y1);
+    var tz = Math.max(zone[pa], zone[pb], zone[pc]);
+    triZone[t] = tz;
+    triBaseCompliance[t] = ZONE_AREA_COMPLIANCE[tz];
+  }
+
+  /* ---- seeds: scattered in a mid-flesh ring band ---- */
+  seedByTri = new Int32Array(NT); seedByTri.fill(-1);
+  seeds = [];
+  var candidates = [];
+  for (var tc2 = 0; tc2 < NT; tc2++) {
+    var ring = trlArr[tc2];
+    if (ring >= 2 && ring <= NUM_RINGS - 5 && triZone[tc2] === 0) candidates.push(tc2);
+  }
+  for (var sh = candidates.length - 1; sh > 0; sh--) {
+    var rj = Math.floor(Math.random() * (sh + 1));
+    var tmp = candidates[sh]; candidates[sh] = candidates[rj]; candidates[rj] = tmp;
+  }
+  var seedCount = Math.min(40, candidates.length);
+  for (var sc = 0; sc < seedCount; sc++) {
+    var tri = candidates[sc];
+    var r1 = Math.random(), r2 = Math.random();
+    if (r1 + r2 > 1) { r1 = 1 - r1; r2 = 1 - r2; }
+    var wa = 1 - r1 - r2, wb = r1, wc = r2;
+    seeds.push({
+      va: triA[tri], vb: triB[tri], vc: triC[tri],
+      wa: wa, wb: wb, wc: wc,
+      size: 2 + Math.random() * 2, angle: Math.random() * Math.PI,
+      active: true
+    });
+    seedByTri[tri] = seeds.length - 1;
+  }
+
+  groundedFlag = new Uint8Array(N);
+  wallFlag = new Uint8Array(N);
+}
+
+/**
+ * Restores the mesh to its freshly-built state and clears all pieces/cuts instantly.
+ */
+function resetMesh() {
+  posX.set(initPosX); posY.set(initPosY);
+  prevX.set(initPosX); prevY.set(initPosY);
+  velX.fill(0); velY.fill(0);
+  edgeActive.fill(1);
+  triActive.fill(1);
+  for (var s = 0; s < seeds.length; s++) seeds[s].active = true;
+  pointerStates.clear();
+  knifeActive = false; knifePointerId = null; knifePrev = null; knifePath = [];
+  CONFIG.fleshColor = DEFAULT_FLESH;
+  var cp = document.getElementById("colorPicker");
+  if (cp) cp.value = DEFAULT_FLESH;
+}
+
+/* ============================ Physics (XPBD) ============================ */
+
+function applyExternalForces(h) {
+  var g = GRAVITY * CONFIG.gravity;
+  for (var i = 0; i < N; i++) {
+    velY[i] += g * h;
+    prevX[i] = posX[i]; prevY[i] = posY[i];
+    posX[i] += velX[i] * h; posY[i] += velY[i] * h;
+  }
+}
+
+/** One Gauss-Seidel sweep of all active distance (structural + shear) constraints. */
+function solveEdges(h2) {
+  edgeLambda.fill(0);
+  for (var e = 0; e < NE; e++) {
+    if (!edgeActive[e]) continue;
+    var a = edgeA[e], b = edgeB[e];
+    var dx = posX[a] - posX[b], dy = posY[a] - posY[b];
+    var len = Math.hypot(dx, dy);
+    if (len < 1e-9) len = 1e-9;
+    var nx = dx / len, ny = dy / len;
+    var C = len - restLen[e];
+    var compliance = edgeBaseCompliance[e] / CONFIG.stiffness;
+    var alphaTilde = compliance / h2;
+    var wa = invMass[a], wb = invMass[b];
+    var denom = wa + wb + alphaTilde;
+    if (denom < 1e-9) continue;
+    var dLambda = (-C - alphaTilde * edgeLambda[e]) / denom;
+    posX[a] += wa * nx * dLambda; posY[a] += wa * ny * dLambda;
+    posX[b] -= wb * nx * dLambda; posY[b] -= wb * ny * dLambda;
+    edgeLambda[e] += dLambda;
+  }
+}
+
+/** One Gauss-Seidel sweep of all active triangle area (volume-preservation) constraints. */
+function solveTriangles(h2) {
+  triLambda.fill(0);
+  for (var t = 0; t < NT; t++) {
+    if (!triActive[t]) continue;
+    var a = triA[t], b = triB[t], c = triC[t];
+    var x1 = posX[a], y1 = posY[a], x2 = posX[b], y2 = posY[b], x3 = posX[c], y3 = posY[c];
+    var A2 = (x2 - x1) * (y3 - y1) - (x3 - x1) * (y2 - y1);
+    var C = A2 - restArea2[t];
+    var g1x = y2 - y3, g1y = x3 - x2;
+    var g2x = y3 - y1, g2y = x1 - x3;
+    var g3x = y1 - y2, g3y = x2 - x1;
+    var w1 = invMass[a], w2 = invMass[b], w3 = invMass[c];
+    var denomGeom = w1 * (g1x * g1x + g1y * g1y) + w2 * (g2x * g2x + g2y * g2y) + w3 * (g3x * g3x + g3y * g3y);
+    var compliance = triBaseCompliance[t] * CONFIG.wobble / CONFIG.stiffness;
+    var alphaTilde = compliance / h2;
+    var denom = denomGeom + alphaTilde;
+    if (denom < 1e-9) continue;
+    var dLambda = (-C - alphaTilde * triLambda[t]) / denom;
+    posX[a] += w1 * g1x * dLambda; posY[a] += w1 * g1y * dLambda;
+    posX[b] += w2 * g2x * dLambda; posY[b] += w2 * g2y * dLambda;
+    posX[c] += w3 * g3x * dLambda; posY[c] += w3 * g3y * dLambda;
+    triLambda[t] += dLambda;
+  }
+}
+
+/** Pulls grabbed / pinched particles toward their moving anchors via compliant springs. */
+function solveGrabSprings(h2) {
+  pointerStates.forEach(function (st) {
+    if (st.type === "normal") {
+      for (var p = 0; p < st.particles.length; p++) {
+        var ent = st.particles[p];
+        var i = ent.idx;
+        var ax = st.curX + ent.offX, ay = st.curY + ent.offY;
+        springToPoint(i, ax, ay, GRAB_BASE_COMPLIANCE / Math.max(0.1, ent.weight), h2);
+      }
+    } else if (st.type === "pinch") {
+      var dxp = st.curX - st.p0.x, dyp = st.curY - st.p0.y;
+      var t = Math.min(1, Math.hypot(dxp, dyp) / PINCH_RANGE);
+      var midX = (st.pA0.x + st.pB0.x) / 2, midY = (st.pA0.y + st.pB0.y) / 2;
+      var axA = st.pA0.x + (midX - st.pA0.x) * t, ayA = st.pA0.y + (midY - st.pA0.y) * t;
+      var axB = st.pB0.x + (midX - st.pB0.x) * t, ayB = st.pB0.y + (midY - st.pB0.y) * t;
+      springToPoint(st.aIdx, axA, ayA, PINCH_COMPLIANCE, h2);
+      springToPoint(st.bIdx, axB, ayB, PINCH_COMPLIANCE, h2);
+    }
+  });
+}
+
+function springToPoint(i, ax, ay, baseCompliance, h2) {
+  var dx = posX[i] - ax, dy = posY[i] - ay;
+  var len = Math.hypot(dx, dy);
+  if (len < 1e-9) return;
+  var nx = dx / len, ny = dy / len;
+  var C = len;
+  var compliance = baseCompliance / CONFIG.stiffness;
+  var alphaTilde = compliance / h2;
+  var w = invMass[i];
+  var denom = w + alphaTilde;
+  if (denom < 1e-9) return;
+  var dLambda = (-C) / denom;
+  posX[i] += w * nx * dLambda; posY[i] += w * ny * dLambda;
+}
+
+/** Floor/wall projection, run once per substep; also marks contact flags for friction. */
+function solveCollisionsAndFriction() {
+  groundedFlag.fill(0); wallFlag.fill(0);
+  for (var i = 0; i < N; i++) {
+    if (posY[i] > floorY) { posY[i] = floorY; groundedFlag[i] = 1; }
+    if (posX[i] < wallLeft) { posX[i] = wallLeft; wallFlag[i] = 1; }
+    else if (posX[i] > wallRight) { posX[i] = wallRight; wallFlag[i] = 1; }
+  }
+}
+
+function updateVelocities(h) {
+  var damp = Math.max(0, 1 - 0.05 * CONFIG.damping);
+  for (var i = 0; i < N; i++) {
+    var nvx = (posX[i] - prevX[i]) / h;
+    var nvy = (posY[i] - prevY[i]) / h;
+    nvx *= damp; nvy *= damp;
+    if (groundedFlag[i]) nvx *= (1 - FRICTION);
+    if (wallFlag[i]) nvy *= (1 - FRICTION);
+    var sp = Math.hypot(nvx, nvy);
+    if (sp > MAX_SPEED) { var s = MAX_SPEED / sp; nvx *= s; nvy *= s; }
+    velX[i] = nvx; velY[i] = nvy;
+  }
+}
+
+/** Zeroes near-stationary grounded particles (anti-jitter) and recovers from NaNs. */
+function postStepCleanup() {
+  for (var i = 0; i < N; i++) {
+    if (!isFinite(posX[i]) || !isFinite(posY[i]) || !isFinite(velX[i]) || !isFinite(velY[i])) {
+      posX[i] = initPosX[i]; posY[i] = initPosY[i];
+      prevX[i] = initPosX[i]; prevY[i] = initPosY[i];
+      velX[i] = 0; velY[i] = 0;
+      continue;
+    }
+    if (groundedFlag[i]) {
+      var sp = Math.hypot(velX[i], velY[i]);
+      if (sp < SLEEP_EPS) { velX[i] = 0; velY[i] = 0; }
+    }
+  }
+}
+
+/**
+ * Advances the simulation by one fixed frame using SUBSTEPS XPBD substeps.
+ * @param {number} dt fixed frame timestep in seconds
+ */
+function physicsStep(dt) {
+  var h = dt / SUBSTEPS;
+  var h2 = h * h;
+  for (var s = 0; s < SUBSTEPS; s++) {
+    applyExternalForces(h);
+    solveEdges(h2);
+    solveTriangles(h2);
+    solveGrabSprings(h2);
+    solveCollisionsAndFriction();
+    updateVelocities(h);
+  }
+  postStepCleanup();
+}
+
+/* ============================ Cutting ============================ */
+
+function ccw(ax, ay, bx, by, cx, cy) { return (cy - ay) * (bx - ax) - (by - ay) * (cx - ax); }
+
+/** True when segment (a,b) crosses segment (c,d). */
+function segInt(ax, ay, bx, by, cx, cy, dx, dy) {
+  var d1 = ccw(cx, cy, dx, dy, ax, ay);
+  var d2 = ccw(cx, cy, dx, dy, bx, by);
+  var d3 = ccw(ax, ay, bx, by, cx, cy);
+  var d4 = ccw(ax, ay, bx, by, dx, dy);
+  if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) return true;
+  return false;
+}
+
+/**
+ * Cuts every active edge and triangle whose geometry crosses segment p0->p1.
+ * Cutting removes constraints, so separated regions stop exchanging force automatically.
+ * @param {{x:number,y:number}} p0 @param {{x:number,y:number}} p1
+ */
+function performCut(p0, p1) {
+  if (Math.hypot(p1.x - p0.x, p1.y - p0.y) < 0.01) return;
+  for (var e = 0; e < NE; e++) {
+    if (!edgeActive[e]) continue;
+    var a = edgeA[e], b = edgeB[e];
+    if (segInt(p0.x, p0.y, p1.x, p1.y, posX[a], posY[a], posX[b], posY[b])) edgeActive[e] = 0;
+  }
+  for (var t = 0; t < NT; t++) {
+    if (!triActive[t]) continue;
+    var pa = triA[t], pb = triB[t], pc = triC[t];
+    var hit = segInt(p0.x, p0.y, p1.x, p1.y, posX[pa], posY[pa], posX[pb], posY[pb]) ||
+      segInt(p0.x, p0.y, p1.x, p1.y, posX[pb], posY[pb], posX[pc], posY[pc]) ||
+      segInt(p0.x, p0.y, p1.x, p1.y, posX[pc], posY[pc], posX[pa], posY[pa]);
+    if (hit) {
+      triActive[t] = 0;
+      var sIdx = seedByTri[t];
+      if (sIdx >= 0) seeds[sIdx].active = false;
+    }
+  }
+}
+
+/* ============================ Input ============================ */
+
+var TOOL = "grab";
+var pointerStates = new Map();
+var knifeActive = false, knifePointerId = null, knifePrev = null, knifePath = [];
+
+function findNearestParticle(x, y) {
+  var best = -1, bestD = Infinity;
+  for (var i = 0; i < N; i++) {
+    var dx = posX[i] - x, dy = posY[i] - y;
+    var d2 = dx * dx + dy * dy;
+    if (d2 < bestD) { bestD = d2; best = i; }
+  }
+  return best;
+}
+
+function particlesWithinRadius(x, y, r) {
+  var r2 = r * r, out = [];
+  for (var i = 0; i < N; i++) {
+    var dx = posX[i] - x, dy = posY[i] - y;
+    var d2 = dx * dx + dy * dy;
+    if (d2 <= r2) out.push({ idx: i, d: Math.sqrt(d2) });
+  }
+  return out;
+}
+
+function getEventPoints(e) {
+  if (typeof e.getCoalescedEvents === "function") {
+    var evs = e.getCoalescedEvents();
+    if (evs && evs.length) {
+      var out = [];
+      for (var k = 0; k < evs.length; k++) out.push({ x: evs[k].clientX, y: evs[k].clientY });
+      return out;
+    }
+  }
+  return [{ x: e.clientX, y: e.clientY }];
+}
+
+function onPointerDown(e) {
+  e.preventDefault();
+  try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+  var rect = canvas.getBoundingClientRect();
+  var w = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+
+  if (TOOL === "knife") {
+    knifeActive = true; knifePointerId = e.pointerId; knifePrev = w;
+    knifePath.push({ x: w.x, y: w.y, t: performance.now() });
+    return;
+  }
+
+  var isPinchMod = e.shiftKey || e.button === 2;
+  if (isPinchMod) {
+    var cxs = 0;
+    for (var i = 0; i < N; i++) cxs += posX[i];
+    cxs /= N;
+    var A = findNearestParticle(w.x, w.y);
+    var mirrored = { x: 2 * cxs - w.x, y: w.y };
+    var B = findNearestParticle(mirrored.x, mirrored.y);
+    pointerStates.set(e.pointerId, {
+      type: "pinch", aIdx: A, bIdx: B,
+      pA0: { x: posX[A], y: posY[A] }, pB0: { x: posX[B], y: posY[B] },
+      p0: { x: w.x, y: w.y }, curX: w.x, curY: w.y
+    });
+    return;
+  }
+
+  var group = particlesWithinRadius(w.x, w.y, GRAB_RADIUS);
+  if (group.length === 0) {
+    var n = findNearestParticle(w.x, w.y);
+    if (n >= 0) group = [{ idx: n, d: 0 }];
+  }
+  var entries = [];
+  for (var g = 0; g < group.length; g++) {
+    var gi = group[g].idx;
+    entries.push({ idx: gi, offX: posX[gi] - w.x, offY: posY[gi] - w.y, weight: Math.max(0.15, 1 - group[g].d / GRAB_RADIUS) });
+  }
+  pointerStates.set(e.pointerId, { type: "normal", curX: w.x, curY: w.y, particles: entries });
+}
+
+function onPointerMove(e) {
+  var rect = canvas.getBoundingClientRect();
+  if (TOOL === "knife") {
+    if (!knifeActive || e.pointerId !== knifePointerId) return;
+    var raw = getEventPoints(e);
+    for (var k = 0; k < raw.length; k++) {
+      var w2 = { x: raw[k].x - rect.left, y: raw[k].y - rect.top };
+      knifePath.push({ x: w2.x, y: w2.y, t: performance.now() });
+      if (knifePrev) performCut(knifePrev, w2);
+      knifePrev = w2;
+    }
+    return;
+  }
+  var st = pointerStates.get(e.pointerId);
+  if (!st) return;
+  st.curX = e.clientX - rect.left; st.curY = e.clientY - rect.top;
+}
+
+function onPointerUp(e) {
+  if (TOOL === "knife" && e.pointerId === knifePointerId) {
+    knifeActive = false; knifePointerId = null; knifePrev = null;
+  }
+  pointerStates.delete(e.pointerId);
+  try { canvas.releasePointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+}
+
+function setupInput() {
+  canvas.style.touchAction = "none";
+  canvas.addEventListener("contextmenu", function (e) { e.preventDefault(); });
+  canvas.addEventListener("pointerdown", onPointerDown);
+  window.addEventListener("pointermove", onPointerMove);
+  window.addEventListener("pointerup", onPointerUp);
+  window.addEventListener("pointercancel", onPointerUp);
+}
+
+/* ============================ Rendering ============================ */
+
+function silhouettePoints() {
+  var pts = [];
+  pts.push({ x: posX[0], y: posY[0] });
+  for (var i = 0; i < NUM_RINGS; i++) pts.push({ x: posX[idx(i, 0)], y: posY[idx(i, 0)] });
+  for (var j = 1; j < NUM_ANGLES; j++) pts.push({ x: posX[idx(NUM_RINGS - 1, j)], y: posY[idx(NUM_RINGS - 1, j)] });
+  for (var i2 = NUM_RINGS - 2; i2 >= 0; i2--) pts.push({ x: posX[idx(i2, NUM_ANGLES - 1)], y: posY[idx(i2, NUM_ANGLES - 1)] });
+  return pts;
+}
+
+function drawGloss() {
+  var pts = silhouettePoints();
+  if (pts.length < 3) return;
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x, pts[0].y);
+  for (var k = 1; k < pts.length; k++) ctx.lineTo(pts[k].x, pts[k].y);
+  ctx.closePath();
+  ctx.clip();
+  var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (var p = 0; p < pts.length; p++) {
+    if (pts[p].x < minX) minX = pts[p].x;
+    if (pts[p].x > maxX) maxX = pts[p].x;
+    if (pts[p].y < minY) minY = pts[p].y;
+    if (pts[p].y > maxY) maxY = pts[p].y;
+  }
+  var cxg = minX + (maxX - minX) * 0.32, cyg = minY + (maxY - minY) * 0.25;
+  var rad = Math.max(10, (maxX - minX) * 0.6);
+  var grad = ctx.createRadialGradient(cxg, cyg, 4, cxg, cyg, rad);
+  grad.addColorStop(0, "rgba(255,255,255,0.35)");
+  grad.addColorStop(0.5, "rgba(255,255,255,0.08)");
+  grad.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = grad;
+  ctx.fillRect(minX, minY, maxX - minX, maxY - minY);
+  ctx.restore();
+}
+
+function drawKnifeTrail() {
+  var now = performance.now();
+  knifePath = knifePath.filter(function (p) { return now - p.t < 400; });
+  if (knifePath.length < 2) return;
+  ctx.save();
+  ctx.lineCap = "round"; ctx.lineJoin = "round";
+  for (var k = 1; k < knifePath.length; k++) {
+    var p0 = knifePath[k - 1], p1 = knifePath[k];
+    var alpha = Math.max(0, 1 - (now - p1.t) / 400);
+    ctx.strokeStyle = "rgba(255,255,255," + (alpha * 0.9).toFixed(3) + ")";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function render() {
+  ctx.clearRect(0, 0, cssW, cssH);
+
+  var bgGrad = ctx.createLinearGradient(0, 0, 0, cssH);
+  bgGrad.addColorStop(0, "#2b2f3a"); bgGrad.addColorStop(1, "#11141a");
+  ctx.fillStyle = bgGrad; ctx.fillRect(0, 0, cssW, cssH);
+
+  ctx.fillStyle = "#1a1d24"; ctx.fillRect(0, floorY, cssW, Math.max(0, cssH - floorY));
+  ctx.strokeStyle = "rgba(255,255,255,0.08)";
+  ctx.beginPath(); ctx.moveTo(0, floorY); ctx.lineTo(cssW, floorY); ctx.stroke();
+
+  var minX = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (var i = 0; i < N; i++) {
+    if (posX[i] < minX) minX = posX[i];
+    if (posX[i] > maxX) maxX = posX[i];
+    if (posY[i] > maxY) maxY = posY[i];
+  }
+  if (isFinite(minX)) {
+    var shadowW = Math.max(20, (maxX - minX) * 0.9);
+    var proximity = clamp(1 - (floorY - maxY) / 140, 0, 1);
+    var alpha = 0.1 + 0.25 * proximity;
+    ctx.save();
+    ctx.translate((minX + maxX) / 2, floorY + 2);
+    ctx.scale(1, 0.22);
+    ctx.beginPath(); ctx.arc(0, 0, shadowW / 2, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(0,0,0," + alpha.toFixed(3) + ")";
+    ctx.fill();
+    ctx.restore();
+  }
+
+  ctx.lineWidth = 1;
+  for (var t = 0; t < NT; t++) {
+    if (!triActive[t]) continue;
+    var a = triA[t], b = triB[t], c = triC[t];
+    var z = triZone[t];
+    var col = z === 2 ? RIND_COLOR : (z === 1 ? PITH_COLOR : CONFIG.fleshColor);
+    ctx.fillStyle = col; ctx.strokeStyle = col;
+    ctx.beginPath();
+    ctx.moveTo(posX[a], posY[a]); ctx.lineTo(posX[b], posY[b]); ctx.lineTo(posX[c], posY[c]);
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
+  }
+
+  ctx.fillStyle = SEED_COLOR;
+  for (var s = 0; s < seeds.length; s++) {
+    var sd = seeds[s];
+    if (!sd.active) continue;
+    var sx = sd.wa * posX[sd.va] + sd.wb * posX[sd.vb] + sd.wc * posX[sd.vc];
+    var sy = sd.wa * posY[sd.va] + sd.wb * posY[sd.vb] + sd.wc * posY[sd.vc];
+    ctx.beginPath();
+    ctx.ellipse(sx, sy, sd.size, sd.size * 0.7, sd.angle, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  drawGloss();
+  drawKnifeTrail();
+}
+
+/* ============================ FPS ============================ */
+var lastFpsTime = performance.now();
+var fpsSmooth = 60;
+function updateFPS(now) {
+  var dt = now - lastFpsTime;
+  lastFpsTime = now;
+  if (dt > 0) {
+    var inst = 1000 / dt;
+    fpsSmooth += (inst - fpsSmooth) * 0.1;
+  }
+  fpsEl.textContent = "FPS: " + Math.round(fpsSmooth);
+}
+
+/* ============================ Main loop ============================ */
+var lastTime = performance.now();
+var accumulator = 0;
+function frameLoop(now) {
+  var frameDt = (now - lastTime) / 1000;
+  lastTime = now;
+  if (frameDt > 0.25) frameDt = 0.25;
+  accumulator += frameDt;
+  var iter = 0;
+  while (accumulator >= FIXED_DT && iter < 8) {
+    physicsStep(FIXED_DT);
+    accumulator -= FIXED_DT;
+    iter++;
+  }
+  updateFPS(now);
+  render();
+  requestAnimationFrame(frameLoop);
+}
+
+/* ============================ UI wiring ============================ */
+function setupUI() {
+  var toolBtns = document.querySelectorAll(".tool-btn[data-tool]");
+  for (var i = 0; i < toolBtns.length; i++) {
+    toolBtns[i].addEventListener("click", function (e) {
+      for (var k = 0; k < toolBtns.length; k++) toolBtns[k].classList.remove("active");
+      e.currentTarget.classList.add("active");
+      TOOL = e.currentTarget.getAttribute("data-tool");
+      pointerStates.clear();
+      knifeActive = false; knifePointerId = null; knifePrev = null;
+    });
+  }
+
+  var colorPicker = document.getElementById("colorPicker");
+  colorPicker.addEventListener("input", function (e) { CONFIG.fleshColor = e.target.value; });
+
+  var swatchesEl = document.getElementById("swatches");
+  for (var p = 0; p < PRESET_COLORS.length; p++) {
+    (function (hex) {
+      var btn = document.createElement("button");
+      btn.className = "swatch";
+      btn.style.background = hex;
+      btn.title = hex;
+      btn.addEventListener("click", function () { CONFIG.fleshColor = hex; colorPicker.value = hex; });
+      swatchesEl.appendChild(btn);
+    })(PRESET_COLORS[p]);
+  }
+
+  document.getElementById("resetBtn").addEventListener("click", resetMesh);
+
+  document.getElementById("sStiff").addEventListener("input", function (e) { CONFIG.stiffness = parseFloat(e.target.value); });
+  document.getElementById("sDamp").addEventListener("input", function (e) { CONFIG.damping = parseFloat(e.target.value); });
+  document.getElementById("sGrav").addEventListener("input", function (e) { CONFIG.gravity = parseFloat(e.target.value); });
+  document.getElementById("sWobble").addEventListener("input", function (e) { CONFIG.wobble = parseFloat(e.target.value); });
+
+  document.getElementById("fpsToggle").addEventListener("change", function (e) {
+    fpsEl.style.display = e.target.checked ? "block" : "none";
+  });
+}
+
+/* ============================ Resize / init ============================ */
+var canvas = document.getElementById("c");
+var ctx = canvas.getContext("2d");
+var fpsEl = document.getElementById("fpsDisplay");
+var cssW = 0, cssH = 0, dpr = 1, floorY = 0, wallLeft = 0, wallRight = 0;
+
+function resizeCanvas() {
+  dpr = window.devicePixelRatio || 1;
+  cssW = window.innerWidth; cssH = window.innerHeight;
+  canvas.width = Math.max(1, Math.round(cssW * dpr));
+  canvas.height = Math.max(1, Math.round(cssH * dpr));
+  canvas.style.width = cssW + "px"; canvas.style.height = cssH + "px";
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  floorY = cssH - 40;
+  wallLeft = 24; wallRight = cssW - 24;
+}
+
+resizeCanvas();
+
+var R_BUILD = Math.max(90, Math.min(cssW, cssH) * 0.22);
+var dropCy = Math.max(80, floorY - R_BUILD * 2.4);
+buildMesh(cssW / 2, dropCy, R_BUILD);
+
+velX = new Float64Array(N);
+velY = new Float64Array(N);
+prevX = posX.slice();
+prevY = posY.slice();
+initPosX = posX.slice();
+initPosY = posY.slice();
+
+window.addEventListener("resize", resizeCanvas);
+setupUI();
+setupInput();
+requestAnimationFrame(frameLoop);
+</script>
+</body>
+</html>
