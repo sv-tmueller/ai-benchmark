@@ -7,6 +7,7 @@ through a fake ``claude`` executable written into a temp dir; ``git`` and
 
 import base64
 import contextlib
+import errno
 import fcntl
 import io
 import json
@@ -2277,6 +2278,64 @@ class RunMetricsBatchTest(BatchCase):
         (path,) = paths
         self.assertEqual(path.parent, self.dir / "logs")
         self.assertTrue(path.name.endswith(".pr-body.md"))
+
+    def test_unexpected_gh_output_for_the_pr_is_a_note_and_nothing_is_written(self):
+        target = self.targets["game-melon-jelly"]
+        original = self.git.pr_view
+
+        def altered(change):
+            def view(cmd, st):
+                info = json.loads(original(cmd, st).stdout)
+                change(info)
+                return FakeGit.done(json.dumps(info))
+            return view
+
+        def set_key(key, value):
+            return altered(lambda info: info.__setitem__(key, value))
+
+        cases = {
+            "not json": lambda cmd, st: FakeGit.done("not json"),
+            "headRefName missing": altered(lambda info: info.pop("headRefName")),
+            "headRefName is not a string": set_key("headRefName", 1),
+            "body is a truthy non-string": set_key("body", 1),
+            "files entry without path": set_key("files", [{"name": target}]),
+        }
+        for label, view in cases.items():
+            with self.subTest(label):
+                self.setUp()
+                self.git.pr_view = view
+                _, out = self.run_one()
+                self.assertEqual(self.one_note(out), "pr-opened #1 (run file not added: PR #1 could not "
+                                                     "be read: unexpected gh output)")
+                calls = self.metrics_calls()
+                self.assertEqual([c[:3] for c in calls], [["gh", "pr", "view"]])
+                self.assertEqual((self.puts(), self.edits()), ([], []))
+        with self.subTest("control: the same replacement without a change"):
+            self.setUp()
+            self.git.pr_view = altered(lambda info: None)
+            _, out = self.run_one()
+            self.assertEqual(self.one_note(out), "pr-opened #1")
+            self.assertEqual(len(self.puts()), 1)
+
+    def test_a_description_file_that_cannot_be_written_is_a_note_and_the_run_file_stays(self):
+        original = Path.write_text
+        raised = []
+
+        def write_text(path, *args, **kw):
+            if path.name == "game-melon-jelly.pr-body.md":
+                raised.append(path)
+                raise PermissionError(errno.EACCES, "Permission denied")
+            return original(path, *args, **kw)
+
+        with mock.patch.object(Path, "write_text", write_text):
+            _, out = self.run_one()
+        self.assertEqual(self.one_note(out), "pr-opened #1 (run file added, PR description not updated: "
+                                             "cannot write the PR description file: Permission denied)")
+        self.assertEqual(len(self.puts()), 1)
+        self.assertEqual(self.edits(), [])
+        self.assertEqual([c for c in self.git.calls if c[:3] == ["gh", "pr", "edit"]], [])
+        self.assertEqual(len(raised), 1)
+        self.assertFalse(raised[0].exists())
 
 
 class MetricsNotePrintableTest(BatchCase):
