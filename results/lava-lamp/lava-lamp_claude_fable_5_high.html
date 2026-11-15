@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lava-lamp</title>
+<style>
+  html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#15110e;}
+  canvas{position:fixed;left:0;top:0;width:100%;height:100%;display:block;}
+</style>
+</head>
+<body>
+<script>
+"use strict";
+(function(){
+
+var VSH = "attribute vec2 aP; void main(){ gl_Position = vec4(aP, 0.0, 1.0); }";
+
+var FSH = `
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+uniform vec2 uRes;
+uniform vec2 uScale;
+uniform vec4 uBlobs[7];
+uniform float uStretch[7];
+
+float smin(float a, float b, float k){
+  float h = clamp(0.5 + 0.5*(b - a)/k, 0.0, 1.0);
+  return mix(b, a, h) - k*h*(1.0 - h);
+}
+float smax(float a, float b, float k){
+  float h = clamp(0.5 - 0.5*(b - a)/k, 0.0, 1.0);
+  return mix(b, a, h) + k*h*(1.0 - h);
+}
+float sdRoundCone(vec3 p, vec3 a, vec3 b, float r1, float r2){
+  vec3 ba = b - a;
+  float l2 = dot(ba, ba);
+  float rr = r1 - r2;
+  float a2 = l2 - rr*rr;
+  float il2 = 1.0/l2;
+  vec3 pa = p - a;
+  float y = dot(pa, ba);
+  float z = y - l2;
+  vec3 xq = pa*l2 - ba*y;
+  float x2 = dot(xq, xq);
+  float y2 = y*y*l2;
+  float z2 = z*z*l2;
+  float k = sign(rr)*rr*rr*x2;
+  if (sign(z)*a2*z2 > k) return sqrt(x2 + z2)*il2 - r2;
+  if (sign(y)*a2*y2 < k) return sqrt(x2 + y2)*il2 - r1;
+  return (sqrt(x2*a2*il2) + y*rr)*il2 - r1;
+}
+float sdEll(vec3 p, vec3 r){
+  float k0 = length(p/r);
+  float k1 = length(p/(r*r));
+  return k0*(k0 - 1.0)/max(k1, 1e-4);
+}
+float sdBase(vec3 p){
+  float t = clamp(p.y/0.66, 0.0, 1.0);
+  float r = mix(0.58, 0.46, t) - 0.09*sin(3.14159265*t);
+  vec2 w = vec2(length(p.xz) - r, abs(p.y - 0.33) - 0.33);
+  return min(max(w.x, w.y), 0.0) + length(max(w, 0.0));
+}
+float sdCapTop(vec3 p){
+  float t = clamp((p.y - 2.70)/0.36, 0.0, 1.0);
+  float r = mix(0.26, 0.165, t) - 0.035*sin(3.14159265*t);
+  vec2 w = vec2(length(p.xz) - r, abs(p.y - 2.88) - 0.18);
+  return min(max(w.x, w.y), 0.0) + length(max(w, 0.0));
+}
+float cavity(vec3 p){
+  return sdRoundCone(p, vec3(0.0, 0.78, 0.0), vec3(0.0, 2.46, 0.0), 0.375, 0.205);
+}
+float wax(vec3 p){
+  float d = sdEll(p - vec3(0.0, 0.70, 0.0), vec3(0.42, 0.185, 0.42));
+  for (int i = 0; i < 7; i++){
+    vec4 b = uBlobs[i];
+    d = smin(d, sdEll(p - b.xyz, vec3(b.w, uStretch[i], b.w)), 0.14);
+  }
+  return smax(d, cavity(p) + 0.015, 0.055);
+}
+vec3 waxN(vec3 p){
+  vec2 e = vec2(0.004, 0.0);
+  return normalize(vec3(
+    wax(p + e.xyy) - wax(p - e.xyy),
+    wax(p + e.yxy) - wax(p - e.yxy),
+    wax(p + e.yyx) - wax(p - e.yyx)));
+}
+vec2 map(vec3 p){
+  float d = p.y; float m = 0.0;
+  float b = sdBase(p);   if (b < d){ d = b; m = 1.0; }
+  float c = sdCapTop(p); if (c < d){ d = c; m = 1.0; }
+  float g = sdRoundCone(p, vec3(0.0, 0.70, 0.0), vec3(0.0, 2.52, 0.0), 0.44, 0.27);
+  if (g < d){ d = g; m = 2.0; }
+  return vec2(d, m);
+}
+vec3 calcN(vec3 p){
+  vec2 e = vec2(0.0018, 0.0);
+  return normalize(vec3(
+    map(p + e.xyy).x - map(p - e.xyy).x,
+    map(p + e.yxy).x - map(p - e.yxy).x,
+    map(p + e.yyx).x - map(p - e.yyx).x));
+}
+vec3 env(vec3 d){
+  float up = clamp(d.y*0.5 + 0.5, 0.0, 1.0);
+  vec3 col = mix(vec3(0.052, 0.042, 0.035), vec3(0.082, 0.070, 0.060), up);
+  col += vec3(0.26, 0.105, 0.040)*pow(clamp(-d.y, 0.0, 1.0), 2.0);
+  col += vec3(0.085, 0.058, 0.036)*pow(max(dot(d, normalize(vec3(0.0, 0.10, -1.0))), 0.0), 10.0);
+  float az = atan(d.x, d.z);
+  float vert = 1.0 - smoothstep(0.40, 0.80, abs(d.y - 0.05));
+  float s1 = 1.0 - smoothstep(0.02, 0.12, abs(az - 0.60));
+  float s2 = 1.0 - smoothstep(0.02, 0.12, abs(az + 0.60));
+  col += vec3(1.15, 1.25, 1.45)*(s1 + s2)*vert;
+  return col;
+}
+vec3 shadeMetal(vec3 p, vec3 n, vec3 rd){
+  vec3 r = reflect(rd, n);
+  vec3 blur = vec3(0.0);
+  for (int i = 0; i < 5; i++){
+    blur += env(normalize(r + vec3(0.0, (float(i) - 2.0)*0.11, 0.0)));
+  }
+  blur *= 0.2;
+  vec3 col = (blur*0.80 + env(r)*0.35)*vec3(0.92, 0.93, 0.96);
+  col += vec3(0.020, 0.018, 0.017);
+  vec3 lv = vec3(0.0, 0.63, 0.0) - p;
+  float ldist = length(lv);
+  vec3 ld = lv/max(ldist, 0.001);
+  col += vec3(1.0, 0.40, 0.10)*clamp(dot(n, ld), 0.0, 1.0)*0.5/(1.0 + 7.0*ldist*ldist);
+  float slit = (1.0 - smoothstep(0.012, 0.05, abs(p.y - 0.60)))*smoothstep(0.24, 0.33, length(p.xz));
+  col += vec3(1.25, 0.48, 0.11)*slit;
+  return col;
+}
+vec3 shadeTable(vec3 p, vec3 rd, float t){
+  vec3 col = vec3(0.030, 0.025, 0.022);
+  float r = length(p.xz);
+  col += vec3(0.34, 0.13, 0.045)*exp(-r*r*1.3);
+  vec3 rr = reflect(rd, vec3(0.0, 1.0, 0.0));
+  col += env(rr)*0.085;
+  vec2 o = p.xz;
+  vec2 dz = rr.xz;
+  float dl = max(length(dz), 1e-4);
+  float dAxis = abs(o.x*dz.y - o.y*dz.x)/dl;
+  float toward = step(dot(o, dz), 0.0);
+  float rise = clamp(rr.y*2.5, 0.0, 1.0);
+  col += vec3(0.80, 0.28, 0.075)*exp(-dAxis*dAxis*20.0)*rise*toward*0.40;
+  col = mix(col, vec3(0.050, 0.040, 0.034), smoothstep(6.0, 18.0, t));
+  return col;
+}
+vec3 shadeWax(vec3 p, vec3 rd){
+  vec3 n = waxN(p);
+  float th = 0.03;
+  for (int i = 0; i < 12; i++){
+    float d = wax(p + rd*th);
+    if (d > 0.0) break;
+    th += max(-d, 0.02);
+  }
+  th = min(th, 0.9);
+  float trans = exp(-th*5.0);
+  vec3 col = mix(vec3(0.40, 0.035, 0.010), vec3(1.00, 0.38, 0.055), trans);
+  col *= 0.55 + 0.45*clamp(0.5 - 0.5*n.y, 0.0, 1.0);
+  float heat = exp(-(p.y - 0.68)*1.6);
+  col += vec3(1.10, 0.52, 0.12)*heat*(0.30 + 0.50*trans);
+  vec3 r = reflect(rd, n);
+  float fr = pow(1.0 - clamp(dot(n, -rd), 0.0, 1.0), 3.0);
+  col += env(r)*fr*0.35;
+  col += vec3(0.05, 0.06, 0.08)*clamp(n.y, 0.0, 1.0)*0.4;
+  return col;
+}
+vec3 shadeGlass(vec3 p, vec3 n, vec3 rd){
+  float ndv = clamp(dot(n, -rd), 0.0, 1.0);
+  float fres = 0.04 + 0.96*pow(1.0 - ndv, 5.0);
+  vec3 refl = env(reflect(rd, n))*1.25;
+  vec3 rdi = refract(rd, n, 0.74);
+  if (dot(rdi, rdi) < 0.25) return refl;
+  rdi = normalize(rdi);
+  vec3 q = p + rdi*0.015;
+  float glow = 0.0;
+  float hit = -1.0;
+  float ti = 0.0;
+  vec3 wp = q;
+  for (int i = 0; i < 80; i++){
+    wp = q + rdi*ti;
+    float dc = cavity(wp);
+    if (dc > 0.03 && ti > 0.08) break;
+    float dw = wax(wp);
+    float stp = max(dw, 0.006);
+    glow += exp(-(wp.y - 0.60)*2.8)*min(stp, 0.12);
+    if (dw < 0.0015){ hit = 1.0; break; }
+    ti += stp*0.9;
+    if (ti > 3.2) break;
+  }
+  vec3 inter;
+  if (hit > 0.0) inter = shadeWax(wp, rdi);
+  else inter = env(normalize(mix(rdi, rd, 0.55)))*vec3(0.80, 0.74, 0.68);
+  inter += vec3(1.0, 0.50, 0.13)*glow*0.33;
+  inter *= vec3(0.985, 0.960, 0.925);
+  return refl*fres + inter*(1.0 - fres);
+}
+void main(){
+  vec2 uv = (gl_FragCoord.xy*2.0 - uRes)/uRes;
+  vec3 ro = vec3(0.0, 1.53, 7.0);
+  vec3 rd = normalize(vec3(uv.x*uScale.x, uv.y*uScale.y, -1.0));
+  float t = 0.0;
+  float m = -1.0;
+  vec3 p = ro;
+  for (int i = 0; i < 140; i++){
+    p = ro + rd*t;
+    vec2 h = map(p);
+    if (h.x < 0.0013*max(t, 0.7)){ m = h.y; break; }
+    t += h.x*0.8;
+    if (t > 26.0) break;
+  }
+  vec3 col;
+  if (m < -0.5 || t > 26.0){
+    col = env(rd);
+  } else if (m < 0.5){
+    col = shadeTable(p, rd, t);
+  } else if (m < 1.5){
+    vec3 n = calcN(p);
+    col = shadeMetal(p, n, rd);
+  } else {
+    vec3 n = calcN(p);
+    col = shadeGlass(p, n, rd);
+  }
+  col *= 1.0 - 0.22*pow(min(length(uv*vec2(0.75, 0.90)), 1.4)/1.4, 2.2);
+  col *= 1.05;
+  col = (col*(2.51*col + 0.03))/(col*(2.43*col + 0.59) + 0.14);
+  col = clamp(col, 0.0, 1.0);
+  col = pow(col, vec3(0.4545));
+  float dn = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233)))*43758.5453);
+  col += (dn - 0.5)*(1.5/255.0);
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+var TAU = Math.PI*2;
+var PREWARM = 38.0;
+var HEAT = 0.65;
+var PALETTE_INDEX = 0;
+
+var canvas = null, gl = null, prog = null, buf = null;
+var raf = 0, running = false, destroyed = false;
+var loc = {};
+var seedVal = 1, epoch = 0, blobs = [];
+var blobArr = new Float32Array(28);
+var strArr = new Float32Array(7);
+var scaleX = 0.5, scaleY = 0.5;
+
+function mulberry32(a){
+  return function(){
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    var t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function frac(x){ return x - Math.floor(x); }
+
+function makeBlobs(s){
+  var rng = mulberry32((s ^ 0x9E3779B9) >>> 0);
+  var baseR = [0.185, 0.135, 0.105, 0.160, 0.120, 0.175, 0.095];
+  var targets = [0.115, 0.300, 0.360, 0.560, 0.800, -1, -1];
+  var arr = [];
+  for (var i = 0; i < 7; i++){
+    var period = 15.0 + 13.0*rng();
+    var r = baseR[i]*(0.92 + 0.16*rng());
+    var tgt = targets[i] >= 0.0 ? targets[i] + (rng() - 0.5)*0.035 : rng();
+    arr.push({
+      period: period,
+      r: r,
+      phase: tgt - PREWARM/period,
+      elong: 0.55 + 0.55*rng(),
+      wobR: 0.045 + 0.065*rng(),
+      wobW: 0.18 + 0.30*rng(),
+      wobW2: 0.15 + 0.28*rng(),
+      wobP: TAU*rng()
+    });
+  }
+  return arr;
+}
+
+function updateBlobs(simT){
+  for (var i = 0; i < 7; i++){
+    var b = blobs[i];
+    var c = frac(simT/b.period + b.phase);
+    var e = 0.5 - 0.5*Math.cos(TAU*c);
+    var vy = Math.sin(TAU*c);
+    var rEff = b.r*(1.0 - 0.10*e);
+    var str = 1.0 + 0.9*Math.abs(vy)*b.elong;
+    if (str > 2.0) str = 2.0;
+    var yBot = 0.80, yTop = 2.30 - b.r;
+    var y = yBot + (yTop - yBot)*e;
+    var wob = b.wobR*(0.25 + 2.6*e*(1.0 - e));
+    var wx = wob*Math.cos(simT*b.wobW + b.wobP);
+    var wz = 0.7*wob*Math.sin(simT*b.wobW2 + b.wobP*1.7);
+    blobArr[i*4]     = wx;
+    blobArr[i*4 + 1] = y;
+    blobArr[i*4 + 2] = wz;
+    blobArr[i*4 + 3] = rEff/Math.sqrt(str);
+    strArr[i] = rEff*str;
+  }
+}
+
+function compile(type, src){
+  var s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)){
+    console.error("lava-lamp shader error: " + gl.getShaderInfoLog(s));
+  }
+  return s;
+}
+
+function onResize(){
+  if (!canvas || destroyed || !gl) return;
+  var w = window.innerWidth || 1;
+  var h = window.innerHeight || 1;
+  var dpr = Math.min(window.devicePixelRatio || 1, 2);
+  var pw = Math.max(1, Math.round(w*dpr));
+  var ph = Math.max(1, Math.round(h*dpr));
+  var cap = 2400000;
+  if (pw*ph > cap){
+    var f = Math.sqrt(cap/(pw*ph));
+    pw = Math.max(1, Math.round(pw*f));
+    ph = Math.max(1, Math.round(ph*f));
+  }
+  canvas.width = pw;
+  canvas.height = ph;
+  gl.viewport(0, 0, pw, ph);
+  var a = w/h;
+  // Lamp bounds: y in [0, 3.06], max half-width 0.58 (+ margin). Fit the
+  // whole lamp inside the central 78% of both viewport dimensions.
+  var sy = Math.max(0.3226, 0.1274/a);
+  scaleX = sy*a;
+  scaleY = sy;
+}
+
+function frame(){
+  if (destroyed) return;
+  raf = requestAnimationFrame(frame);
+  var simT = PREWARM + (performance.now() - epoch)/1000;
+  updateBlobs(simT);
+  gl.uniform2f(loc.res, canvas.width, canvas.height);
+  gl.uniform2f(loc.scale, scaleX, scaleY);
+  gl.uniform4fv(loc.blobs, blobArr);
+  gl.uniform1fv(loc.str, strArr);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+function init(){
+  canvas = document.createElement("canvas");
+  document.body.appendChild(canvas);
+  var opts = { antialias: true, alpha: false, preserveDrawingBuffer: true };
+  gl = canvas.getContext("webgl2", opts) || canvas.getContext("webgl", opts);
+  if (!gl){
+    console.warn("lava-lamp: WebGL unavailable");
+    return false;
+  }
+  var vs = compile(gl.VERTEX_SHADER, VSH);
+  var fs = compile(gl.FRAGMENT_SHADER, FSH);
+  prog = gl.createProgram();
+  gl.attachShader(prog, vs);
+  gl.attachShader(prog, fs);
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)){
+    console.error("lava-lamp link error: " + gl.getProgramInfoLog(prog));
+  }
+  gl.deleteShader(vs);
+  gl.deleteShader(fs);
+  gl.useProgram(prog);
+  buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  var ap = gl.getAttribLocation(prog, "aP");
+  gl.enableVertexAttribArray(ap);
+  gl.vertexAttribPointer(ap, 2, gl.FLOAT, false, 0, 0);
+  loc.res = gl.getUniformLocation(prog, "uRes");
+  loc.scale = gl.getUniformLocation(prog, "uScale");
+  loc.blobs = gl.getUniformLocation(prog, "uBlobs[0]") || gl.getUniformLocation(prog, "uBlobs");
+  loc.str = gl.getUniformLocation(prog, "uStretch[0]") || gl.getUniformLocation(prog, "uStretch");
+  window.addEventListener("resize", onResize);
+  onResize();
+  return true;
+}
+
+function reset(seed){
+  if (destroyed) return;
+  var s;
+  if (typeof seed === "number" && isFinite(seed)){
+    s = seed >>> 0;
+  } else if (seed === undefined || seed === null){
+    s = 1;
+  } else {
+    s = 0;
+    var str = String(seed);
+    for (var i = 0; i < str.length; i++){
+      s = (Math.imul(s, 31) + str.charCodeAt(i)) >>> 0;
+    }
+  }
+  seedVal = s;
+  blobs = makeBlobs(s);
+  epoch = performance.now();
+  if (!running && gl){
+    running = true;
+    raf = requestAnimationFrame(frame);
+  }
+}
+
+function destroy(){
+  if (destroyed) return;
+  destroyed = true;
+  running = false;
+  if (raf){ cancelAnimationFrame(raf); raf = 0; }
+  window.removeEventListener("resize", onResize);
+  if (gl){
+    try {
+      if (buf) gl.deleteBuffer(buf);
+      if (prog) gl.deleteProgram(prog);
+      var ext = gl.getExtension("WEBGL_lose_context");
+      if (ext) ext.loseContext();
+    } catch (e) {}
+  }
+  gl = null;
+  prog = null;
+  buf = null;
+}
+
+var api = {
+  manifest: {
+    name: "lava-lamp",
+    version: "1.0.0",
+    controls: []
+  },
+  getState: function(){
+    return { heat: HEAT, paletteIndex: PALETTE_INDEX };
+  },
+  reset: reset,
+  destroy: destroy
+};
+
+window.BridgeBench = api;
+window.bench = api;
+
+if (init()) reset(1);
+
+})();
+</script>
+</body>
+</html>
