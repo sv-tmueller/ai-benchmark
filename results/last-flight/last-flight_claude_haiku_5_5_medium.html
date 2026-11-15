@@ -1,0 +1,2963 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LAST FLIGHT</title>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/",
+    "postprocessing": "https://cdn.jsdelivr.net/npm/postprocessing@6.39.4/build/postprocessing.esm.js"
+  }
+}
+</script>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#05070b;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color:#dff7ff;letter-spacing:.14em}
+#gl{position:fixed;inset:0;width:100vw;height:100vh;display:block}
+#hud{position:fixed;inset:0;pointer-events:none;font-size:1.5vmin}
+.screen{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;background:linear-gradient(180deg,rgba(0,0,0,.15),rgba(0,0,0,.55))}
+.hidden{display:none!important}
+h1{font-size:9vmin;font-weight:300;letter-spacing:.42em;margin:0 0 2vmin;text-shadow:0 0 3vmin rgba(120,220,255,.5)}
+.premise{font-size:2vmin;max-width:70vmin;line-height:1.5;opacity:.9}
+.controls{font-size:1.5vmin;opacity:.7;max-width:90vmin;line-height:1.8}
+.click{margin-top:4vmin;font-size:2.2vmin;animation:blink 1.4s infinite}
+@keyframes blink{50%{opacity:.25}}
+.panel{position:absolute;background:rgba(6,18,28,.45);border:1px solid rgba(160,240,255,.25);border-radius:.6vmin;padding:1.2vmin 1.6vmin;backdrop-filter:blur(3px)}
+#tl{left:2vmin;top:2vmin;min-width:24vmin}
+#tc{left:50%;top:2vmin;transform:translateX(-50%);text-align:center;min-width:40vmin}
+#tr{right:2vmin;top:2vmin;text-align:right;min-width:20vmin}
+#bc{left:50%;bottom:3vmin;transform:translateX(-50%);width:34vmin}
+#br{right:2vmin;bottom:2vmin;width:30vmin}
+#bl{left:2vmin;bottom:2vmin;width:44vmin;min-height:8vmin}
+#spd{font-size:5.5vmin;font-weight:600}
+#spdtier{color:#8fe9ff;font-size:1.4vmin}
+.bar{height:.9vmin;background:rgba(255,255,255,.12);border-radius:.4vmin;overflow:hidden;margin:.6vmin 0}
+.bar>div{height:100%;width:0;background:#8ff0ff;transition:width .08s linear}
+#hp{background:#ff6b6b!important}
+#heatbar{background:#ffb347!important}
+#stress{background:#ffd166!important}
+#obj{font-size:2.2vmin;font-weight:600}
+#objd{font-size:1.6vmin;opacity:.85}
+#impact{font-size:2vmin;color:#ff6b6b;font-weight:600}
+#impact.ok{color:#7dffb0}
+#cross{position:absolute;left:50%;top:50%;width:2.4vmin;height:2.4vmin;margin:-1.2vmin 0 0 -1.2vmin;border:.15vmin solid rgba(230,250,255,.85);border-radius:50%}
+#lockbox{position:absolute;width:6vmin;height:6vmin;border:.2vmin solid #ff5a5a;transform:translate(-50%,-50%)}
+#lockl{position:absolute;top:-2.6vmin;left:0;white-space:nowrap;font-size:1.3vmin;color:#ff8a8a}
+#arrow{position:absolute;left:50%;top:50%;color:#ffd166;font-size:2.6vmin}
+#grab{position:absolute;left:50%;top:62%;transform:translateX(-50%);font-size:2vmin;color:#7dffb0;text-shadow:0 0 1vmin #7dffb0}
+#missile{position:absolute;left:50%;top:22%;transform:translateX(-50%);color:#ff4d4d;font-size:3vmin;font-weight:700;animation:blink .3s infinite}
+#hint{position:absolute;left:50%;top:70%;transform:translateX(-50%);font-size:1.8vmin;opacity:.8}
+#edge{position:absolute;inset:0;box-shadow:inset 0 0 14vmin rgba(255,40,40,0);transition:box-shadow .2s}
+#flash{position:absolute;inset:0;background:#fff;opacity:0;transition:opacity .4s}
+.letterbox{position:absolute;inset:0;pointer-events:none}
+.letterbox .bar2{position:absolute;left:0;right:0;height:11vh;background:#000}
+.letterbox .top{top:0}.letterbox .bot{bottom:0}
+#radio-big{position:absolute;left:50%;bottom:16vh;transform:translateX(-50%);font-size:2.4vmin;text-shadow:0 0 1vmin rgba(0,0,0,.9)}
+#popups{position:absolute;left:50%;top:38%;transform:translateX(-50%);text-align:center}
+.popup{font-size:2.6vmin;font-weight:700;color:#fff;text-shadow:0 0 1.2vmin #ffb347;animation:pop 1.2s forwards}
+@keyframes pop{0%{opacity:0;transform:scale(1.4)}15%{opacity:1;transform:scale(1)}80%{opacity:1}100%{opacity:0}}
+#results{background:rgba(2,6,10,.8);pointer-events:auto}
+#results .card{border:1px solid rgba(160,240,255,.4);padding:3vmin 5vmin;min-width:50vmin;line-height:1.9;font-size:2vmin}
+#results .grade{font-size:9vmin;font-weight:300;margin:1vmin 0}
+#fail{color:#ff6b6b;font-size:3vmin;margin-bottom:2vmin}
+#selftest{position:fixed;inset:0;background:#06080c;color:#dfe;font:1.6vmin/1.7 monospace;padding:4vmin;overflow:auto;white-space:pre;pointer-events:auto}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="hud">
+  <div id="title" class="screen">
+    <h1>LAST FLIGHT</h1>
+    <p class="premise">Flight 227 is sinking toward downtown at 110 m/s with a burning engine. Hostile jets are closing in. You are the city's last line. 218 souls on board.</p>
+    <p class="controls">Mouse aim · LMB laser (hold) · RMB lock-on · W thrust / push · S brake / push back · Shift boost · Space up / lift · Ctrl down · A/D strafe · E grab / release · R retry phase · Shift+R restart · F free-fly · Esc release mouse · ` debug panel</p>
+    <p class="click">CLICK TO FLY</p>
+  </div>
+  <div id="cine" class="letterbox hidden"><div class="bar2 top"></div><div class="bar2 bot"></div><div id="radio-big"></div><div id="cardbig" style="position:absolute;left:0;right:0;top:44%;text-align:center;font-size:4vmin;font-weight:300;letter-spacing:.35em;opacity:0;transition:opacity .6s"></div></div>
+  <div id="hud-main" class="hidden">
+    <div id="tl" class="panel">
+      <div id="spd">0</div><div id="spdtier">HOVER · 0 km/h</div>
+      <div id="alt">ALT 0 m</div>
+      <div class="bar"><div id="hp"></div></div>
+    </div>
+    <div id="tc" class="panel">
+      <div id="obj">INTERCEPT</div><div id="objd"></div>
+      <div id="impact"></div>
+      <div id="waves">WAVE 0/12</div>
+    </div>
+    <div id="tr" class="panel">
+      <div id="timer">00:00.0</div><div id="score">SCORE 0</div><div id="kills">JETS 0</div>
+    </div>
+    <div id="cross"></div>
+    <div id="lockbox" class="hidden"><span id="lockl">BANDIT</span></div>
+    <div id="arrow" class="hidden">▲</div>
+    <div id="grab" class="hidden"></div>
+    <div id="bc" class="panel">
+      <div>BOOST</div><div class="bar"><div id="boostbar"></div></div>
+      <div>LASER</div><div class="bar"><div id="heatbar"></div></div>
+    </div>
+    <div id="br" class="panel hidden">
+      <div>HULL <span id="hull">100</span></div><div class="bar"><div id="hullbar" style="background:#8ff0ff"></div></div>
+      <div>STRESS</div><div class="bar"><div id="stress"></div></div>
+      <div id="buckle" class="hidden" style="color:#ffd166;font-weight:700">NOSE BUCKLING</div>
+      <div>PLANE <span id="planespd">0</span> m/s</div>
+      <div id="sinkg">SINK 0.0 m/s</div>
+      <div id="setdownzone" style="font-size:1.4vmin;opacity:.8"></div>
+    </div>
+    <div id="bl" class="panel"><div id="radio"></div></div>
+    <div id="popups"></div>
+    <div id="edge"></div>
+    <div id="missile" class="hidden">MISSILE</div>
+    <div id="hint" class="hidden">click to capture mouse</div>
+  </div>
+  <div id="results" class="screen hidden"></div>
+  <div id="flash"></div>
+</div>
+<div id="selftest" class="hidden"></div>
+<script type="module">
+/* =====================================================================
+ * LAST FLIGHT — single-file Three.js game.
+ * Sections, in order:
+ *   config
+ *   core:     renderer loop input audio pool math events
+ *   world:    sky city river clouds stadium ground collision
+ *   entities: hero flight laser airliner holding jet missile wreck
+ *   vfx:      particles explosions trails speedlines
+ *   shaders:  radialBlur grade fire water windows cloud
+ *   game:     mission camera hud cinematics scoring debug
+ *   selftest  flightChecks collisionChecks holdingChecks missionChecks
+ *   main      bootstrap: create systems, start the loop
+ * Tuning tips (feel):
+ *   CONFIG.hero.thrust / vCruise / vBoost   how hard you accelerate and where speed tops out
+ *   CONFIG.hero.turnSlow / turnFast         how wide the banked turns are at speed
+ *   CONFIG.holding.brakeMax / stressBrake   how hard the plane can be braked before NOSE BUCKLING
+ * ===================================================================== */
+
+import * as THREE from 'three';
+import { Sky } from 'three/addons/objects/Sky.js';
+import { Lensflare, LensflareElement } from 'three/addons/objects/Lensflare.js';
+import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
+import {
+  EffectComposer, RenderPass, EffectPass, Effect, BloomEffect, GodRaysEffect,
+  ChromaticAberrationEffect, VignetteEffect, NoiseEffect, ToneMappingEffect,
+  SMAAEffect, SMAAPreset, ToneMappingMode, BlendFunction
+} from 'postprocessing';
+
+/* =====================================================================
+ * config — every tunable, with units
+ * ===================================================================== */
+const CONFIG = {
+  hero: {
+    thrust: 60,          // m/s^2 along aim
+    boostMult: 2.2,      // thrust multiplier while boosting
+    vCruise: 65,         // m/s terminal cruise
+    vBoost: 190,         // m/s terminal boost
+    turnSlow: 2.5,       // rad/s max turn rate at 0 m/s
+    turnFast: 0.7,       // rad/s max turn rate at vBoost
+    vertAccel: 25,       // m/s^2 Space / Ctrl
+    strafe: 20,          // m/s^2 A/D in hover
+    gravCoast: 2.5,      // m/s^2 while coasting
+    gravStun: 9.8,       // m/s^2 while stunned
+    boostDrain: 4,       // s to empty the boost meter
+    boostRefill: 3,      // s to refill the boost meter
+    boostLockout: 1,     // s locked out after empty
+    hpMax: 100,          // HP
+    tracerDmg: 8,        // HP per tracer hit
+    missileDmg: 35,      // HP per missile hit
+    regenRate: 10,       // HP/s
+    regenDelay: 4,       // s without damage before regen
+    radius: 0.9,         // m collision sphere
+    stunTime: 0.5,       // s
+    restitution: 0.25,   // wall bounce
+    hardLanding: 30,     // m/s
+    cityLimit: 4500,     // m from city centre before TURN BACK
+    launchMin: 15,       // m/s launch from landed
+    launchMax: 45,
+    chargeTime: 0.6,     // s
+  },
+  laser: {
+    heatRate: 25,        // heat/s while firing (0 -> 100 in 4 s)
+    coolRate: 100 / 3,   // heat/s cooling (100 -> 0 in 3 s)
+    overheatTime: 2,     // s lockout
+    jetDps: 35,          // HP/s
+    missileDps: 60,      // HP/s
+    rangeM: 1500,        // m
+    assistDeg: 3,        // magnetise radius
+    lockDeg: 15,         // lock-on cone
+    breakDeg: 30,        // lock breaks beyond this
+    evadeTime: 0.5,      // s of lasering before a jet evades
+  },
+  airliner: {
+    spawnX: 9000,        // m east of downtown
+    altitude: 2400,      // m
+    speed: 110,          // m/s westbound
+    sinkStart: 18,       // m/s
+    sinkEnd: 30,         // m/s
+    sinkTime: 60,        // s to reach sinkEnd
+    pitchEnd: -12,       // deg after pitchTime
+    pitchTime: 90,       // s
+    hpMax: 100,          // hull
+    tracerDmg: 4,
+    missileDmg: 25,
+    tailTear: 30,        // hull lost on tail tear
+    hardTouch: 20,       // hull lost on hard touchdown
+    grabRange: 60,       // m glow radius
+    catchRange: 6,       // m press range
+    speedMatch: 25,      // m/s
+    tailHold: 1.5,       // s before the tail tears off
+    radius: 12,          // m collision sphere
+    noseOffset: 30,      // m from centre to nose
+    tailOffset: 28,      // m from centre to tail
+  },
+  holding: {
+    gravity: 8,          // m/s^2 on the body
+    lift: 25,            // m/s^2 Space
+    ctrlDown: 10,        // m/s^2 Ctrl
+    brakeMax: 12,        // m/s^2 push-back cap
+    brakeRamp: 12,       // m/s^2 per s ramp
+    forwardAccel: 6,     // m/s^2 W
+    pitchLimit: 35,      // deg
+    rollLimit: 20,       // deg
+    yawRate: 0.4,        // rad/s max
+    aeroBrake: 4,        // m/s^2 when nose-up beyond 15 deg
+    aeroLift: 1,         // m/s^2 lift with nose-up
+    nosedownSink: 3,     // m/s^2 when nose-down beyond 15 deg
+    stressBrake: 7,      // m/s^2 brake above which stress grows
+    stressRate: 12,      // per s
+    stressSpeed: 15,     // per s while yaw/speed/descent
+    stressDecay: 20,     // per s when gentle
+    buckleAt: 70,        // stress threshold
+    crushHull: 8,        // hull/s at stress 100
+    speedStress: 130,    // m/s
+    descentStress: 20,   // m/s
+    yawStress: 0.3,      // rad/s
+  },
+  jet: {
+    hp: 100,
+    speed: 180,          // m/s
+    turnRate: 1.6,       // rad/s
+    floor: 250,          // m above ground
+    cannonCD: 0.6,       // s between bursts
+    burstRate: 8,        // rounds per second
+    cannonSpeed: 600,    // m/s
+    spreadDeg: 1.5,
+    attackRange: 1200,   // m
+    approachRange: 800,  // m
+    evadeCD: 4,          // s
+    poolSize: 12,
+  },
+  missile: { speed: 250, hp: 20, turnRate: 1.2, every: 12, minRange: 600, miss: 8, life: 14, poolSize: 4 },
+  waves: [
+    { name: 'INTERCEPT', count: 2 },
+    { name: 'CATCH', count: 3 },
+    { name: 'ARREST', count: 4 },
+    { name: 'ARREST', count: 3 },
+  ],
+  city: { n: 64, cell: 48, street: 14 },
+  stadium: { x: -1392, z: 0, zoneW: 120, zoneD: 80, perfect: 4, hard: 10, maxSpeed: 8, startSpeed: 30 },
+  camera: { distHover: 5, distSuper: 13, heightMin: 2, heightMax: 3.5, springLag: 0.12, boostLag: 0.2, fovBase: 72, fovBoost: 30, shakeMax: 0.12 },
+  audio: { master: 0.6 },
+  render: { particles: 20000, pixelCap: 2 },
+  sun: { elevationDeg: 4, azimuthDeg: 250 },
+};
+
+/* =====================================================================
+ * core: events
+ * ===================================================================== */
+const events = (() => {
+  const map = new Map();
+  return {
+    on(name, fn) { if (!map.has(name)) map.set(name, []); map.get(name).push(fn); },
+    emit(name, data) { const list = map.get(name); if (list) for (const fn of list) fn(data); },
+    clear() { map.clear(); },
+  };
+})();
+
+/* =====================================================================
+ * core: math
+ * ===================================================================== */
+const V3 = THREE.Vector3;
+const QUAT = THREE.Quaternion;
+const T1 = new V3(), T2 = new V3(), T3 = new V3(), T4 = new V3();
+const AIM = new V3(), RIGHT = new V3(), HF = new V3();
+const DEG = Math.PI / 180;
+const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
+const lerp = (a, b, t) => a + (b - a) * t;
+const smooth01 = (x) => { x = clamp(x, 0, 1); return x * x * (3 - 2 * x); };
+const smoothBetween = (e0, e1, x) => smooth01((x - e0) / (e1 - e0));
+const approach = (cur, tgt, rate, dt) => cur + (tgt - cur) * (1 - Math.exp(-rate * dt));
+const rnd = (a, b) => a + Math.random() * (b - a);
+const wrapAngle = (a) => { while (a > Math.PI) a -= 2 * Math.PI; while (a < -Math.PI) a += 2 * Math.PI; return a; };
+const finite = (v) => Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z);
+
+// Yaw 0 faces -Z (north); positive yaw turns right (+X). Pitch positive = nose up.
+function aimVec(yaw, pitch, out) {
+  const cp = Math.cos(pitch);
+  return out.set(Math.sin(yaw) * cp, Math.sin(pitch), -Math.cos(yaw) * cp);
+}
+function headingVec(yaw, out) { return out.set(Math.sin(yaw), 0, -Math.cos(yaw)); }
+function rightVec(yaw, out) { return out.set(Math.cos(yaw), 0, Math.sin(yaw)); }
+
+/* =====================================================================
+ * core: pool
+ * ===================================================================== */
+function createPool(size, make, reset) {
+  const items = [];
+  for (let i = 0; i < size; i++) { const o = make(i); o.live = false; items.push(o); }
+  return {
+    items,
+    acquire() { for (const o of items) if (!o.live) { o.live = true; return o; } return null; },
+    release(o) { o.live = false; if (reset) reset(o); },
+    each(fn) { for (const o of items) if (o.live) fn(o); },
+    live() { let n = 0; for (const o of items) if (o.live) n++; return n; },
+  };
+}
+
+/* =====================================================================
+ * core: input
+ * ===================================================================== */
+const keys = new Set();
+const mouse = { dx: 0, dy: 0, lmb: false, rmb: false, locked: false, rmbPressed: false, ePressed: false, rPressed: false, fPressed: false };
+const pressedOnce = new Set();
+const input = {
+  yawDelta: 0, pitchDelta: 0,
+  sensitivity: 0.0022,
+};
+function readInput() {
+  const k = (c) => keys.has(c);
+  return {
+    fwd: (k('KeyW') ? 1 : 0),
+    back: (k('KeyS') ? 1 : 0),
+    side: (k('KeyD') ? 1 : 0) - (k('KeyA') ? 1 : 0),
+    up: k('Space'),
+    down: k('ControlLeft') || k('ControlRight'),
+    boost: k('ShiftLeft') || k('ShiftRight'),
+    brake: k('KeyS'),
+    fire: mouse.lmb,
+    lock: mouse.rmbPressed,
+    grab: mouse.ePressed,
+    retry: mouse.rPressed,
+    restart: mouse.rPressed && (k('ShiftLeft') || k('ShiftRight')),
+    free: mouse.fPressed,
+    skip: pressedOnce.has('anykey'),
+  };
+}
+
+/* =====================================================================
+ * core: audio (Web Audio synthesis, created on first click)
+ * ===================================================================== */
+const audio = { ctx: null, master: null, wind: null, windGain: null, boost: null, boostGain: null,
+  hum: null, humGain: null, drone: null, droneGain: null, noiseBuf: null };
+function audioInit() {
+  if (audio.ctx) return;
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  audio.ctx = ctx;
+  audio.master = ctx.createGain();
+  audio.master.gain.value = CONFIG.audio.master;
+  audio.master.connect(ctx.destination);
+  // noise buffer
+  const len = ctx.sampleRate * 2;
+  const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+  audio.noiseBuf = buf;
+  // wind: looping noise through bandpass
+  const wsrc = ctx.createBufferSource(); wsrc.buffer = buf; wsrc.loop = true;
+  const wbp = ctx.createBiquadFilter(); wbp.type = 'bandpass'; wbp.frequency.value = 300; wbp.Q.value = 0.7;
+  audio.windGain = ctx.createGain(); audio.windGain.gain.value = 0;
+  wsrc.connect(wbp); wbp.connect(audio.windGain); audio.windGain.connect(audio.master); wsrc.start();
+  audio.wind = wbp;
+  // boost roar: 55 Hz sawtooth through lowpass
+  const bosc = ctx.createOscillator(); bosc.type = 'sawtooth'; bosc.frequency.value = 55;
+  const blp = ctx.createBiquadFilter(); blp.type = 'lowpass'; blp.frequency.value = 400;
+  audio.boostGain = ctx.createGain(); audio.boostGain.gain.value = 0;
+  bosc.connect(blp); blp.connect(audio.boostGain); audio.boostGain.connect(audio.master); bosc.start();
+  audio.boost = bosc;
+  // laser hum
+  const hosc = ctx.createOscillator(); hosc.type = 'sawtooth'; hosc.frequency.value = 180;
+  const hlp = ctx.createBiquadFilter(); hlp.type = 'lowpass'; hlp.frequency.value = 1200;
+  audio.humGain = ctx.createGain(); audio.humGain.gain.value = 0;
+  hosc.connect(hlp); hlp.connect(audio.humGain); audio.humGain.connect(audio.master); hosc.start();
+  audio.hum = hosc;
+  // drone: two detuned saws with slow LFO on lowpass
+  const d1 = ctx.createOscillator(); d1.type = 'sawtooth'; d1.frequency.value = 55;
+  const d2 = ctx.createOscillator(); d2.type = 'sawtooth'; d2.frequency.value = 55.3;
+  const dlp = ctx.createBiquadFilter(); dlp.type = 'lowpass'; dlp.frequency.value = 500;
+  const lfo = ctx.createOscillator(); lfo.frequency.value = 0.08;
+  const lfoG = ctx.createGain(); lfoG.gain.value = 250;
+  lfo.connect(lfoG); lfoG.connect(dlp.frequency);
+  audio.droneGain = ctx.createGain(); audio.droneGain.gain.value = 0.05;
+  d1.connect(dlp); d2.connect(dlp); dlp.connect(audio.droneGain); audio.droneGain.connect(audio.master);
+  d1.start(); d2.start(); lfo.start();
+  audio.drone = dlp;
+}
+function sfxNoise(dur, f0, f1, gain, type = 'lowpass') {
+  if (!audio.ctx) return;
+  const ctx = audio.ctx, t = ctx.currentTime;
+  const src = ctx.createBufferSource(); src.buffer = audio.noiseBuf;
+  const f = ctx.createBiquadFilter(); f.type = type; f.frequency.setValueAtTime(f0, t); f.frequency.exponentialRampToValueAtTime(Math.max(20, f1), t + dur);
+  const g = ctx.createGain(); g.gain.setValueAtTime(gain, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  src.connect(f); f.connect(g); g.connect(audio.master); src.start(t); src.stop(t + dur + 0.05);
+}
+function sfxBoom() {
+  if (!audio.ctx) return;
+  const ctx = audio.ctx, t = ctx.currentTime;
+  const o = ctx.createOscillator(); o.type = 'sine';
+  o.frequency.setValueAtTime(120, t); o.frequency.exponentialRampToValueAtTime(30, t + 0.4);
+  const g = ctx.createGain(); g.gain.setValueAtTime(0.9, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.5);
+  o.connect(g); g.connect(audio.master); o.start(t); o.stop(t + 0.55);
+  sfxNoise(0.5, 1200, 80, 0.5);
+}
+function sfxExplosion(dist) { sfxNoise(1.2, 2000, 60, clamp(1.2 / (1 + dist / 150), 0.02, 1.2)); }
+function sfxCannon() { sfxNoise(0.06, 3500, 900, 0.12, 'bandpass'); }
+function sfxBeep(f = 880, dur = 0.12) {
+  if (!audio.ctx) return;
+  const ctx = audio.ctx, t = ctx.currentTime;
+  const o = ctx.createOscillator(); o.type = 'square'; o.frequency.value = f;
+  const g = ctx.createGain(); g.gain.setValueAtTime(0.08, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(audio.master); o.start(t); o.stop(t + dur + 0.02);
+}
+function sfxClunk() { sfxNoise(0.25, 400, 80, 0.5); }
+function sfxGroan(dur = 1) {
+  if (!audio.ctx) return;
+  const ctx = audio.ctx, t = ctx.currentTime;
+  const o = ctx.createOscillator(); o.type = 'sawtooth';
+  o.frequency.setValueAtTime(70, t); o.frequency.linearRampToValueAtTime(45, t + dur);
+  const g = ctx.createGain(); g.gain.setValueAtTime(0.0, t); g.gain.linearRampToValueAtTime(0.25, t + 0.2); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(audio.master); o.start(t); o.stop(t + dur + 0.05);
+}
+
+/* =====================================================================
+ * core: loop helpers (fixed timestep owned by main)
+ * ===================================================================== */
+const FIXED = 1 / 120;
+
+/* =====================================================================
+ * world: city grid (pure data)
+ * ===================================================================== */
+function makeGrid(n, cell, street, seed) {
+  const h = new Float32Array(n * n);
+  const ox = -n * cell / 2, oz = -n * cell / 2;
+  const grid = { n, cell, street, ox, oz, h, water: new Uint8Array(n * n), seed };
+  return grid;
+}
+function buildCityGrid(seed) {
+  const C = CONFIG.city;
+  const g = makeGrid(C.n, C.cell, C.street, seed);
+  let s = seed;
+  const rand = () => (s = (s * 16807) % 2147483647) / 2147483647;
+  const cx = C.n / 2, cz = C.n / 2;
+  for (let i = 0; i < C.n; i++) for (let j = 0; j < C.n; j++) {
+    const dx = (i - cx) / (C.n / 2), dz = (j - cz) / (C.n / 2);
+    const r = Math.hypot(dx, dz);
+    const downtown = Math.exp(-r * r * 6);
+    const roll = rand();
+    let hh;
+    if (roll < 0.08 + 0.30 * downtown) hh = 160 + rand() * 260;
+    else if (roll < 0.30 + 0.20 * downtown) hh = 70 + rand() * 90;
+    else hh = 18 + rand() * 52;
+    g.h[i * C.n + j] = hh;
+  }
+  // sinuous river, 5 cells wide
+  for (let i = 0; i < C.n; i++) {
+    const center = cz + 6 * Math.sin(i * 0.15);
+    for (let j = 0; j < C.n; j++) {
+      if (Math.abs(j - center) < 2.5) { g.h[i * C.n + j] = 0; g.water[i * C.n + j] = 1; }
+    }
+  }
+  // three plazas
+  for (const [pi, pj] of [[20, 20], [44, 40], [30, 14]]) {
+    for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) {
+      const ii = pi + a, jj = pj + b;
+      if (ii >= 0 && jj >= 0 && ii < C.n && jj < C.n) g.h[ii * C.n + jj] = 0;
+    }
+  }
+  // cleared stadium block: 6x6 cells centred on the stadium
+  for (let i = 0; i < 6; i++) for (let j = 29; j < 35; j++) g.h[i * C.n + j] = 0;
+  return g;
+}
+function cityIndexOf(g, x, z) {
+  const i = Math.floor((x - g.ox) / g.cell), j = Math.floor((z - g.oz) / g.cell);
+  if (i < 0 || j < 0 || i >= g.n || j >= g.n) return -1;
+  return i * g.n + j;
+}
+// Footprint height under a point: building height inside the inset footprint, otherwise 0 (street / ground).
+function footprintHeight(g, x, z) {
+  const i = Math.floor((x - g.ox) / g.cell), j = Math.floor((z - g.oz) / g.cell);
+  if (i < 0 || j < 0 || i >= g.n || j >= g.n) return 0;
+  const lx = x - (g.ox + i * g.cell), lz = z - (g.oz + j * g.cell);
+  const m = g.street * 0.5;
+  if (lx < m || lx > g.cell - m || lz < m || lz > g.cell - m) return 0;
+  return g.h[i * g.n + j];
+}
+function emptyGrid() { return makeGrid(4, 48, 14, 1); }
+
+/* =====================================================================
+ * world: collision (pure; O(1) cell lookup + neighbours)
+ * ===================================================================== */
+const COLLIDE = {
+  // Resolves a sphere against building AABBs. Mutates pos and vel. Returns impact speed (m/s).
+  resolve(g, pos, vel, r, restitution) {
+    let impact = 0;
+    const ci = Math.floor((pos.x - g.ox) / g.cell), cj = Math.floor((pos.z - g.oz) / g.cell);
+    const m = g.street * 0.5;
+    for (let di = -1; di <= 1; di++) for (let dj = -1; dj <= 1; dj++) {
+      const i = ci + di, j = cj + dj;
+      if (i < 0 || j < 0 || i >= g.n || j >= g.n) continue;
+      const H = g.h[i * g.n + j];
+      if (H <= 0) continue;
+      if (pos.y - r >= H) continue; // above the roof
+      const x0 = g.ox + i * g.cell + m, x1 = g.ox + (i + 1) * g.cell - m;
+      const z0 = g.oz + j * g.cell + m, z1 = g.oz + (j + 1) * g.cell - m;
+      const cx = clamp(pos.x, x0, x1), cy = clamp(pos.y, 0, H), cz = clamp(pos.z, z0, z1);
+      let nx = pos.x - cx, ny = pos.y - cy, nz = pos.z - cz;
+      let d2 = nx * nx + ny * ny + nz * nz;
+      if (d2 >= r * r) continue;
+      if (d2 < 1e-10) {
+        // centre inside the box: leave through the nearest face
+        const faces = [[H - pos.y, 0, 1, 0], [pos.x - x0, -1, 0, 0], [x1 - pos.x, 1, 0, 0], [pos.z - z0, 0, 0, -1], [z1 - pos.z, 0, 0, 1]];
+        faces.sort((a, b) => a[0] - b[0]);
+        const f = faces[0];
+        const push = f[0] + r;
+        pos.x += f[1] * push; pos.y += f[2] * push; pos.z += f[3] * push;
+        nx = f[1]; ny = f[2]; nz = f[3];
+      } else {
+        const d = Math.sqrt(d2);
+        nx /= d; ny /= d; nz /= d;
+        const push = r - d;
+        pos.x += nx * push; pos.y += ny * push; pos.z += nz * push;
+      }
+      const vn = vel.x * nx + vel.y * ny + vel.z * nz;
+      if (vn < 0) {
+        impact = Math.max(impact, -vn);
+        vel.x -= (1 + restitution) * vn * nx;
+        vel.y -= (1 + restitution) * vn * ny;
+        vel.z -= (1 + restitution) * vn * nz;
+        vel.multiplyScalar(0.4);
+      }
+    }
+    return impact;
+  },
+  // Does a sphere overlap any building? (used for airliner impacts)
+  overlaps(g, pos, r) {
+    const ci = Math.floor((pos.x - g.ox) / g.cell), cj = Math.floor((pos.z - g.oz) / g.cell);
+    const m = g.street * 0.5;
+    for (let di = -1; di <= 1; di++) for (let dj = -1; dj <= 1; dj++) {
+      const i = ci + di, j = cj + dj;
+      if (i < 0 || j < 0 || i >= g.n || j >= g.n) continue;
+      const H = g.h[i * g.n + j];
+      if (H <= 0) continue;
+      const x0 = g.ox + i * g.cell + m, x1 = g.ox + (i + 1) * g.cell - m;
+      const z0 = g.oz + j * g.cell + m, z1 = g.oz + (j + 1) * g.cell - m;
+      const cx = clamp(pos.x, x0, x1), cy = clamp(pos.y, 0, H), cz = clamp(pos.z, z0, z1);
+      const dx = pos.x - cx, dy = pos.y - cy, dz = pos.z - cz;
+      if (dx * dx + dy * dy + dz * dz < r * r) return true;
+    }
+    return false;
+  },
+  // Highest building along a ray on the ground plane, sampled every `step` m out to `dist`.
+  maxHeightAhead(g, x, z, dirx, dirz, dist, step) {
+    let best = 0;
+    for (let s = 0; s <= dist; s += step) {
+      const h = footprintHeight(g, x + dirx * s, z + dirz * s);
+      if (h > best) best = h;
+    }
+    return best;
+  },
+};
+
+/* =====================================================================
+ * world: ground helpers
+ * ===================================================================== */
+function surfaceAt(g, x, z) { return footprintHeight(g, x, z); }
+
+/* =====================================================================
+ * entities: hero flight (pure)
+ * ===================================================================== */
+function createHero() {
+  const H = CONFIG.hero;
+  return {
+    pos: new V3(0, 150, 0), vel: new V3(), aimYaw: 0, aimPitch: -0.05,
+    boost: 1, lockout: 0, boosting: false, dragK: H.thrust / (H.vCruise * H.vCruise),
+    hp: H.hpMax, lastHit: -99, mode: 'hover', stunT: 0, brakeT: 0, bank: 0,
+    charge: 0, heat: 0, overheat: 0, t: 0, landImpact: 0, alive: true, wallHit: 0, turnBack: false,
+    grabbing: null, speed: 0,
+  };
+}
+function turnRateAt(speed) {
+  const H = CONFIG.hero;
+  return lerp(H.turnSlow, H.turnFast, smoothBetween(0, H.vBoost, speed));
+}
+// Integrate position and resolve walls and ground. Returns wall impact speed.
+function integrateHero(h, dt, g) {
+  const H = CONFIG.hero;
+  h.pos.addScaledVector(h.vel, dt);
+  const imp = COLLIDE.resolve(g, h.pos, h.vel, H.radius, H.restitution);
+  const surf = surfaceAt(g, h.pos.x, h.pos.z);
+  const floor = surf + 1.8;
+  h.landImpact = 0;
+  if (h.pos.y < floor) {
+    const down = -h.vel.y;
+    h.pos.y = floor;
+    if (h.vel.y < 0) { h.landImpact = down; h.vel.y = down > 5 ? down * 0.3 : 0; }
+  }
+  if (h.pos.y > 4000) { h.pos.y = 4000; if (h.vel.y > 0) h.vel.y = 0; }
+  // soft push back beyond the city
+  const d = Math.hypot(h.pos.x, h.pos.z);
+  h.turnBack = d > H.cityLimit;
+  if (h.turnBack) {
+    const over = d - H.cityLimit;
+    const f = 4 * over / Math.max(d, 1);
+    h.vel.x -= h.pos.x * f * dt; h.vel.z -= h.pos.z * f * dt;
+  }
+  if (!finite(h.pos) || !finite(h.vel)) { h.pos.set(0, 150, 0); h.vel.set(0, 0, 0); }
+  return imp;
+}
+function heroStep(h, inp, dt, g) {
+  const H = CONFIG.hero;
+  h.t += dt;
+  if (!h.alive || h.mode === 'holding') return;
+  if (h.stunT > 0) {
+    h.stunT -= dt;
+    h.vel.y -= H.gravStun * dt;
+    h.vel.multiplyScalar(1 - 0.3 * dt);
+    h.mode = 'stunned';
+    h.wallHit = integrateHero(h, dt, g);
+    if (h.stunT <= 0) h.mode = 'flight';
+    return;
+  }
+  // landed: charge and launch
+  if (h.mode === 'landed') {
+    h.vel.set(0, 0, 0);
+    if (inp.up) { h.charge = Math.min(H.chargeTime, h.charge + dt); return; }
+    if (h.charge > 0) {
+      const sp = lerp(H.launchMin, H.launchMax, h.charge / H.chargeTime);
+      aimVec(h.aimYaw, h.aimPitch, AIM);
+      h.vel.copy(AIM); h.vel.y = Math.max(AIM.y, 0.4);
+      h.vel.normalize().multiplyScalar(sp);
+      h.charge = 0; h.mode = 'flight';
+      events.emit('launch', { speed: sp });
+    }
+    return;
+  }
+  aimVec(h.aimYaw, h.aimPitch, AIM);
+  // boost meter
+  if (h.lockout > 0) h.lockout -= dt;
+  h.boosting = !!inp.boost && h.boost > 0 && h.lockout <= 0 && inp.fwd > 0;
+  if (h.boosting) {
+    h.boost = Math.max(0, h.boost - dt / H.boostDrain);
+    if (h.boost <= 0) h.lockout = H.boostLockout;
+  } else {
+    h.boost = Math.min(1, h.boost + dt / H.boostRefill);
+  }
+  // velocity turns toward aim with a speed-dependent limit: never snapped
+  const sp = h.vel.length();
+  if (sp > 1e-3) {
+    T1.copy(h.vel).multiplyScalar(1 / sp);
+    const ang = T1.angleTo(AIM);
+    if (ang > 1e-5) {
+      const f = Math.min(1, turnRateAt(sp) * dt / ang);
+      T1.lerp(AIM, f).normalize();
+      h.vel.copy(T1).multiplyScalar(sp);
+    }
+  }
+  const thrusting = inp.fwd > 0;
+  const braking = inp.back > 0;
+  if (thrusting) h.vel.addScaledVector(AIM, H.thrust * (h.boosting ? H.boostMult : 1) * dt);
+  const sp1 = h.vel.length();
+  h.mode = (sp1 > 6 || thrusting) ? 'flight' : 'hover';
+  if (h.mode === 'hover') {
+    rightVec(h.aimYaw, RIGHT);
+    h.vel.addScaledVector(RIGHT, inp.side * H.strafe * dt);
+  }
+  if (inp.up) h.vel.y += H.vertAccel * dt;
+  if (inp.down) h.vel.y -= H.vertAccel * dt;
+  if (!thrusting && h.mode === 'flight') h.vel.y -= H.gravCoast * dt;
+  // drag: surge toward the boost constant, cruise otherwise
+  const kTarget = h.boosting
+    ? H.thrust * H.boostMult / (H.vBoost * H.vBoost)
+    : H.thrust / (H.vCruise * H.vCruise);
+  h.dragK = approach(h.dragK, kTarget, 2.5, dt);
+  const spNow = h.vel.length();
+  const brakeMul = braking ? 6 : 1;
+  if (spNow > 0) h.vel.multiplyScalar(Math.max(0, 1 - h.dragK * brakeMul * spNow * dt));
+  h.brakeT = approach(h.brakeT, braking ? 1 : 0, 6, dt);
+  h.speed = h.vel.length();
+  h.wallHit = integrateHero(h, dt, g);
+  if (h.wallHit > 0.5) {
+    h.stunT = H.stunTime;
+    h.mode = 'stunned';
+    events.emit('heroHit', { amount: 0, kind: 'wall', speed: h.wallHit });
+  }
+  if (h.landImpact > H.hardLanding) {
+    h.stunT = H.stunTime;
+    events.emit('heroHit', { amount: 0, kind: 'hardLanding', speed: h.landImpact });
+  }
+  // landing: altitude above the surface < 2.2 m and speed < 8 m/s
+  const alt = h.pos.y - surfaceAt(g, h.pos.x, h.pos.z);
+  if (alt < 2.2 && h.vel.length() < 8 && h.stunT <= 0 && !thrusting) {
+    h.mode = 'landed'; h.vel.set(0, 0, 0); h.charge = 0;
+    events.emit('landed', {});
+  }
+  h.bank = approach(h.bank, clamp(-h.wallHit * 0, -70 * DEG, 70 * DEG), 6, dt);
+  h.speed = h.vel.length();
+  if (h.speed > H.vBoost * 1.2) h.vel.multiplyScalar(H.vBoost * 1.2 / h.speed);
+}
+function heroDamage(h, amt, t) {
+  const H = CONFIG.hero;
+  if (!h.alive) return;
+  h.hp = Math.max(0, h.hp - amt);
+  h.lastHit = t;
+  events.emit('heroHit', { amount: amt, kind: 'damage' });
+  if (h.hp <= 0) { h.alive = false; h.mode = 'dead'; events.emit('heroDead', {}); }
+}
+function heroRegen(h, dt, t) {
+  const H = CONFIG.hero;
+  if (h.alive && h.hp < H.hpMax && t - h.lastHit > H.regenDelay) h.hp = Math.min(H.hpMax, h.hp + H.regenRate * dt);
+}
+
+/* =====================================================================
+ * entities: laser (pure aiming + trace)
+ * ===================================================================== */
+function raySphere(o, d, c, r) {
+  const ox = c.x - o.x, oy = c.y - o.y, oz = c.z - o.z;
+  const tca = ox * d.x + oy * d.y + oz * d.z;
+  const d2 = ox * ox + oy * oy + oz * oz - tca * tca;
+  if (d2 > r * r) return -1;
+  const thc = Math.sqrt(r * r - d2);
+  const t0 = tca - thc;
+  return t0 > 0 ? t0 : (tca + thc > 0 ? 0 : -1);
+}
+// Traces the laser: returns { dist, kind, index } for the closest hit within maxDist.
+function laserTrace(origin, dir, targets, grid, maxDist) {
+  let best = { dist: maxDist, kind: 'none', index: -1 };
+  for (let k = 0; k < targets.length; k++) {
+    const t = targets[k];
+    if (!t.alive) continue;
+    const tt = raySphere(origin, dir, t.pos, t.radius);
+    if (tt >= 0 && tt < best.dist) best = { dist: tt, kind: t.kind, index: t.index, ref: t.ref };
+  }
+  // buildings and ground, marched in 4 m steps
+  const step = 4;
+  for (let s = 0; s < best.dist; s += step) {
+    const x = origin.x + dir.x * s, y = origin.y + dir.y * s, z = origin.z + dir.z * s;
+    if (y <= 0) { if (s < best.dist) best = { dist: s, kind: 'ground', index: -1 }; break; }
+    const h = footprintHeight(grid, x, z);
+    if (h > 0 && y <= h) { best = { dist: s, kind: 'building', index: -1 }; break; }
+  }
+  return best;
+}
+// Soft aim assist: returns the magnetised aim point if a jet is within assistDeg.
+function assistAim(origin, dir, jets, out) {
+  out.copy(dir);
+  let bestAng = CONFIG.laser.assistDeg * DEG;
+  let found = null;
+  for (const j of jets) {
+    if (!j.alive) continue;
+    T2.copy(j.pos).sub(origin).normalize();
+    const ang = T2.angleTo(dir);
+    if (ang < bestAng) { bestAng = ang; found = j; }
+  }
+  if (found) {
+    T2.copy(found.pos).sub(origin).normalize();
+    out.lerp(T2, 0.25).normalize();
+  }
+  return out;
+}
+
+/* =====================================================================
+ * entities: airliner (pure state + sinking)
+ * ===================================================================== */
+function createAirliner() {
+  const A = CONFIG.airliner;
+  return {
+    pos: new V3(A.spawnX, A.altitude, 0),
+    vel: new V3(-A.speed, 0, 0),
+    yaw: -Math.PI / 2, pitch: 0, roll: 0, yawRate: 0,
+    pitchBias: 0, sinkExtra: 0,
+    hull: A.hpMax, stress: 0, brakeForce: 0,
+    held: false, tailTear: false, tailGrabT: 0, tailGrabbed: false,
+    buckle: false, t: 0, crashed: false, impacted: false, down: false, spin: 0,
+    radius: A.radius,
+    kind: 'airliner', alive: true, index: 0,
+    catchT: 0,
+  };
+}
+function airlinerSinkRate(t) {
+  const A = CONFIG.airliner;
+  return lerp(A.sinkStart, A.sinkEnd, clamp(t / A.sinkTime, 0, 1));
+}
+function airlinerNosePitch(t) {
+  const A = CONFIG.airliner;
+  return lerp(0, A.pitchEnd, clamp(t / A.pitchTime, 0, 1)) * DEG;
+}
+// Unheld airliner: flies its heading and sinks. Held airliner is driven by holdingStep.
+function airlinerStep(p, dt) {
+  const A = CONFIG.airliner;
+  p.t += dt;
+  if (p.down) {
+    p.spin += dt;
+    p.roll += dt * (1.2 + p.spin * 0.6);
+    p.vel.y = -40;
+    p.vel.x *= 0.985; p.vel.z *= 0.985;
+    p.pos.addScaledVector(p.vel, dt);
+    return;
+  }
+  if (p.held) return;
+  const sink = airlinerSinkRate(p.t) + p.sinkExtra;
+  const pitchTarget = airlinerNosePitch(p.t) + p.pitchBias;
+  p.pitch = approach(p.pitch, pitchTarget, 1.5, dt);
+  headingVec(p.yaw, T1);
+  p.vel.set(T1.x * A.speed, -sink, T1.z * A.speed);
+  p.pos.addScaledVector(p.vel, dt);
+}
+// The tail tear timer: returns true on the frame the tail tears off.
+function tailTimerStep(p, dt) {
+  if (!p.tailGrabbed || p.tailTear) return false;
+  p.tailGrabT += dt;
+  if (p.tailGrabT >= CONFIG.airliner.tailHold) {
+    p.tailTear = true;
+    p.tailGrabbed = false;
+    p.hull = Math.max(0, p.hull - CONFIG.airliner.tailTear);
+    p.pitchBias -= 8 * DEG;
+    p.sinkExtra += 6;
+    return true;
+  }
+  return false;
+}
+function airlinerHull(p) { return p.hull; }
+function grabPoints(p, nose, tail) {
+  const A = CONFIG.airliner;
+  headingVec(p.yaw, T1);
+  nose.copy(p.pos).addScaledVector(T1, A.noseOffset).add(T2.set(0, -3, 0));
+  tail.copy(p.pos).addScaledVector(T1, -A.tailOffset).add(T2.set(0, -3, 0));
+  return { nose, tail };
+}
+
+/* =====================================================================
+ * entities: holding (hero + plane as one body; plane velocity is the state)
+ * ===================================================================== */
+function holdingStep(p, hero, inp, dt, opts) {
+  const K = CONFIG.holding;
+  const brakeOverride = opts && opts.brakeOverride !== undefined ? opts.brakeOverride : null;
+  // attitude follows the hero's aim with lag
+  const aimP = clamp(hero.aimPitch, -K.pitchLimit * DEG, K.pitchLimit * DEG);
+  const prevYaw = p.yaw;
+  const dyaw = wrapAngle(hero.aimYaw - p.yaw);
+  const maxYaw = K.yawRate * dt;
+  p.yaw += clamp(dyaw, -maxYaw, maxYaw);
+  p.yawRate = wrapAngle(p.yaw - prevYaw) / Math.max(dt, 1e-6);
+  p.pitch = approach(p.pitch, aimP, 3, dt);
+  p.roll = approach(p.roll, clamp(-p.yawRate * 12, -K.rollLimit * DEG, K.rollLimit * DEG), 3, dt);
+  // gravity, lift and control
+  p.vel.y -= K.gravity * dt;
+  if (inp.up) p.vel.y += K.lift * dt;
+  if (inp.down) p.vel.y -= K.ctrlDown * dt;
+  // push back (S): ramps 0 to brakeMax over 1 s, relaxes on release
+  if (brakeOverride !== null) p.brakeForce = brakeOverride;
+  else if (inp.back) p.brakeForce = Math.min(K.brakeMax, p.brakeForce + K.brakeRamp * dt);
+  else p.brakeForce = Math.max(0, p.brakeForce - K.brakeRamp * dt);
+  const sp = Math.hypot(p.vel.x, p.vel.z);
+  if (sp > 0.01) { T1.set(p.vel.x / sp, 0, p.vel.z / sp); } else { headingVec(p.yaw, T1); }
+  p.vel.addScaledVector(T1, -p.brakeForce * dt);
+  if (inp.fwd > 0) p.vel.addScaledVector(T1, K.forwardAccel * dt);
+  // nose attitude effects
+  const pitchDeg = p.pitch / DEG;
+  if (pitchDeg > 15) {
+    p.vel.addScaledVector(T1, -K.aeroBrake * dt);
+    p.vel.y += K.aeroLift * dt;
+  } else if (pitchDeg < -15) {
+    p.vel.y -= K.nosedownSink * dt;
+  }
+  // stress
+  const descent = -p.vel.y;
+  const speed = p.vel.length();
+  if (p.brakeForce > K.stressBrake) p.stress += K.stressRate * (p.brakeForce - K.stressBrake) * dt;
+  const harsh = Math.abs(p.yawRate) > K.yawStress || speed > K.speedStress || descent > K.descentStress;
+  if (harsh) p.stress += K.stressSpeed * dt;
+  else p.stress -= K.stressDecay * dt;
+  p.stress = clamp(p.stress, 0, 100);
+  p.buckle = p.stress > K.buckleAt;
+  if (p.stress >= 100) p.hull = Math.max(0, p.hull - K.crushHull * dt);
+  p.pos.addScaledVector(p.vel, dt);
+  // the hero stands under the nose, braced
+  headingVec(p.yaw, T1);
+  T2.set(Math.sin(p.pitch) * 0, 1, 0);
+  hero.pos.copy(p.pos).addScaledVector(T1, CONFIG.airliner.noseOffset - 2.2).add(T2.set(0, -1.6, 0));
+  hero.vel.copy(p.vel);
+  hero.mode = 'holding';
+  return p.stress;
+}
+
+/* =====================================================================
+ * entities: jets (AI state machine, pure)
+ * ===================================================================== */
+function createJet(i) {
+  return {
+    kind: 'jet', index: i, alive: false, pos: new V3(), vel: new V3(), state: 'approach', stateT: 0,
+    hp: CONFIG.jet.hp, cannonCD: 0, laseredT: 0, evadeCD: 0, radius: 9, roll: 0,
+    goal: new V3(), target: null, burstT: 0, fireT: 0, wave: 0, roundT: 0, ref: null,
+  };
+}
+function spawnJet(j, center, angle, dist, alt, target, wave) {
+  j.alive = true; j.hp = CONFIG.jet.hp; j.state = 'approach'; j.stateT = 0;
+  j.cannonCD = 0.5; j.laseredT = 0; j.evadeCD = 0; j.roll = 0; j.wave = wave;
+  j.pos.set(center.x + Math.cos(angle) * dist, alt, center.z + Math.sin(angle) * dist);
+  j.vel.copy(center).sub(j.pos).normalize().multiplyScalar(CONFIG.jet.speed);
+  j.target = target;
+}
+// returns true when the jet fires a cannon round this step
+function jetStep(j, target, dt, g, rng) {
+  const J = CONFIG.jet;
+  if (!j.alive) return false;
+  j.stateT += dt;
+  j.cannonCD -= dt;
+  j.evadeCD -= dt;
+  if (j.laseredT > 0 && j.laseredT - dt <= 0) { /* decays below */ }
+  j.laseredT = Math.max(0, j.laseredT - dt * 1.5);
+  const dist = T3.copy(target.pos).sub(j.pos).length();
+  let fired = false;
+  switch (j.state) {
+    case 'approach':
+      j.goal.copy(target.pos);
+      j.goal.y = Math.max(j.goal.y, J.floor + 150);
+      if (dist < J.approachRange * 2 && j.stateT > 2) { j.state = 'attack'; j.stateT = 0; }
+      break;
+    case 'attack':
+      j.goal.copy(target.pos);
+      j.goal.y = Math.max(j.goal.y, J.floor);
+      if (dist < J.attackRange && j.cannonCD <= 0) { j.cannonCD = J.cannonCD; j.burstT = 0.6; }
+      if (j.burstT > 0) { j.burstT -= dt; fired = rng() < J.burstRate * dt; }
+      if (j.stateT > 3) { j.state = 'break'; j.stateT = 0; }
+      break;
+    case 'break': {
+      // away from the target, banking hard
+      T4.copy(j.pos).sub(target.pos); T4.y = 0;
+      if (T4.lengthSq() < 1e-6) T4.set(1, 0, 0);
+      T4.normalize().multiplyScalar(600);
+      j.goal.copy(j.pos).add(T4); j.goal.y = Math.max(j.goal.y, J.floor + 150);
+      if (j.stateT > 2.5) { j.state = 'reposition'; j.stateT = 0; }
+      break;
+    }
+    case 'reposition': {
+      const a = j.stateT * 0.7 + j.id;
+      j.goal.set(target.pos.x + Math.cos(a) * 800, J.floor + 220, target.pos.z + Math.sin(a) * 800);
+      if (j.stateT > 4) { j.state = 'attack'; j.stateT = 0; }
+      break;
+    }
+    case 'evade':
+      // barrel roll and break
+      j.roll += dt * 6;
+      T4.copy(j.pos).sub(target.pos); T4.y = 0;
+      if (T4.lengthSq() < 1e-6) T4.set(1, 0, 0);
+      T4.normalize().multiplyScalar(500);
+      j.goal.copy(j.pos).add(T4); j.goal.y = Math.max(j.goal.y, J.floor + 150);
+      if (j.stateT > 1.5) { j.state = 'break'; j.stateT = 0; j.roll = 0; }
+      break;
+  }
+  // steer toward goal with a turn-rate limit; speed fixed
+  T1.copy(j.goal).sub(j.pos);
+  if (T1.lengthSq() > 1e-4) T1.normalize();
+  else T1.copy(j.vel).normalize();
+  const sp = j.vel.length() || J.speed;
+  T2.copy(j.vel).multiplyScalar(1 / sp);
+  const ang = T2.angleTo(T1);
+  if (ang > 1e-5) {
+    const f = Math.min(1, J.turnRate * dt / ang);
+    T2.lerp(T1, f).normalize();
+  }
+  j.vel.copy(T2).multiplyScalar(J.speed);
+  j.pos.addScaledVector(j.vel, dt);
+  // altitude floor and building avoidance
+  const ground = footprintHeight(g, j.pos.x, j.pos.z);
+  const floor = Math.max(J.floor, ground + 60);
+  if (j.pos.y < floor) { j.pos.y = floor; if (j.vel.y < 0) j.vel.y = 0; }
+  if (!finite(j.pos)) { j.pos.set(9000, 500, 0); j.alive = false; }
+  return fired;
+}
+function jetLaseredStep(j, dps, dt) {
+  const J = CONFIG.laser;
+  j.laseredT += dt;
+  j.hp -= dps * dt;
+  if (j.laseredT > J.evadeTime && j.evadeCD <= 0 && j.state !== 'evade' && j.hp > 0) {
+    j.state = 'evade'; j.stateT = 0; j.evadeCD = CONFIG.jet ? CONFIG.jet.evadeCD : 4;
+  }
+  if (j.hp <= 0) { j.alive = false; return true; }
+  return false;
+}
+
+/* =====================================================================
+ * entities: missiles (pure homing)
+ * ===================================================================== */
+function createMissile(i) {
+  return { kind: 'missile', index: i, alive: false, pos: new V3(), vel: new V3(), target: null,
+    life: 0, minDist: 1e9, hp: CONFIG.missile.hp, radius: 2, ref: null };
+}
+function spawnMissile(m, from, target) {
+  m.alive = true; m.life = CONFIG.missile.life; m.minDist = 1e9; m.hp = CONFIG.missile.hp;
+  m.pos.copy(from); m.target = target;
+  m.vel.copy(target.pos).sub(from).normalize().multiplyScalar(CONFIG.missile.speed * 0.5);
+}
+// returns 'hit', 'miss' (harmless) or null
+function missileStep(m, dt) {
+  const MS = CONFIG.missile;
+  if (!m.alive) return null;
+  m.life -= dt;
+  T1.copy(m.target.pos).sub(m.pos);
+  const dist = T1.length();
+  if (dist > 1e-6) T1.multiplyScalar(1 / dist);
+  const sp = m.vel.length() || MS.speed;
+  T2.copy(m.vel).multiplyScalar(1 / sp);
+  const ang = T2.angleTo(T1);
+  if (ang > 1e-5) {
+    const f = Math.min(1, MS.turnRate * dt / ang);
+    T2.lerp(T1, f).normalize();
+  }
+  const cur = Math.min(MS.speed, sp + 200 * dt);
+  m.vel.copy(T2).multiplyScalar(cur);
+  m.pos.addScaledVector(m.vel, dt);
+  if (dist < 4) { m.alive = false; return 'hit'; }
+  if (dist < m.minDist) m.minDist = dist;
+  if (dist > m.minDist + 0.5 && m.minDist > MS.miss) { m.alive = false; return 'miss'; }
+  if (m.life <= 0) { m.alive = false; return 'miss'; }
+  return null;
+}
+
+/* =====================================================================
+ * entities: wreck (pure falling debris)
+ * ===================================================================== */
+function createWreck(i) {
+  return { kind: 'wreck', index: i, alive: false, pos: new V3(), vel: new V3(), spin: new V3(), rot: new V3(), life: 0, radius: 2 };
+}
+function wreckStep(w, dt, g) {
+  if (!w.alive) return null;
+  w.vel.y -= 9.8 * dt;
+  w.pos.addScaledVector(w.vel, dt);
+  w.rot.addScaledVector(w.spin, dt);
+  const ground = footprintHeight(g, w.pos.x, w.pos.z);
+  if (w.pos.y <= ground + 1) { w.alive = false; return 'land'; }
+  return null;
+}
+
+/* =====================================================================
+ * vfx: particles — one Points object, CPU-simulated ring buffer
+ * ===================================================================== */
+const PART = (() => {
+  const N = CONFIG.render.particles;
+  const pos = new Float32Array(N * 3), col = new Float32Array(N * 3), size = new Float32Array(N), alpha = new Float32Array(N);
+  const vel = new Float32Array(N * 3), life = new Float32Array(N), maxLife = new Float32Array(N), grav = new Float32Array(N), drag = new Float32Array(N), baseA = new Float32Array(N), baseS = new Float32Array(N);
+  let head = 0;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3).setUsage(THREE.DynamicDrawUsage));
+  geo.setAttribute('aColor', new THREE.BufferAttribute(col, 3).setUsage(THREE.DynamicDrawUsage));
+  geo.setAttribute('aSize', new THREE.BufferAttribute(size, 1).setUsage(THREE.DynamicDrawUsage));
+  geo.setAttribute('aAlpha', new THREE.BufferAttribute(alpha, 1).setUsage(THREE.DynamicDrawUsage));
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { uScale: { value: 500 } },
+    vertexShader: `
+      attribute vec3 aColor; attribute float aSize; attribute float aAlpha;
+      uniform float uScale; varying vec3 vC; varying float vA;
+      void main(){ vC = aColor; vA = aAlpha;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = aSize * uScale / max(-mv.z, 0.5);
+        gl_Position = projectionMatrix * mv; }`,
+    fragmentShader: `
+      varying vec3 vC; varying float vA;
+      void main(){ float d = length(gl_PointCoord - vec2(0.5));
+        float a = smoothstep(0.5, 0.0, d) * vA; if (a < 0.003) discard;
+        gl_FragColor = vec4(vC * a, 1.0); }`,
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  const points = new THREE.Points(geo, mat);
+  points.frustumCulled = false;
+  function emit(x, y, z, vx, vy, vz, r, g, b, s, a, l, gv = 0, dr = 0) {
+    const i = head; head = (head + 1) % N;
+    pos[i * 3] = x; pos[i * 3 + 1] = y; pos[i * 3 + 2] = z;
+    vel[i * 3] = vx; vel[i * 3 + 1] = vy; vel[i * 3 + 2] = vz;
+    col[i * 3] = r; col[i * 3 + 1] = g; col[i * 3 + 2] = b;
+    size[i] = s; baseS[i] = s; baseA[i] = a; alpha[i] = a;
+    life[i] = l; maxLife[i] = l; grav[i] = gv; drag[i] = dr;
+  }
+  function update(dt) {
+    for (let i = 0; i < N; i++) {
+      if (life[i] <= 0) { alpha[i] = 0; continue; }
+      life[i] -= dt;
+      if (life[i] <= 0) { alpha[i] = 0; size[i] = 0; continue; }
+      vel[i * 3 + 1] -= grav[i] * dt;
+      const f = Math.exp(-drag[i] * dt);
+      vel[i * 3] *= f; vel[i * 3 + 1] *= f; vel[i * 3 + 2] *= f;
+      pos[i * 3] += vel[i * 3] * dt; pos[i * 3 + 1] += vel[i * 3 + 1] * dt; pos[i * 3 + 2] += vel[i * 3 + 2] * dt;
+      const k = life[i] / maxLife[i];
+      alpha[i] = baseA[i] * k; size[i] = baseS[i] * (1 + (1 - k) * 0.6);
+    }
+    geo.attributes.position.needsUpdate = true;
+    geo.attributes.aColor.needsUpdate = true;
+    geo.attributes.aSize.needsUpdate = true;
+    geo.attributes.aAlpha.needsUpdate = true;
+  }
+  function setScale(px, camera) {
+    mat.uniforms.uScale.value = px * 0.5 * camera.projectionMatrix.elements[5];
+  }
+  return { points, emit, update, setScale, geo, count: N };
+})();
+
+/* =====================================================================
+ * vfx: explosions — layered: flash light, fireball, shockwave, debris, smoke
+ * ===================================================================== */
+const EXPL = { lights: [], fire: [], rings: [], scene: null };
+function explosionInit(scene) {
+  EXPL.scene = scene;
+  for (let i = 0; i < 3; i++) {
+    const l = new THREE.PointLight(0xff8a3a, 0, 180, 2);
+    scene.add(l); EXPL.lights.push({ light: l, t: 1 });
+  }
+  const fireMat = new THREE.ShaderMaterial({
+    uniforms: { uT: { value: 0 }, uFade: { value: 1 } },
+    vertexShader: `varying vec3 vP; void main(){ vP = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+    fragmentShader: `
+      uniform float uT; uniform float uFade; varying vec3 vP;
+      float h(vec3 p){ return fract(sin(dot(p, vec3(127.1,311.7,74.7))) * 43758.5453); }
+      float n(vec3 p){ vec3 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f);
+        return mix(mix(mix(h(i), h(i+vec3(1,0,0)), f.x), mix(h(i+vec3(0,1,0)), h(i+vec3(1,1,0)), f.x), f.y),
+                   mix(mix(h(i+vec3(0,0,1)), h(i+vec3(1,0,1)), f.x), mix(h(i+vec3(0,1,1)), h(i+vec3(1,1,1)), f.x), f.y), f.z); }
+      void main(){ float v = n(vP*2.0 + vec3(0.0, uT*2.0, 0.0))*0.6 + n(vP*5.0 - vec3(0.0, uT*3.0, 0.0))*0.4;
+        vec3 col = mix(vec3(1.0,0.35,0.05), vec3(1.0,0.9,0.5), v);
+        float a = smoothstep(0.2, 0.8, v) * uFade;
+        gl_FragColor = vec4(col * a * 2.0, 1.0); }`,
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  for (let i = 0; i < 4; i++) {
+    const m = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12), fireMat.clone());
+    m.visible = false; scene.add(m);
+    EXPL.fire.push({ mesh: m, t: 1, life: 0.8 });
+  }
+  const ringMat = new THREE.MeshBasicMaterial({ color: 0xffd7a0, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+  for (let i = 0; i < 4; i++) {
+    const m = new THREE.Mesh(new THREE.RingGeometry(0.9, 1, 40), ringMat.clone());
+    m.visible = false; scene.add(m);
+    EXPL.rings.push({ mesh: m, t: 1, life: 0.4 });
+  }
+}
+function explode(pos, big) {
+  const n = big ? 240 : 110;
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2, e = rnd(-0.4, 0.8);
+    const sp = rnd(10, big ? 90 : 45);
+    PART.emit(pos.x, pos.y, pos.z, Math.cos(a) * Math.cos(e) * sp, Math.sin(e) * sp, Math.sin(a) * Math.cos(e) * sp,
+      1, rnd(0.4, 0.8), 0.15, rnd(3, big ? 14 : 8), 0.9, rnd(0.5, 1.2), 0, 1.2);
+  }
+  for (let i = 0; i < (big ? 60 : 30); i++) {
+    PART.emit(pos.x + rnd(-6, 6), pos.y + rnd(0, 6), pos.z + rnd(-6, 6), rnd(-3, 3), rnd(1, 6), rnd(-3, 3),
+      0.25, 0.25, 0.27, rnd(10, 22), 0.35, rnd(4, 6), -0.3, 0.6);
+  }
+  const L = EXPL.lights.find((x) => x.t >= 1) || EXPL.lights[0];
+  L.light.position.copy(pos); L.light.intensity = 200; L.t = 0;
+  const F = EXPL.fire.find((x) => x.t >= 1) || EXPL.fire[0];
+  F.mesh.position.copy(pos); F.mesh.visible = true; F.t = 0; F.mesh.scale.setScalar(2);
+  const R = EXPL.rings.find((x) => x.t >= 1) || EXPL.rings[0];
+  R.mesh.position.copy(pos); R.mesh.visible = true; R.t = 0; R.mesh.scale.setScalar(2);
+  R.mesh.lookAt(pos.x, pos.y + 1, pos.z + 1);
+  events.emit('boom', { pos: pos.clone(), big });
+}
+function explosionsUpdate(dt, cam) {
+  for (const L of EXPL.lights) {
+    if (L.t < 1) { L.t += dt / 0.6; L.light.intensity = 200 * Math.max(0, 1 - L.t); if (L.t >= 1) L.light.intensity = 0; }
+  }
+  for (const F of EXPL.fire) {
+    if (F.t < 1) {
+      F.t += dt / F.life;
+      const k = F.t;
+      F.mesh.scale.setScalar(2 + k * 22);
+      F.mesh.material.uniforms.uT.value += dt;
+      F.mesh.material.uniforms.uFade.value = 1 - k;
+      if (F.t >= 1) F.mesh.visible = false;
+    }
+  }
+  for (const R of EXPL.rings) {
+    if (R.t < 1) {
+      R.t += dt / R.life;
+      R.mesh.scale.setScalar(2 + R.t * 80);
+      R.mesh.material.opacity = 0.8 * (1 - R.t);
+      if (R.t >= 1) R.mesh.visible = false;
+    }
+  }
+}
+
+/* =====================================================================
+ * vfx: trails and speed streaks
+ * ===================================================================== */
+function speedStreaksEmit(hero, cam) {
+  if (hero.speed < 40) return;
+  const n = Math.min(6, Math.floor(hero.speed / 40));
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2, r = rnd(3, 12);
+    T1.copy(hero.vel).multiplyScalar(-0.1);
+    PART.emit(cam.position.x + Math.cos(a) * r, cam.position.y + Math.sin(a) * r * 0.5, cam.position.z + rnd(-4, 4),
+      T1.x, T1.y, T1.z, 0.85, 0.95, 1, rnd(0.2, 0.5), 0.5, 0.25, 0, 0);
+  }
+}
+function boostTrailEmit(hero) {
+  if (!hero.boosting) return;
+  for (let i = 0; i < 3; i++) {
+    PART.emit(hero.pos.x + rnd(-0.6, 0.6), hero.pos.y + rnd(-0.4, 0.4), hero.pos.z + rnd(-0.6, 0.6),
+      -hero.vel.x * 0.05, -hero.vel.y * 0.05, -hero.vel.z * 0.05, 0.6, 0.85, 1, rnd(1.5, 3), 0.7, 0.45, 0, 1.5);
+  }
+}
+
+/* =====================================================================
+ * shaders: post-processing effects (radial blur, grade)
+ * ===================================================================== */
+class RadialBlurEffect extends Effect {
+  constructor() {
+    super('RadialBlur', `
+      uniform float strength;
+      void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor) {
+        vec2 d = uv - vec2(0.5);
+        vec3 acc = vec3(0.0);
+        for (int i = 0; i < 12; i++) {
+          float t = float(i) / 12.0;
+          acc += texture2D(inputBuffer, uv - d * t * strength * 0.25).rgb;
+        }
+        outputColor = vec4(mix(inputColor.rgb, acc / 12.0, clamp(strength, 0.0, 1.0)), inputColor.a);
+      }`,
+      { uniforms: new Map([['strength', new THREE.Uniform(0)]]) });
+  }
+  setStrength(v) { this.uniforms.get('strength').value = v; }
+}
+class GradeEffect extends Effect {
+  constructor() {
+    super('Grade', `
+      void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor) {
+        vec3 c = inputColor.rgb;
+        vec3 s = c * c * (3.0 - 2.0 * c);
+        c = mix(c, s, 0.35);
+        float l = dot(c, vec3(0.299, 0.587, 0.114));
+        c += vec3(0.04, 0.01, -0.02) * (1.0 - smoothstep(0.0, 0.5, l));
+        outputColor = vec4(c, inputColor.a);
+      }`);
+  }
+}
+
+/* =====================================================================
+ * shaders: procedural water, window patch, cloud texture
+ * ===================================================================== */
+function makeWaterMaterial() {
+  return new THREE.ShaderMaterial({
+    uniforms: { uT: { value: 0 }, uSunDir: { value: new V3(0.5, 0.2, -0.8).normalize() }, uSky: { value: new THREE.Color(0xf6b984) } },
+    vertexShader: `varying vec2 vUv; varying vec3 vW; void main(){ vUv = uv; vec4 w = modelMatrix * vec4(position,1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`,
+    fragmentShader: `
+      uniform float uT; uniform vec3 uSunDir; uniform vec3 uSky; varying vec2 vUv; varying vec3 vW;
+      void main(){
+        vec2 p = vW.xz * 0.02;
+        float n = sin(p.x*3.1 + uT*0.7) + sin(p.y*2.3 - uT*0.5) + sin((p.x+p.y)*4.7 + uT*1.1);
+        vec3 nrm = normalize(vec3(n*0.03, 1.0, cos(p.y*2.3)*0.03));
+        vec3 V = normalize(cameraPosition - vW);
+        float fres = pow(1.0 - max(dot(nrm, V), 0.0), 3.0);
+        vec3 H = normalize(uSunDir + V);
+        float spec = pow(max(dot(nrm, H), 0.0), 120.0);
+        vec3 deep = vec3(0.05, 0.12, 0.18);
+        vec3 col = mix(deep, uSky, fres) + vec3(1.0, 0.8, 0.5) * spec * 2.0;
+        gl_FragColor = vec4(col, 1.0);
+      }`,
+  });
+}
+// Windows via onBeforeCompile: UVs from world position so one tile gives 3 m windows on every building.
+function patchWindows(material) {
+  material.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vWinPos; varying vec3 vWinN;')
+      .replace('#include <project_vertex>', `#include <project_vertex>
+        vec4 wpW = vec4(transformed, 1.0);
+        #ifdef USE_INSTANCING
+          wpW = instanceMatrix * wpW;
+        #endif
+        vWinPos = (modelMatrix * wpW).xyz;
+        vWinN = normal;`);
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vWinPos; varying vec3 vWinN;')
+      .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+        vec3 wn = abs(vWinN);
+        vec2 wuv;
+        float facade = 1.0;
+        if (wn.y > 0.5) { facade = 0.0; wuv = vec2(0.0); }
+        else if (wn.x > 0.5) wuv = vWinPos.zy / 3.0;
+        else wuv = vWinPos.xy / 3.0;
+        vec2 wcell = floor(wuv);
+        float wh = fract(sin(dot(wcell, vec2(12.9898, 78.233))) * 43758.5453);
+        float lit = step(0.7, wh) * facade;
+        totalEmissiveRadiance += vec3(1.0, 0.8, 0.5) * lit * 0.8;`);
+  };
+  return material;
+}
+function makeCanvasTexture(w, h, draw) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const ctx = c.getContext('2d'); draw(ctx, w, h);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+function radialTexture(size = 128, inner = 0.0, color = 'rgba(255,255,255,1)') {
+  return makeCanvasTexture(size, size, (ctx, w, h) => {
+    const g = ctx.createRadialGradient(w / 2, h / 2, w * inner, w / 2, h / 2, w / 2);
+    g.addColorStop(0, color); g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+  });
+}
+
+/* =====================================================================
+ * world: stadium (bowl, field, lights, scoreboard, crowd)
+ * ===================================================================== */
+function buildStadium(scene) {
+  const S = CONFIG.stadium;
+  const group = new THREE.Group();
+  group.position.set(S.x, 0, S.z);
+  scene.add(group);
+  // seating tiers as instanced step boxes around an ellipse 280 x 220 m
+  const tiers = 3, segs = 96;
+  const stepGeo = new THREE.BoxGeometry(1, 1, 1);
+  const stepMat = new THREE.MeshStandardMaterial({ color: 0x9aa3ad, roughness: 0.8, metalness: 0.0 });
+  const steps = new THREE.InstancedMesh(stepGeo, stepMat, tiers * segs);
+  steps.castShadow = true; steps.receiveShadow = true;
+  const m4 = new THREE.Matrix4(), col = new THREE.Color();
+  let k = 0;
+  for (let t = 0; t < tiers; t++) for (let s = 0; s < segs; s++) {
+    const a = (s / segs) * Math.PI * 2;
+    const rx = 140 + t * 14 + 6, rz = 110 + t * 14 + 6;
+    const x = Math.cos(a) * rx, z = Math.sin(a) * rz;
+    const ang = Math.atan2(z / rz, x / rx);
+    m4.compose(new V3(x, 2 + t * 4, z), new THREE.Quaternion().setFromAxisAngle(new V3(0, 1, 0), -ang + Math.PI / 2), new V3(16, 4 + t * 2, 2.5));
+    steps.setMatrixAt(k, m4);
+    col.setHSL(0.6, 0.05, 0.45 + t * 0.05);
+    steps.setColorAt(k, col);
+    k++;
+  }
+  steps.instanceMatrix.needsUpdate = true;
+  if (steps.instanceColor) steps.instanceColor.needsUpdate = true;
+  group.add(steps);
+  // field with painted diamond
+  const fieldTex = makeCanvasTexture(512, 512, (ctx, w, h) => {
+    ctx.fillStyle = '#2f7d32'; ctx.fillRect(0, 0, w, h);
+    ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.lineWidth = 6;
+    ctx.beginPath(); ctx.moveTo(w / 2, h * 0.75); ctx.lineTo(w * 0.8, h / 2); ctx.lineTo(w / 2, h * 0.25); ctx.lineTo(w * 0.2, h / 2); ctx.closePath(); ctx.stroke();
+  });
+  fieldTex.wrapS = fieldTex.wrapT = THREE.RepeatWrapping;
+  const field = new THREE.Mesh(new THREE.PlaneGeometry(260, 200), new THREE.MeshStandardMaterial({ map: fieldTex, roughness: 0.9 }));
+  field.rotation.x = -Math.PI / 2; field.position.y = 0.05; field.receiveShadow = true;
+  group.add(field);
+  // set-down zone outline
+  const zoneGeo = new THREE.EdgesGeometry(new THREE.PlaneGeometry(S.zoneW, S.zoneD));
+  const zone = new THREE.LineSegments(zoneGeo, new THREE.LineBasicMaterial({ color: 0xffd166 }));
+  zone.rotation.x = -Math.PI / 2; zone.position.y = 0.12;
+  group.add(zone);
+  // four floodlight masts with emissive heads and additive cones
+  const coneMat = new THREE.MeshBasicMaterial({ color: 0xfff1d0, transparent: true, opacity: 0.08, blending: THREE.AdditiveBlending, depthWrite: false });
+  for (let i = 0; i < 4; i++) {
+    const ax = (i % 2 ? 1 : -1) * 150, az = (i < 2 ? 1 : -1) * 120;
+    const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.6, 0.9, 60, 8), new THREE.MeshStandardMaterial({ color: 0x555b63, metalness: 0.5, roughness: 0.5 }));
+    mast.position.set(ax, 30, az); mast.castShadow = true; group.add(mast);
+    const head = new THREE.Mesh(new THREE.BoxGeometry(8, 3, 3), new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xfff1d0, emissiveIntensity: 3 }));
+    head.position.set(ax, 62, az); group.add(head);
+    const cone = new THREE.Mesh(new THREE.ConeGeometry(70, 180, 24, 1, true), coneMat);
+    cone.position.set(ax, 0, az); cone.rotation.x = ax > 0 ? -0.6 : 0.6; group.add(cone);
+  }
+  // scoreboard with canvas text
+  const sbTex = makeCanvasTexture(512, 256, (ctx, w, h) => {
+    ctx.fillStyle = '#0b0f14'; ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = '#ffd166'; ctx.font = 'bold 56px system-ui'; ctx.textAlign = 'center';
+    ctx.fillText('FLIGHT 227', w / 2, 90);
+    ctx.fillStyle = '#ff6b6b'; ctx.font = 'bold 64px system-ui'; ctx.fillText('ON APPROACH', w / 2, 180);
+  });
+  const sb = new THREE.Mesh(new THREE.PlaneGeometry(60, 30), new THREE.MeshBasicMaterial({ map: sbTex }));
+  sb.position.set(0, 26, -120); sb.rotation.y = 0; group.add(sb);
+  // 8,000 instanced crowd quads
+  const crowd = new THREE.InstancedMesh(new THREE.PlaneGeometry(0.5, 0.7), new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide }), 8000);
+  const cc = new THREE.Color();
+  for (let i = 0; i < 8000; i++) {
+    const t = Math.floor(rnd(0, tiers)), a = rnd(0, Math.PI * 2);
+    const rx = 140 + t * 14 + 10, rz = 110 + t * 14 + 10;
+    m4.compose(new V3(Math.cos(a) * rx, 6 + t * 4, Math.sin(a) * rz), new THREE.Quaternion(), new V3(1, 1, 1));
+    crowd.setMatrixAt(i, m4);
+    cc.setHSL(rnd(0, 1), 0.7, 0.55);
+    crowd.setColorAt(i, cc);
+  }
+  crowd.instanceMatrix.needsUpdate = true;
+  if (crowd.instanceColor) crowd.instanceColor.needsUpdate = true;
+  group.add(crowd);
+  return { group, zone, scoreboard: sb, sbTex, crowd };
+}
+function setScoreboard(st, text1, text2, color) {
+  const c = st.sbTex.image, ctx = c.getContext('2d');
+  ctx.fillStyle = '#0b0f14'; ctx.fillRect(0, 0, c.width, c.height);
+  ctx.fillStyle = color; ctx.font = 'bold 64px system-ui'; ctx.textAlign = 'center';
+  ctx.fillText(text1, c.width / 2, 110);
+  ctx.fillStyle = '#ffffff'; ctx.font = 'bold 56px system-ui';
+  ctx.fillText(text2, c.width / 2, 210);
+  st.sbTex.needsUpdate = true;
+}
+
+/* =====================================================================
+ * world: clouds (two instanced billboard layers + cirrus dome)
+ * ===================================================================== */
+function buildClouds(scene) {
+  const tex = radialTexture(128, 0.2, 'rgba(255,240,230,0.9)');
+  const group = new THREE.Group(); scene.add(group);
+  const layers = [];
+  for (let L = 0; L < 2; L++) {
+    const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, opacity: 0.55, fog: true });
+    const mesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), mat, 150);
+    const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new V3();
+    for (let i = 0; i < 150; i++) {
+      const a = rnd(0, Math.PI * 2), r = rnd(500, 900);
+      const sz = rnd(120, 260);
+      q.setFromAxisAngle(new V3(0, 1, 0), rnd(0, Math.PI));
+      s.set(sz, sz * 0.5, 1);
+      m4.compose(new V3(Math.cos(a) * r, 380 + L * 120 + rnd(-40, 40), Math.sin(a) * r), q, s);
+      mesh.setMatrixAt(i, m4);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    group.add(mesh); layers.push(mesh);
+  }
+  const cirrusMat = new THREE.MeshBasicMaterial({ color: 0xffe2c4, transparent: true, opacity: 0.25, depthWrite: false, side: THREE.DoubleSide });
+  const dome = new THREE.Mesh(new THREE.SphereGeometry(2500, 32, 12, 0, Math.PI * 2, 0, Math.PI / 3), cirrusMat);
+  dome.position.y = 200; group.add(dome);
+  return { group, layers, tex };
+}
+
+/* =====================================================================
+ * world: city meshes (concrete and glass towers as InstancedMesh)
+ * ===================================================================== */
+function buildCity(scene, g) {
+  const group = new THREE.Group(); scene.add(group);
+  const concreteMat = patchWindows(new THREE.MeshStandardMaterial({ color: 0xbfb6aa, metalness: 0.15, roughness: 0.6 }));
+  const glassMat = patchWindows(new THREE.MeshStandardMaterial({ color: 0x5c7288, metalness: 0.9, roughness: 0.15 }));
+  const unit = new THREE.BoxGeometry(1, 1, 1);
+  const concreteIdx = [], glassIdx = [];
+  for (let i = 0; i < g.n; i++) for (let j = 0; j < g.n; j++) {
+    const H = g.h[i * g.n + j];
+    if (H <= 0) continue;
+    if (Math.random() < 0.45 || H < 120) concreteIdx.push([i, j, H]); else glassIdx.push([i, j, H]);
+  }
+  const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new V3(), p = new V3();
+  const inset = g.street * 0.5;
+  const cMesh = new THREE.InstancedMesh(unit, concreteMat, concreteIdx.length);
+  const gMesh = new THREE.InstancedMesh(unit, glassMat, glassIdx.length);
+  const fill = (arr, mesh) => {
+    arr.forEach(([i, j, H], k) => {
+      p.set(g.ox + (i + 0.5) * g.cell, H / 2, g.oz + (j + 0.5) * g.cell);
+      s.set(g.cell - inset * 2, H, g.cell - inset * 2);
+      m4.compose(p, q, s);
+      mesh.setMatrixAt(k, m4);
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.castShadow = true; mesh.receiveShadow = true;
+    group.add(mesh);
+  };
+  fill(concreteIdx, cMesh);
+  fill(glassIdx, gMesh);
+  // rooftop antennas with red blinkers
+  const antGeo = new THREE.CylinderGeometry(0.4, 0.6, 1, 6);
+  const antMat = new THREE.MeshStandardMaterial({ color: 0x888888, metalness: 0.6, roughness: 0.4 });
+  const ant = new THREE.InstancedMesh(antGeo, antMat, Math.min(120, glassIdx.length));
+  const blink = new THREE.InstancedMesh(new THREE.SphereGeometry(0.8, 6, 4), new THREE.MeshBasicMaterial({ color: 0xff3030 }), Math.min(120, glassIdx.length));
+  for (let k = 0; k < Math.min(120, glassIdx.length); k++) {
+    const [i, j, H] = glassIdx[k];
+    p.set(g.ox + (i + 0.5) * g.cell, H + 14, g.oz + (j + 0.5) * g.cell);
+    s.set(1, 28, 1); m4.compose(p, q, s); ant.setMatrixAt(k, m4);
+    p.y += 14; s.set(1, 1, 1); m4.compose(p, q, s); blink.setMatrixAt(k, m4);
+  }
+  ant.instanceMatrix.needsUpdate = true; blink.instanceMatrix.needsUpdate = true;
+  group.add(ant); group.add(blink);
+  // warm ground haze across the bowl
+  const haze = new THREE.Mesh(new THREE.PlaneGeometry(3200, 3200), new THREE.MeshBasicMaterial({ color: 0xffb074, transparent: true, opacity: 0.12, depthWrite: false }));
+  haze.rotation.x = -Math.PI / 2; haze.position.y = 30; group.add(haze);
+  // ground
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(9000, 9000), new THREE.MeshStandardMaterial({ color: 0x3a3e44, roughness: 0.95 }));
+  ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
+  // river
+  const river = new THREE.Mesh(new THREE.PlaneGeometry(3100, 240), makeWaterMaterial());
+  river.rotation.x = -Math.PI / 2; river.position.set(0, 0.1, 0); scene.add(river);
+  return { group, cMesh, gMesh, concreteIdx, glassIdx, river };
+}
+
+/* =====================================================================
+ * entities: hero visuals (torso, head, limbs, 7-segment cape)
+ * ===================================================================== */
+function buildHeroRig(scene) {
+  const group = new THREE.Group();
+  const red = new THREE.MeshStandardMaterial({ color: 0x9b1d20, roughness: 0.5, metalness: 0.2 });
+  const gold = new THREE.MeshStandardMaterial({ color: 0xd9a441, roughness: 0.35, metalness: 0.6 });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x14161c, roughness: 0.8 });
+  const eyeMat = new THREE.MeshStandardMaterial({ color: 0x9ff4ff, emissive: 0x7fe9ff, emissiveIntensity: 1.5 });
+  const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.35, 0.7, 4, 12), red); torso.castShadow = true; group.add(torso);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.22, 14, 10), gold); head.position.y = 0.85; head.castShadow = true; group.add(head);
+  const eyeL = new THREE.Mesh(new THREE.SphereGeometry(0.04, 8, 6), eyeMat); eyeL.position.set(-0.08, 0.86, -0.19); group.add(eyeL);
+  const eyeR = eyeL.clone(); eyeR.position.x = 0.08; group.add(eyeR);
+  const arms = [];
+  for (const sx of [-1, 1]) {
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.7, 0.16), red);
+    arm.position.set(sx * 0.42, 0.25, 0); arm.castShadow = true; group.add(arm); arms.push(arm);
+    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.9, 0.2), dark);
+    leg.position.set(sx * 0.14, -0.8, 0); leg.castShadow = true; group.add(leg);
+  }
+  // cape: 7 segments of a 0.6 m wide ribbon, simulated and rebuilt each frame
+  const capeGeo = new THREE.BufferGeometry();
+  const CAPE_SEG = 7;
+  const capePos = new Float32Array((CAPE_SEG + 1) * 2 * 3);
+  const capeIdx = [];
+  for (let i = 0; i < CAPE_SEG; i++) {
+    const a = i * 2, b = a + 1, c = a + 2, d = a + 3;
+    capeIdx.push(a, b, c, b, d, c);
+  }
+  capeGeo.setAttribute('position', new THREE.BufferAttribute(capePos, 3).setUsage(THREE.DynamicDrawUsage));
+  capeGeo.setIndex(capeIdx);
+  const cape = new THREE.Mesh(capeGeo, new THREE.MeshStandardMaterial({ color: 0x8c1518, side: THREE.DoubleSide, roughness: 0.6 }));
+  cape.castShadow = true;
+  group.add(cape);
+  const capeSim = [];
+  for (let i = 0; i <= CAPE_SEG; i++) capeSim.push({ x: 0, y: 0.4 - i * 0.2, z: 0.25, px: 0, py: 0.4 - i * 0.2, pz: 0.25 });
+  scene.add(group);
+  // a hand-sized emissive glow on the eyes while firing
+  return { group, head, eyeL, eyeR, eyeMat, arms, cape, capeGeo, capeSim, CAPE_SEG };
+}
+function updateHeroVisuals(rig, hero, dt, t) {
+  const pose = hero.mode;
+  rig.group.position.copy(hero.pos);
+  const q = new THREE.Quaternion();
+  const fwd = T1.copy(hero.vel);
+  if (fwd.lengthSq() < 0.01) aimVec(hero.aimYaw, hero.aimPitch, fwd);
+  fwd.normalize();
+  if (pose === 'holding') {
+    headingVec(hero.aimYaw, T2);
+    q.setFromRotationMatrix(new THREE.Matrix4().lookAt(new V3(0, 0, 0), T2, new V3(0, 1, 0)));
+    const tilt = new THREE.Quaternion().setFromAxisAngle(new V3(1, 0, 0), -30 * DEG);
+    q.multiply(tilt);
+  } else if (pose === 'flight' || pose === 'stunned') {
+    q.setFromUnitVectors(new V3(0, 0, -1), fwd);
+    const lean = hero.boosting ? 10 : 0;
+    q.multiply(new THREE.Quaternion().setFromAxisAngle(new V3(0, 0, 1), lean * DEG));
+  } else {
+    q.setFromAxisAngle(new V3(0, 1, 0), hero.aimYaw);
+    q.multiply(new THREE.Quaternion().setFromAxisAngle(new V3(1, 0, 0), Math.sin(t * 0.8 * Math.PI * 2 * 0.8) * 0.0));
+  }
+  rig.group.quaternion.slerp(q, Math.min(1, dt * 10));
+  // arms
+  for (const arm of rig.arms) {
+    if (pose === 'holding') arm.rotation.set(-2.2, 0, 0);
+    else if (hero.boosting) arm.rotation.set(-1.4, 0, 0);
+    else if (pose === 'flight') arm.rotation.set(-1.6, 0, 0);
+    else arm.rotation.set(0, 0, 0);
+  }
+  // cape verlet: gravity, relative wind drag, flutter
+  const CS = rig.capeSim;
+  const wind = T3.copy(hero.vel).multiplyScalar(-0.02);
+  for (let i = 0; i < CS.length; i++) {
+    const p = CS[i];
+    const vx = (p.x - p.px) * 0.96, vy = (p.y - p.py) * 0.96, vz = (p.z - p.pz) * 0.96;
+    p.px = p.x; p.py = p.y; p.pz = p.z;
+    p.x += vx + wind.x * dt * 0.1 + Math.sin(t * 9 + i) * 0.002 * i;
+    p.y += vy - 6 * dt * dt + wind.y * dt * 0.1;
+    p.z += vz + wind.z * dt * 0.1;
+    if (i === 0) { p.x = 0; p.y = 0.4; p.z = 0.25; p.px = 0; p.py = 0.4; p.pz = 0.25; }
+  }
+  const arr = rig.capeGeo.attributes.position.array;
+  for (let i = 0; i < CS.length; i++) {
+    arr[i * 6] = -0.3; arr[i * 6 + 1] = CS[i].y; arr[i * 6 + 2] = CS[i].z;
+    arr[i * 6 + 3] = 0.3; arr[i * 6 + 4] = CS[i].y; arr[i * 6 + 5] = CS[i].z;
+  }
+  rig.capeGeo.attributes.position.needsUpdate = true;
+  rig.capeGeo.computeVertexNormals();
+  rig.capeGeo.computeBoundingSphere();
+}
+
+/* =====================================================================
+ * entities: airliner visuals (fuselage, wings, engines, nav lights, smoke ribbon)
+ * ===================================================================== */
+function buildAirlinerRig(scene) {
+  const A = CONFIG.airliner;
+  const group = new THREE.Group();
+  const white = new THREE.MeshStandardMaterial({ color: 0xf2f2f2, metalness: 0.7, roughness: 0.3, envMapIntensity: 1 });
+  const blue = new THREE.MeshStandardMaterial({ color: 0x2a4f9b, metalness: 0.7, roughness: 0.3 });
+  const red = new THREE.MeshStandardMaterial({ color: 0xc1272d, metalness: 0.7, roughness: 0.3 });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x111418, metalness: 0.4, roughness: 0.4 });
+  const warmWin = new THREE.MeshStandardMaterial({ color: 0x222222, emissive: 0xffc27a, emissiveIntensity: 0.8 });
+  // fuselage: capsule along -Z (nose at -Z), 62 m total length, radius 3 m
+  const fus = new THREE.Mesh(new THREE.CapsuleGeometry(3, 56, 8, 18), white);
+  fus.rotation.x = Math.PI / 2; fus.castShadow = true; group.add(fus);
+  const belly = new THREE.Mesh(new THREE.CapsuleGeometry(2.98, 56, 8, 18, 1), blue);
+  belly.scale.set(1, 0.4, 1); belly.position.y = -1.6; belly.rotation.x = Math.PI / 2; group.add(belly);
+  const cheat = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.6, 52), red);
+  cheat.position.set(3.02, 0.3, 0); group.add(cheat);
+  const cheat2 = cheat.clone(); cheat2.position.x = -3.02; group.add(cheat2);
+  const cockpit = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.6, 2.4), dark);
+  cockpit.position.set(0, 1.9, -27); group.add(cockpit);
+  const windows = new THREE.InstancedMesh(new THREE.BoxGeometry(0.1, 0.5, 0.9), warmWin, 40);
+  const m4 = new THREE.Matrix4();
+  for (let i = 0; i < 40; i++) { m4.compose(new V3(3.02, 0.8, -20 + i * 1.0), new THREE.Quaternion(), new V3(1, 1, 1)); windows.setMatrixAt(i, m4); }
+  windows.instanceMatrix.needsUpdate = true;
+  group.add(windows);
+  // wings: swept, dihedral, 60 m span
+  const wingGeo = new THREE.BoxGeometry(30, 0.5, 9);
+  for (const sx of [-1, 1]) {
+    const w = new THREE.Mesh(wingGeo, white);
+    w.position.set(sx * 16, -0.5, 2.5);
+    w.rotation.set(0, sx * -0.35, sx * 0.1);
+    w.castShadow = true; group.add(w);
+    const eng = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 1.0, 5, 14), dark);
+    eng.rotation.x = Math.PI / 2; eng.position.set(sx * 9, -2.6, -3);
+    group.add(eng);
+    // nav light: red left wingtip, green right
+    const nav = new THREE.Mesh(new THREE.SphereGeometry(0.4, 8, 6), new THREE.MeshBasicMaterial({ color: sx < 0 ? 0xff3030 : 0x30ff60 }));
+    nav.position.set(sx * 31, 0.2, 5.5); group.add(nav);
+  }
+  // horizontal and vertical stabilisers
+  const hst = new THREE.Mesh(new THREE.BoxGeometry(14, 0.4, 5), white);
+  hst.position.set(0, 1.2, 25); group.add(hst);
+  const vst = new THREE.Mesh(new THREE.BoxGeometry(0.4, 8, 6), white);
+  vst.position.set(0, 4.5, 25); vst.castShadow = true; group.add(vst);
+  // tail cone (separate so it can tear off)
+  const tail = new THREE.Group();
+  const tailCone = new THREE.Mesh(new THREE.CapsuleGeometry(2.4, 14, 6, 14), white);
+  tailCone.rotation.x = Math.PI / 2; tailCone.position.set(0, 0.2, 22);
+  tail.add(tailCone); tail.add(hst); tail.add(vst);
+  group.add(tail);
+  // tail strobe: white at 1 Hz
+  const strobe = new THREE.PointLight(0xffffff, 0, 60, 2);
+  strobe.position.set(0, 4.5, 30); group.add(strobe);
+  // nose cone geometry for buckling
+  const noseGeo = new THREE.SphereGeometry(3, 18, 12, 0, Math.PI * 2, 0, Math.PI / 3);
+  const nose = new THREE.Mesh(noseGeo, white); nose.rotation.x = -Math.PI / 2; nose.position.set(0, 0, -31); group.add(nose);
+  const noseBase = noseGeo.attributes.position.array.slice();
+  // smoke ribbon: 200 segments trailing the left engine
+  const smokeGeo = new THREE.BufferGeometry();
+  const smokePos = new Float32Array(200 * 3);
+  smokeGeo.setAttribute('position', new THREE.BufferAttribute(smokePos, 3).setUsage(THREE.DynamicDrawUsage));
+  const smoke = new THREE.Line(smokeGeo, new THREE.LineBasicMaterial({ color: 0x9a9a9a, transparent: true, opacity: 0.6 }));
+  smoke.frustumCulled = false;
+  scene.add(group); scene.add(smoke);
+  const ribbon = [];
+  return { group, tail, tailCone, nose, noseGeo, noseBase, strobe, smoke, smokeGeo, smokePos, ribbon };
+}
+function updateAirlinerRig(rig, p, dt, t, stateHeld) {
+  const A = CONFIG.airliner;
+  rig.group.position.copy(p.pos);
+  // attitude: forward = yaw/pitch aim, with roll for banking and spin
+  rig.group.rotation.set(p.pitch, -p.yaw, p.roll, 'YXZ');
+  // nose buckling: vertex displacement on the nose cone
+  const arr = rig.nose.geometry.attributes.position.array;
+  const base = rig.noseBase;
+  const b = clamp((p.stress - 70) / 30, 0, 1);
+  for (let i = 0; i < arr.length; i += 3) {
+    const x = base[i], y = base[i + 1], z = base[i + 2];
+    const k = b * 0.6 * Math.sin(t * 18 + y * 2 + x * 3);
+    arr[i] = x * (1 + k * 0.2) + (Math.sin(t * 30 + i) * b * 0.15);
+    arr[i + 1] = y + k * 0.3;
+    arr[i + 2] = z * (1 - b * 0.1);
+  }
+  rig.nose.geometry.attributes.position.needsUpdate = true;
+  // tail section drops away when torn
+  if (p.tailTear) { rig.tail.position.y -= dt * 5; rig.tail.rotation.x += dt * 1.8; rig.tail.visible = true; }
+  // strobe at 1 Hz
+  rig.strobe.intensity = (Math.sin(t * Math.PI * 2) > 0.8) ? 40 : 0;
+  // smoke ribbon from the left engine: ring buffer of 200 world positions
+  rig.ribbon.unshift(new V3(p.pos.x + 9 * (-1), p.pos.y - 2.6, p.pos.z - 3));
+  if (rig.ribbon.length > 200) rig.ribbon.length = 200;
+  for (let i = 0; i < 200; i++) {
+    const r = rig.ribbon[Math.min(i, rig.ribbon.length - 1)] || rig.ribbon[0] || p.pos;
+    rig.smokePos[i * 3] = r.x; rig.smokePos[i * 3 + 1] = r.y; rig.smokePos[i * 3 + 2] = r.z;
+  }
+  rig.smokeGeo.attributes.position.needsUpdate = true;
+  rig.smokeGeo.setDrawRange(0, Math.max(2, Math.min(200, rig.ribbon.length)));
+}
+
+/* =====================================================================
+ * entities: jet, missile and wreck visuals (pooled)
+ * ===================================================================== */
+function buildJetRigs(scene) {
+  const bodyMat = new THREE.MeshStandardMaterial({ color: 0x2a2d33, metalness: 0.8, roughness: 0.35 });
+  const redMat = new THREE.MeshStandardMaterial({ color: 0x8f1a1a, metalness: 0.6, roughness: 0.4 });
+  const glassMat = new THREE.MeshStandardMaterial({ color: 0x1b2a3a, metalness: 0.9, roughness: 0.05 });
+  const afterMat = new THREE.MeshBasicMaterial({ color: 0xff7a1a, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending });
+  const body = new THREE.LatheGeometry([
+    new THREE.Vector2(0, 0), new THREE.Vector2(0.9, 0.5), new THREE.Vector2(1.6, 3), new THREE.Vector2(1.6, 9),
+    new THREE.Vector2(1.1, 13), new THREE.Vector2(0.5, 15), new THREE.Vector2(0, 15.2),
+  ], 14);
+  body.rotateX(Math.PI / 2);
+  const wings = new THREE.BoxGeometry(18, 0.25, 6);
+  const fins = new THREE.BoxGeometry(0.2, 3.5, 3);
+  const rigs = [];
+  for (let i = 0; i < CONFIG.jet.poolSize; i++) {
+    const g = new THREE.Group();
+    const b = new THREE.Mesh(body, bodyMat); b.castShadow = true; g.add(b);
+    const w = new THREE.Mesh(wings, bodyMat); w.position.set(0, 0, 1.5); w.castShadow = true; g.add(w);
+    const f1 = new THREE.Mesh(fins, redMat); f1.position.set(0.9, 1.6, 7.5); f1.rotation.z = 0.25; g.add(f1);
+    const f2 = f1.clone(); f2.position.x = -0.9; f2.rotation.z = -0.25; g.add(f2);
+    const canopy = new THREE.Mesh(new THREE.SphereGeometry(1.0, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2), glassMat);
+    canopy.position.set(0, 0.9, 5); canopy.scale.set(0.9, 0.7, 2); g.add(canopy);
+    const after = new THREE.Mesh(new THREE.ConeGeometry(1.1, 4, 10, 1, true), afterMat);
+    after.rotation.x = Math.PI / 2; after.position.set(0, 0, 11.5); g.add(after);
+    g.visible = false; scene.add(g);
+    rigs.push({ group: g, after, afterMat });
+  }
+  return rigs;
+}
+function buildMissileRigs(scene) {
+  const mat = new THREE.MeshStandardMaterial({ color: 0xbfc5cc, metalness: 0.7, roughness: 0.3 });
+  const geo = new THREE.CylinderGeometry(0.35, 0.35, 4, 8);
+  const fin = new THREE.BoxGeometry(1.4, 0.05, 0.8);
+  const rigs = [];
+  for (let i = 0; i < CONFIG.missile.poolSize; i++) {
+    const g = new THREE.Group();
+    const b = new THREE.Mesh(geo, mat); b.rotation.x = Math.PI / 2; g.add(b);
+    const f = new THREE.Mesh(fin, mat); f.position.z = 1.6; g.add(f);
+    const f2 = f.clone(); f2.rotation.z = Math.PI / 2; g.add(f2);
+    g.visible = false; scene.add(g);
+    rigs.push(g);
+  }
+  return rigs;
+}
+function buildWreckRigs(scene) {
+  const mat = new THREE.MeshStandardMaterial({ color: 0x3a3430, metalness: 0.6, roughness: 0.6 });
+  const rigs = [];
+  for (let i = 0; i < 6; i++) {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(3, 1, 8), mat);
+    m.visible = false; m.castShadow = true; scene.add(m); rigs.push(m);
+  }
+  return rigs;
+}
+// Tracers: one InstancedMesh of elongated additive quads (one draw call).
+function buildTracers(scene) {
+  const mat = new THREE.MeshBasicMaterial({ color: 0xff5a4a, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
+  const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(0.15, 0.15, 6), mat, 160);
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+  const items = [];
+  for (let i = 0; i < 160; i++) items.push({ pos: new V3(), vel: new V3(), life: 0, live: false });
+  return { mesh, items, next: 0 };
+}
+
+/* =====================================================================
+ * game: mission (phase state machine, pure)
+ * ===================================================================== */
+const PHASES = ['title', 'cinematic', 'intercept', 'catch', 'arrest', 'setdown', 'results'];
+function createMission() {
+  return { phase: 'title', checkpoint: 'title', t: 0, phaseT: 0, reason: '', history: ['title'], jetsKilled: 0,
+    waveIndex: -1, waveSpawned: 0, waveDone: false, wavesCleared: 0, failed: false, won: false, bestKey: 'lastflight-best' };
+}
+function missionEnter(m, phase) {
+  m.phase = phase; m.phaseT = 0; m.history.push(phase);
+  if (phase === 'intercept' || phase === 'catch' || phase === 'arrest' || phase === 'setdown') m.checkpoint = phase;
+  events.emit('phaseChanged', { phase });
+}
+function missionFail(m, reason) {
+  if (m.failed || m.won) return;
+  m.failed = true; m.reason = reason; m.phase = 'failed';
+  events.emit('missionFailed', { reason });
+}
+function missionRetry(m) {
+  // returns to the phase checkpoint
+  m.failed = false; m.reason = '';
+  m.phase = m.checkpoint;
+  m.phaseT = 0;
+  return m.checkpoint;
+}
+// Advances phases from a snapshot. Pure: no DOM, no renderer.
+function missionStep(m, snap, dt) {
+  m.t += dt; m.phaseT += dt;
+  switch (m.phase) {
+    case 'intercept':
+      if (snap.heroNearPlane < 1500) missionEnter(m, 'catch');
+      break;
+    case 'catch':
+      if (snap.holding) missionEnter(m, 'arrest');
+      break;
+    case 'arrest':
+      if (snap.planeNearStadium) {
+        if (snap.planeSpeed > CONFIG.stadium.startSpeed) missionFail(m, 'PLANE TOO FAST AT STADIUM');
+        else missionEnter(m, 'setdown');
+      }
+      break;
+    case 'setdown':
+      if (snap.touchdownOver) missionEnter(m, 'results');
+      break;
+  }
+  return m.phase;
+}
+
+/* =====================================================================
+ * game: camera (aim-driven chase, pure math on a Camera)
+ * ===================================================================== */
+function createChaseCam(camera) {
+  const C = CONFIG.camera;
+  return {
+    camera,
+    pos: new V3(), look: new V3(),
+    vel: new V3(),
+    fov: C.fovBase,
+    kick: 0,
+    shake: 0,
+    shakeT: 0,
+    wide: 0,
+    holdingPose: 0,
+  };
+}
+function chaseCamUpdate(cc, hero, aimDir, dt, lockTarget, mode) {
+  const C = CONFIG.camera;
+  const sp = hero.speed;
+  const f = smoothBetween(0, CONFIG.hero.vBoost, sp);
+  let dist = lerp(C.distHover, C.distSuper, f);
+  let height = lerp(C.heightMin, C.heightMax, f);
+  let lookAhead = lerp(3, 25, f);
+  if (mode === 'holding') {
+    dist = 22; height = 6;
+  }
+  if (cc.wide > 0) { dist += cc.wide * 10; cc.wide = Math.max(0, cc.wide - dt * 0.5); }
+  // desired position behind the aim
+  T1.copy(aimDir).multiplyScalar(-dist);
+  T1.y += height;
+  if (mode === 'holding') {
+    // three-quarter front-low: camera in front of the nose, hero fills the frame
+    rightVec(hero.aimYaw, T2);
+    T1.set(T2.x * 14, 2.5, T2.z * 14).add(hero.pos).sub(hero.pos);
+    T1.add(T2.set(-Math.sin(hero.aimYaw) * 14, 0, Math.cos(hero.aimYaw) * 14));
+  }
+  T1.add(hero.pos);
+  const lag = hero.boosting ? C.boostLag : C.springLag;
+  const k = 1 - Math.exp(-dt / Math.max(lag, 0.01));
+  cc.pos.lerp(T1, k);
+  // look-at with aim lead and lock-on bias
+  T2.copy(aimDir).multiplyScalar(lookAhead).add(hero.pos);
+  if (lockTarget) { T3.copy(lockTarget.pos).sub(T2).multiplyScalar(0.2); T2.add(T3); }
+  cc.look.lerp(T2, 1 - Math.exp(-dt * 12));
+  // shake (sum of sines), zero below 100 m/s
+  const shakeAmp = smoothBetween(100, CONFIG.hero.vBoost, sp) * C.shakeMax + cc.shake;
+  cc.shakeT += dt;
+  const sx = Math.sin(cc.shakeT * 37) * 0.6 + Math.sin(cc.shakeT * 53) * 0.4;
+  const sy = Math.sin(cc.shakeT * 41 + 1) * 0.6 + Math.sin(cc.shakeT * 29) * 0.4;
+  cc.shake = Math.max(0, cc.shake - dt * 1.5);
+  cc.camera.position.copy(cc.pos).add(T3.set(sx * shakeAmp, sy * shakeAmp, 0));
+  cc.camera.lookAt(cc.look);
+  // FOV: widens with speed; boost kick
+  const targetFov = C.fovBase + C.fovBoost * smoothBetween(0, CONFIG.hero.vBoost, sp);
+  cc.fov = approach(cc.fov, targetFov + cc.kick * 6, 8, dt);
+  cc.kick = Math.max(0, cc.kick - dt * 6);
+  cc.camera.fov = cc.fov;
+  cc.camera.updateProjectionMatrix();
+}
+
+/* =====================================================================
+ * game: hud (DOM text and widths, cheap per-frame updates)
+ * ===================================================================== */
+const HUD = {};
+function hudInit() {
+  for (const id of ['spd', 'spdtier', 'alt', 'hp', 'obj', 'objd', 'impact', 'waves', 'timer', 'score', 'kills',
+    'boostbar', 'heatbar', 'hull', 'hullbar', 'stress', 'buckle', 'planespd', 'sinkg', 'setdownzone', 'radio', 'popups', 'edge',
+    'missile', 'lockbox', 'lockl', 'arrow', 'grab', 'cross', 'hint', 'br', 'cine', 'radio-big', 'cardbig', 'hud-main', 'title',
+    'results', 'flash', 'bl', 'selftest']) {
+    HUD[id] = document.getElementById(id);
+  }
+}
+function hudPopup(text) {
+  const el = document.createElement('div');
+  el.className = 'popup'; el.textContent = text;
+  HUD.popups.appendChild(el);
+  setTimeout(() => el.remove(), 1300);
+}
+function hudRadio(text) {
+  const el = document.createElement('div');
+  el.textContent = text; HUD.radio.appendChild(el);
+  while (HUD.radio.children.length > 4) HUD.radio.firstChild.remove();
+  setTimeout(() => el.remove(), 6000);
+  sfxBeep(1200, 0.1);
+}
+function hudRadioBig(text, typeMs = 40) {
+  HUD['radio-big'].textContent = '';
+  let i = 0;
+  const id = setInterval(() => {
+    HUD['radio-big'].textContent = text.slice(0, ++i);
+    if (i >= text.length) clearInterval(id);
+  }, typeMs);
+}
+function hudShowCard(text) {
+  HUD.cardbig.textContent = text;
+  HUD.cardbig.style.opacity = '1';
+  setTimeout(() => { HUD.cardbig.style.opacity = '0'; }, 2600);
+}
+
+/* =====================================================================
+ * game: cinematics (letterbox, title card, radio intro)
+ * ===================================================================== */
+const CINE = { t: 0, dur: 4, active: false, done: false, typed: false };
+function cinematicStart() {
+  CINE.t = 0; CINE.active = true; CINE.done = false;
+  HUD.cine.classList.remove('hidden');
+  hudRadioBig("MAYDAY MAYDAY, Flight 227, engine fire, we're going down.");
+  setTimeout(() => { hudShowCard('LAST FLIGHT'); }, 1200);
+}
+function cinematicEnd() {
+  CINE.active = false; CINE.done = true;
+  HUD.cine.classList.add('hidden');
+  HUD['radio-big'].textContent = '';
+  events.emit('cinematicDone', {});
+}
+
+/* =====================================================================
+ * game: scoring (pure grading and persistence)
+ * ===================================================================== */
+function scoreRun(run) {
+  let score = run.jets * 500 + Math.round(run.hull * 10) + Math.round(run.heroHp * 5) + Math.round(run.accuracy * 1000);
+  score += Math.max(0, Math.round((600 - run.time) * 5));
+  if (run.sink < 4) score += 1000;
+  else if (run.sink < 10) score += 300;
+  const grade = score >= 6000 ? 'S' : score >= 4200 ? 'A' : score >= 2500 ? 'B' : 'C';
+  return { score: Math.round(score), grade };
+}
+function loadBest(key) {
+  try { return parseInt(localStorage.getItem(key) || '0', 10) || 0; } catch (e) { return 0; }
+}
+function saveBest(key, v) {
+  try { localStorage.setItem(key, String(v)); } catch (e) { /* storage unavailable */ }
+}
+
+/* =====================================================================
+ * game: debug panel (lil-gui bound to CONFIG, toggled with backquote)
+ * ===================================================================== */
+let gui = null;
+function debugInit() {
+  gui = new GUI({ title: 'LAST FLIGHT · debug' });
+  const f1 = gui.addFolder('hero'); f1.add(CONFIG.hero, 'thrust', 10, 120); f1.add(CONFIG.hero, 'vCruise', 20, 120); f1.add(CONFIG.hero, 'vBoost', 80, 260);
+  f1.add(CONFIG.hero, 'turnSlow', 0.5, 4); f1.add(CONFIG.hero, 'turnFast', 0.2, 2);
+  const f2 = gui.addFolder('holding'); f2.add(CONFIG.holding, 'brakeMax', 0, 20); f2.add(CONFIG.holding, 'stressBrake', 0, 15); f2.add(CONFIG.holding, 'gravity', 0, 20);
+  const f3 = gui.addFolder('camera'); f3.add(CONFIG.camera, 'distSuper', 5, 30); f3.add(CONFIG.camera, 'fovBoost', 0, 60);
+  gui.domElement.style.zIndex = 50;
+  gui.hide();
+}
+function debugToggle() { if (!gui) return; if (gui._hidden) gui.show(); else gui.hide(); gui._hidden = !gui._hidden; }
+
+/* =====================================================================
+ * selftest — runs the pure simulation sections; no renderer, no DOM in the code under test
+ * ===================================================================== */
+const SELF = { lines: [], pass: 0, fail: 0 };
+function check(name, ok, detail) {
+  SELF.lines.push((ok ? 'PASS' : 'FAIL') + '  ' + name + '  ' + detail);
+  if (ok) SELF.pass++; else SELF.fail++;
+}
+function flightChecks() {
+  const H = CONFIG.hero;
+  const r0 = turnRateAt(0), r190 = turnRateAt(190);
+  check('turn rate at 190 m/s < turn rate at 0 m/s', r190 < r0, `r0=${r0.toFixed(3)} r190=${r190.toFixed(3)} rad/s`);
+  // terminal cruise
+  const g = emptyGrid();
+  const h1 = createHero(); h1.mode = 'flight'; h1.pos.set(0, 1000, 0); h1.vel.set(0, 0, 0);
+  h1.aimYaw = 0; h1.aimPitch = 0;
+  const inpCruise = { fwd: 1, back: 0, side: 0, up: false, down: false, boost: false };
+  for (let i = 0; i < 120 * 30; i++) heroStep(h1, inpCruise, FIXED, g);
+  const vc = h1.vel.length();
+  const cOk = Math.abs(vc - H.vCruise) / H.vCruise < 0.05;
+  check('terminal cruise within 5% of CONFIG', cOk, `v=${vc.toFixed(2)} target=${H.vCruise}`);
+  // terminal boost
+  const h2 = createHero(); h2.mode = 'flight'; h2.pos.set(0, 1000, 0); h2.vel.set(0, 0, 0); h2.aimYaw = 0; h2.aimPitch = 0;
+  h2.boost = 1;
+  const inpBoost = { fwd: 1, back: 0, side: 0, up: false, down: false, boost: true };
+  for (let i = 0; i < 120 * 3.9; i++) heroStep(h2, inpBoost, FIXED, g);
+  const vb = h2.vel.length();
+  const bOk = Math.abs(vb - H.vBoost) / H.vBoost < 0.05;
+  check('terminal boost within 5% of CONFIG', bOk, `v=${vb.toFixed(2)} target=${H.vBoost}`);
+  // 10,000 random steps: no NaN
+  const h3 = createHero(); h3.pos.set(0, 800, 0);
+  let nan = false;
+  for (let i = 0; i < 10000; i++) {
+    const inp = { fwd: Math.random() < 0.5 ? 1 : 0, back: Math.random() < 0.2 ? 1 : 0, side: Math.floor(Math.random() * 3) - 1,
+      up: Math.random() < 0.1, down: Math.random() < 0.1, boost: Math.random() < 0.3 };
+    h3.aimYaw = Math.sin(i * 0.01) * 3; h3.aimPitch = Math.sin(i * 0.013) * 1.2;
+    heroStep(h3, inp, FIXED, g);
+    if (!finite(h3.pos) || !finite(h3.vel)) { nan = true; break; }
+  }
+  check('10,000 random input steps produce no NaN', !nan, nan ? 'NaN found' : 'all finite');
+}
+function collisionChecks() {
+  const g = makeGrid(4, 48, 14, 1);
+  g.h[1 * 4 + 1] = 200; // one tower
+  const x0 = g.ox + 48 + 7, z0 = g.oz + 48 + 7;
+  // a sphere that overlaps the AABB must be pushed fully outside
+  const pos = new V3(x0 + 10, 100, z0 + 10), vel = new V3(0, 0, 0);
+  const r = CONFIG.hero.radius;
+  COLLIDE.resolve(g, pos, vel, r, 0.25);
+  const cx = clamp(pos.x, x0, g.ox + 2 * 48 - 7), cy = clamp(pos.y, 0, 200), cz = clamp(pos.z, z0, g.oz + 2 * 48 - 7);
+  const d = Math.hypot(pos.x - cx, pos.y - cy, pos.z - cz);
+  check('overlapping sphere pushed fully outside AABB', d >= r - 1e-3, `distance=${d.toFixed(3)} r=${r}`);
+  // grid lookup agrees with brute force on 1000 random points
+  const big = buildCityGrid(7);
+  let agree = 0;
+  for (let k = 0; k < 1000; k++) {
+    const x = rnd(big.ox, -big.ox), z = rnd(big.oz, -big.oz);
+    const fast = footprintHeight(big, x, z);
+    let slow = 0;
+    const m = big.street * 0.5;
+    for (let i = 0; i < big.n; i++) for (let j = 0; j < big.n; j++) {
+      const x0b = big.ox + i * big.cell + m, x1b = big.ox + (i + 1) * big.cell - m;
+      const z0b = big.oz + j * big.cell + m, z1b = big.oz + (j + 1) * big.cell - m;
+      if (x >= x0b && x <= x1b && z >= z0b && z <= z1b) slow = big.h[i * big.n + j];
+    }
+    if (fast === slow) agree++;
+  }
+  check('grid lookup agrees with brute force on 1000 random points', agree === 1000, `agree=${agree}/1000`);
+}
+function holdingChecks() {
+  const K = CONFIG.holding;
+  // 8 m/s^2 brake from 110 m/s: under 30 m/s within 12 s
+  const p = createAirliner();
+  p.held = true; p.vel.set(-110, 0, 0); p.yaw = -Math.PI / 2; p.pitch = 0;
+  const hero = createHero();
+  const idle = { fwd: 0, back: 0, side: 0, up: false, down: false };
+  for (let i = 0; i < 120 * 12; i++) holdingStep(p, hero, idle, FIXED, { brakeOverride: 8 });
+  const sp = p.vel.length();
+  check('8 m/s^2 brake from 110 m/s reaches < 30 m/s within 12 s', sp < 30, `speed=${sp.toFixed(2)} m/s`);
+  // 10 m/s^2 sustained crosses stress 70
+  const p2 = createAirliner();
+  p2.held = true; p2.vel.set(-110, 0, 0); p2.yaw = -Math.PI / 2;
+  const hero2 = createHero();
+  let crossed = -1;
+  for (let i = 0; i < 120 * 10; i++) {
+    holdingStep(p2, hero2, idle, FIXED, { brakeOverride: 10 });
+    if (p2.stress >= K.buckleAt && crossed < 0) crossed = i / 120;
+  }
+  check('10 m/s^2 sustained crosses stress 70', crossed >= 0, `crossed at ${crossed.toFixed(2)} s`);
+  // tail grab tears at 1.5 s and drops hull by 30
+  const p3 = createAirliner();
+  p3.tailGrabbed = true;
+  let torn = -1;
+  for (let i = 0; i < 120 * 3; i++) {
+    if (tailTimerStep(p3, FIXED) && torn < 0) torn = i / 120;
+  }
+  const hullDrop = CONFIG.airliner.hpMax - p3.hull;
+  check('tail grab tears at 1.5 s and drops hull by 30', Math.abs(torn - 1.5) < 0.02 && hullDrop === 30, `torn at ${torn.toFixed(2)} s, hull drop ${hullDrop}`);
+}
+function missionChecks() {
+  const m = createMission();
+  const order = ['intercept', 'catch', 'arrest', 'setdown', 'results'];
+  missionEnter(m, 'intercept');
+  let snap = { heroNearPlane: 2000, holding: false, planeNearStadium: false, planeSpeed: 0, touchdownOver: false };
+  missionStep(m, snap, 0.1);
+  snap.heroNearPlane = 1200; missionStep(m, snap, 0.1);
+  snap.holding = true; missionStep(m, snap, 0.1);
+  snap.planeNearStadium = true; snap.planeSpeed = 10; missionStep(m, snap, 0.1);
+  snap.touchdownOver = true; missionStep(m, snap, 0.1);
+  const seq = m.history.slice(1);
+  const ok = JSON.stringify(seq) === JSON.stringify(order);
+  check('every phase transition happens in order', ok, `history=${seq.join(' > ')}`);
+  // every fail state produces its reason
+  const reasons = ['FLIGHT 227 IMPACTED DOWNTOWN', 'HULL FAILURE', 'YOU FELL', 'CRASH TOUCHDOWN'];
+  let allReasons = true;
+  for (const r of reasons) {
+    const mm = createMission(); missionEnter(mm, 'arrest');
+    missionFail(mm, r);
+    if (mm.reason !== r || mm.phase !== 'failed') allReasons = false;
+  }
+  check('every fail state produces its reason', allReasons, `${reasons.length} reasons checked`);
+  // retry restores the phase checkpoint
+  const mr = createMission(); missionEnter(mr, 'intercept'); missionEnter(mr, 'catch');
+  missionFail(mr, 'YOU FELL');
+  const back = missionRetry(mr);
+  check('retry restores the phase checkpoint', back === 'catch' && mr.phase === 'catch', `checkpoint=${back}`);
+}
+function runSelfTests() {
+  flightChecks();
+  collisionChecks();
+  holdingChecks();
+  missionChecks();
+  const summary = `${SELF.pass} passed, ${SELF.fail} failed`;
+  const text = 'LAST FLIGHT · self-tests\n\n' + SELF.lines.join('\n') + '\n\n' + summary;
+  HUD.selftest.textContent = text;
+  HUD.selftest.classList.remove('hidden');
+  console.log(text);
+  return SELF.fail === 0;
+}
+
+/* =====================================================================
+ * main — bootstrap: create systems, start the loop
+ * ===================================================================== */
+const params = new URLSearchParams(location.search);
+const SELFTEST = params.has('selftest');
+
+const canvas = document.getElementById('gl');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, CONFIG.render.pixelCap));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.NoToneMapping;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0xf0b48a, 900, 9000);
+const camera = new THREE.PerspectiveCamera(72, window.innerWidth / window.innerHeight, 0.5, 30000);
+
+hudInit();
+
+if (SELFTEST) {
+  HUD.title.classList.add('hidden');
+  runSelfTests();
+} else {
+  // ----- sky, sun and environment -----
+  const sunElev = CONFIG.sun.elevationDeg * DEG, sunAz = CONFIG.sun.azimuthDeg * DEG;
+  const sunDir = new V3(Math.cos(sunElev) * Math.sin(sunAz), Math.sin(sunElev), Math.cos(sunElev) * Math.cos(sunAz)).normalize();
+  const sky = new Sky();
+  sky.scale.setScalar(450000);
+  scene.add(sky);
+  const skyU = sky.material.uniforms;
+  skyU['turbidity'].value = 8;
+  skyU['rayleigh'].value = 2.5;
+  skyU['mieCoefficient'].value = 0.02;
+  skyU['mieDirectionalG'].value = 0.85;
+  skyU['sunPosition'].value.copy(sunDir);
+  const envScene = new THREE.Scene();
+  const envSky = new Sky(); envSky.scale.setScalar(450000); envScene.add(envSky);
+  envSky.material.uniforms['sunPosition'].value.copy(sunDir);
+  envSky.material.uniforms['turbidity'].value = 8;
+  envSky.material.uniforms['rayleigh'].value = 2.5;
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromScene(envScene, 0.02).texture;
+
+  // sun disc and god-ray source
+  const sunMesh = new THREE.Mesh(new THREE.SphereGeometry(40, 24, 16), new THREE.MeshBasicMaterial({ color: 0xfff1d0 }));
+  sunMesh.position.copy(sunDir).multiplyScalar(5000);
+  scene.add(sunMesh);
+  const sunLight = new THREE.PointLight(0xfff1d0, 0, 0);
+  sunLight.position.copy(sunMesh.position);
+  scene.add(sunLight);
+  const flareTex = radialTexture(128, 0.0, 'rgba(255,220,160,1)');
+  const ringTex = radialTexture(128, 0.7, 'rgba(180,220,255,0.6)');
+  const lensflare = new Lensflare();
+  lensflare.addElement(new LensflareElement(flareTex, 800, 0, new THREE.Color(0xffe0a0)));
+  lensflare.addElement(new LensflareElement(ringTex, 120, 0.3, new THREE.Color(0xa0d0ff)));
+  lensflare.addElement(new LensflareElement(ringTex, 220, 0.55, new THREE.Color(0xffc080)));
+  lensflare.addElement(new LensflareElement(ringTex, 90, 0.8, new THREE.Color(0xffffff)));
+  lensflare.addElement(new LensflareElement(ringTex, 160, 1.05, new THREE.Color(0xffe6b0)));
+  sunLight.add(lensflare);
+
+  // shadow-casting sun
+  const sunShadow = new THREE.DirectionalLight(0xfff0d8, 2.4);
+  sunShadow.position.copy(sunDir).multiplyScalar(600);
+  sunShadow.castShadow = true;
+  sunShadow.shadow.mapSize.set(2048, 2048);
+  const sc = sunShadow.shadow.camera;
+  sc.left = -200; sc.right = 200; sc.top = 200; sc.bottom = -200; sc.near = 50; sc.far = 1400;
+  sunShadow.shadow.bias = -0.0004;
+  scene.add(sunShadow); scene.add(sunShadow.target);
+  scene.add(new THREE.HemisphereLight(0xffd9b0, 0x2a2f38, 0.6));
+
+  // ----- world -----
+  const grid = buildCityGrid(1227);
+  const city = buildCity(scene, grid);
+  const clouds = buildClouds(scene);
+  const stadium = buildStadium(scene);
+  setScoreboard(stadium, 'FLIGHT 227', 'ON APPROACH', '#ffd166');
+  explosionInit(scene);
+  const hero = createHero();
+  hero.pos.set(300, 150, 0);
+  const heroRig = buildHeroRig(scene);
+  const plane = createAirliner();
+  const planeRig = buildAirlinerRig(scene);
+  const jets = []; for (let i = 0; i < CONFIG.jet.poolSize; i++) { const j = createJet(i); j.id = i; jets.push(j); }
+  const jetRigs = buildJetRigs(scene);
+  const missiles = []; for (let i = 0; i < CONFIG.missile.poolSize; i++) missiles.push(createMissile(i));
+  const missileRigs = buildMissileRigs(scene);
+  const wrecks = []; for (let i = 0; i < 6; i++) wrecks.push(createWreck(i));
+  const wreckRigs = buildWreckRigs(scene);
+  const tracers = buildTracers(scene);
+  scene.add(PART.points);
+  const beamMat = new THREE.MeshBasicMaterial({ color: 0xffffff, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false });
+  const beamGlowMat = new THREE.MeshBasicMaterial({ color: 0xff3030, blending: THREE.AdditiveBlending, transparent: true, opacity: 0.6, depthWrite: false });
+  const beams = [0, 1].map(() => {
+    const core = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 1, 8), beamMat);
+    const glow = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.25, 1, 10), beamGlowMat);
+    core.visible = false; glow.visible = false; scene.add(core); scene.add(glow);
+    return { core, glow };
+  });
+  const eyeLight = new THREE.PointLight(0xff4040, 0, 12, 2); scene.add(eyeLight);
+  const hitLight = new THREE.PointLight(0xff3020, 0, 20, 2); scene.add(hitLight);
+
+  // ----- post-processing -----
+  const composer = new EffectComposer(renderer, { frameBufferType: THREE.HalfFloatType, multisampling: 4 });
+  const godRays = new GodRaysEffect(camera, sunMesh, { density: 0.96, decay: 0.92, weight: 0.3, samples: 60, blur: true });
+  const bloom = new BloomEffect({ mipmapBlur: true, luminanceThreshold: 0.8, intensity: 0.9, radius: 0.6 });
+  const radial = new RadialBlurEffect();
+  const chroma = new ChromaticAberrationEffect({ offset: new THREE.Vector2(0, 0) });
+  const grade = new GradeEffect();
+  const vignette = new VignetteEffect({ darkness: 0.5 });
+  const noise = new NoiseEffect({ premultiply: true });
+  noise.blendMode.opacity.value = 0.03;
+  const tone = new ToneMappingEffect({ mode: ToneMappingMode.ACES_FILMIC });
+  const smaa = new SMAAEffect({ preset: SMAAPreset.HIGH });
+  composer.addPass(new RenderPass(scene, camera));
+  composer.addPass(new EffectPass(camera, godRays, bloom, radial, chroma, grade, vignette, noise, tone, smaa));
+
+  // ----- game state -----
+  const mission = createMission();
+  const chase = createChaseCam(camera);
+  const run = { time: 0, jets: 0, hullStart: CONFIG.airliner.hpMax, accuracy: 0, fireT: 0, onTargetT: 0, sink: 0 };
+  let phaseVisited = false;
+  let transitionFlash = 0;
+  const waveQueue = [];
+  let lastNearMissT = -10;
+  let catchAnimT = 0, slowMoT = 0, timeScale = 1;
+  let lockTarget = null;
+  let freeFly = false;
+  let heatOverheat = 0;
+  let firing = false;
+  let pendingWave = -1;
+  let tailCatchT = 0;
+  let inRadioDone = false;
+  let bestScore = loadBest('lastflight-best');
+  let simT = 0;
+  let spawnTimer = 0;
+  let missileTimer = 0;
+  const aimDirCam = new V3();
+  const laserDir = new V3();
+  const assistDir = new V3();
+  const eyeL = new V3(), eyeR = new V3(), hitP = new V3();
+  const nosePt = new V3(), tailPt = new V3();
+  let waveJetsLeft = 0;
+  let lastHull = plane.hull;
+  let hullRestoreAt = 0;
+
+  // ----- wave spawning -----
+  function spawnWave(index) {
+    const W = CONFIG.waves[index];
+    if (!W) return;
+    const center = index === 0 ? hero.pos : plane.pos;
+    const target = index === 0 ? hero : plane;
+    let n = W.count;
+    let spawned = 0;
+    for (const j of jets) {
+      if (j.alive || spawned >= n) continue;
+      spawnJet(j, center, Math.random() * Math.PI * 2, 1800, 420 + Math.random() * 150, target, index);
+      spawned++;
+    }
+    waveJetsLeft += spawned;
+    mission.waveIndex = index;
+    hudRadio(`WAVE ${index + 1}: ${W.name}, ${spawned} hostiles inbound`);
+    events.emit('waveSpawn', { index, n: spawned });
+  }
+
+  // ----- events -----
+  events.on('boom', ({ big }) => { sfxBoom(); flashScreen(big ? 0.7 : 0.25); });
+  events.on('heroHit', ({ amount, kind }) => {
+    if (amount > 0) {
+      HUD.edge.style.boxShadow = 'inset 0 0 14vmin rgba(255,40,40,0.7)';
+      setTimeout(() => { HUD.edge.style.boxShadow = 'inset 0 0 14vmin rgba(255,40,40,0)'; }, 220);
+      chase.kick = 1; chase.shake = 0.6;
+    }
+    if (kind === 'wall') { chase.shake = 0.8; hudPopup('IMPACT'); }
+    if (kind === 'hardLanding') { chase.shake = 0.8; hudPopup('HARD LANDING'); }
+  });
+  events.on('heroDead', () => { missionFail(mission, 'YOU FELL'); });
+  events.on('missionFailed', ({ reason }) => {
+    HUD.impact.textContent = 'MISSION FAILED — ' + reason;
+    hudShowCard('MISSION FAILED — ' + reason);
+    slowMoT = 2;
+  });
+  events.on('cinematicDone', () => {});
+  events.on('landed', () => { hudPopup('LANDED'); });
+  events.on('launch', () => { PART.emit(hero.pos.x, hero.pos.y - 1.5, hero.pos.z, 0, 2, 0, 0.8, 0.7, 0.5, 6, 0.8, 1, 0, 0.5); });
+
+  function flashScreen(a) {
+    HUD.flash.style.transition = 'opacity 0.05s';
+    HUD.flash.style.opacity = String(Math.min(0.9, a));
+    setTimeout(() => { HUD.flash.style.transition = 'opacity .4s'; HUD.flash.style.opacity = '0'; }, 60);
+  }
+
+  // ----- input -----
+  function requestCapture() {
+    if (!mouse.locked) canvas.requestPointerLock();
+  }
+  document.addEventListener('pointerlockchange', () => {
+    mouse.locked = document.pointerLockElement === canvas;
+    HUD.hint.classList.toggle('hidden', mouse.locked);
+    if (!mouse.locked && HUD.title.classList.contains('hidden') === false) HUD.hint.classList.remove('hidden');
+  });
+  document.addEventListener('mousemove', (e) => {
+    if (mouse.locked) {
+      hero.aimYaw += e.movementX * input.sensitivity;
+      hero.aimPitch = clamp(hero.aimPitch - e.movementY * input.sensitivity, -85 * DEG, 85 * DEG);
+    }
+  });
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Backquote') { debugToggle(); return; }
+    keys.add(e.code);
+    if (e.code === 'KeyE') mouse.ePressed = true;
+    if (e.code === 'KeyR') mouse.rPressed = true;
+    if (e.code === 'KeyF') { freeFly = !freeFly; hudPopup(freeFly ? 'FREE FLY' : 'MISSION'); }
+    if (e.code === 'BracketLeft') input.sensitivity = Math.max(0.0008, input.sensitivity * 0.9);
+    if (e.code === 'BracketRight') input.sensitivity = Math.min(0.006, input.sensitivity * 1.1);
+    if (e.code === 'Escape' && document.pointerLockElement) document.exitPointerLock();
+    pressedOnce.add('anykey');
+    if (!CINE.done && CINE.active) cinematicEnd();
+  });
+  window.addEventListener('keyup', (e) => {
+    keys.delete(e.code);
+    if (e.code === 'KeyE') mouse.ePressed = false;
+    if (e.code === 'KeyR') mouse.rPressed = false;
+  });
+  window.addEventListener('mousedown', (e) => {
+    if (e.button === 0) { mouse.lmb = true; }
+    if (e.button === 2) { mouse.rmb = true; mouse.rmbPressed = true; }
+    audioInit();
+    if (HUD.title && !HUD.title.classList.contains('hidden')) {
+      HUD.title.classList.add('hidden');
+      HUD['hud-main'].classList.remove('hidden');
+      requestCapture();
+      cinematicStart();
+      missionEnter(mission, 'cinematic');
+      audio.ctx.resume && audio.ctx.resume();
+    } else {
+      requestCapture();
+    }
+  });
+  window.addEventListener('mouseup', (e) => {
+    if (e.button === 0) mouse.lmb = false;
+    if (e.button === 2) { mouse.rmb = false; mouse.rmbPressed = false; }
+  });
+  window.addEventListener('contextmenu', (e) => e.preventDefault());
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    composer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  // ----- fixed update -----
+  function fixedUpdate(dt) {
+    simT += dt;
+    run.time += mission.phase === 'title' || mission.phase === 'cinematic' ? 0 : dt;
+    if (mission.phase === 'results' || mission.phase === 'failed') return;
+    const inp = readInput();
+    // cinematic: the hero hovers over downtown while the letterbox runs
+    if (mission.phase === 'cinematic') {
+      if (CINE.active) { CINE.t += dt; if (CINE.t >= CINE.dur) cinematicEnd(); }
+      if (CINE.done || !CINE.active) {
+        missionEnter(mission, 'intercept');
+        hudShowCard('INTERCEPT FLIGHT 227');
+        hudRadio('Hostiles inbound. Intercept the airliner.');
+        spawnWave(0);
+      }
+      return;
+    }
+    // laser: fire while LMB held, heat ramp, overheat lockout
+    if (heatOverheat > 0) { heatOverheat -= dt; if (heatOverheat <= 0) { hero.heat = 0; } }
+    const canFire = inp.fire && heatOverheat <= 0 && hero.alive;
+    firing = canFire;
+    if (canFire) hero.heat = Math.min(100, hero.heat + CONFIG.laser.heatRate * dt);
+    else if (heatOverheat <= 0) hero.heat = Math.max(0, hero.heat - CONFIG.laser.coolRate * dt);
+    if (canFire && hero.heat >= 100) { heatOverheat = CONFIG.laser.overheatTime; hero.heat = 100; hudPopup('OVERHEAT'); firing = false; }
+    // lock-on: RMB toggles
+    if (inp.lock) {
+      if (lockTarget) lockTarget = null;
+      else {
+        let best = null, bestA = CONFIG.laser.lockDeg * DEG;
+        camera.getWorldDirection(aimDirCam);
+        for (const j of jets) {
+          if (!j.alive) continue;
+          T1.copy(j.pos).sub(camera.position).normalize();
+          const a = T1.angleTo(aimDirCam);
+          if (a < bestA) { bestA = a; best = j; }
+        }
+        lockTarget = best;
+      }
+      mouse.rmbPressed = false;
+    }
+    if (lockTarget) {
+      if (!lockTarget.alive) lockTarget = null;
+      else {
+        camera.getWorldDirection(aimDirCam);
+        T1.copy(lockTarget.pos).sub(camera.position).normalize();
+        if (T1.angleTo(aimDirCam) > CONFIG.laser.breakDeg * DEG) lockTarget = null;
+      }
+    }
+    // hero flight, or grabbing
+    if (mouse.ePressed && !freeFly) {
+      mouse.ePressed = false;
+      tryGrab();
+    }
+    if (inp.restart) { restartMission(true); return; }
+    if (inp.retry) { retryPhase(); mouse.rPressed = false; return; }
+    if (hero.mode === 'holding') {
+      const sq = holdingStep(plane, hero, inp, dt, null);
+      run.sink = Math.max(run.sink, Math.abs(plane.vel.y));
+      plane.stress = clamp(plane.stress, 0, 100);
+      if (plane.hull <= 0 && !plane.down) { plane.down = true; missionFail(mission, 'HULL FAILURE — WING SNAPPED'); }
+    } else {
+      heroStep(hero, inp, dt, grid);
+      if (hero.pos.y < -10) { hero.pos.y = 100; }
+    }
+    heroRegen(hero, dt, simT);
+    // hero damage from building and ground events already handled in heroStep
+    // airliner
+    const planeWasHeld = plane.held;
+    if (!plane.held && !plane.down) airlinerStep(plane, dt);
+    if (plane.down) airlinerStep(plane, dt);
+    // tail grab timer
+    if (tailTimerStep(plane, dt)) {
+      hudPopup('TAIL TORN OFF');
+      sfxGroan(1.4); explode(plane.pos.clone().add(new V3(0, 0, 0)), false);
+      run.sink = 0;
+      hero.stunT = CONFIG.hero.stunTime;
+      hero.vel.set(-30, 10, 0);
+      hero.mode = 'stunned';
+      plane.tailGrabbed = false;
+      hudRadio('Tail section gone. Re-catch at the nose.');
+    }
+    // impacts for an unheld airliner
+    if (!plane.held && !plane.down && plane.pos.y > -5) {
+      if (COLLIDE.overlaps(grid, plane.pos, plane.radius)) {
+        plane.down = true;
+        explode(plane.pos.clone(), true); sfxExplosion(0);
+        missionFail(mission, 'FLIGHT 227 IMPACTED DOWNTOWN');
+      }
+    }
+    if (plane.pos.y < surfaceAt(grid, plane.pos.x, plane.pos.z) + 4 && !plane.held && plane.t > 1 && !plane.down) {
+      plane.down = true;
+      explode(plane.pos.clone(), true);
+      missionFail(mission, 'FLIGHT 227 IMPACTED THE GROUND');
+    }
+    // hull damage from stress, plus a damage pop when hull drops
+    if (plane.hull < lastHull) { hudPopup('HULL −' + (lastHull - plane.hull).toFixed(0)); lastHull = plane.hull; }
+    // catch and phase advancement
+    const dPlaneHero = hero.pos.distanceTo(plane.pos);
+    if (mission.phase === 'intercept') {
+      if (!waveQueue.includes(1) && dPlaneHero < 1500) { waveQueue.push(1); }
+      if (waveQueue.includes(1) && !mission.wave2) {
+        mission.wave2 = true; spawnWave(1);
+      }
+    }
+    // jets: AI, cannon, lasers, kills
+    let jetsAlive = 0;
+    const lasering = firing;
+    for (const j of jets) {
+      if (!j.alive) continue;
+      jetsAlive++;
+      const tgt = j.target && j.target.alive !== false ? j.target : hero;
+      const fired = jetStep(j, tgt, dt, grid, Math.random);
+      if (fired) fireTracer(j, tgt);
+    }
+    // laser: on-target and damage
+    let firedThisFrame = false;
+    if (lasering && mission.phase !== 'results') {
+      camera.getWorldDirection(laserDir);
+      assistAim(camera.position, laserDir, jets, assistDir);
+      laserDir.copy(assistDir);
+      const targets = [];
+      for (const j of jets) if (j.alive) targets.push({ pos: j.pos, radius: j.radius, alive: true, kind: 'jet', index: j.index, ref: j });
+      for (const mi of missiles) if (mi.alive) targets.push({ pos: mi.pos, radius: mi.radius, alive: true, kind: 'missile', index: mi.index, ref: mi });
+      const hit = laserTrace(camera.position, laserDir, targets, grid, CONFIG.laser.rangeM);
+      hitP.copy(camera.position).addScaledVector(laserDir, hit.dist);
+      run.fireT += dt;
+      if (hit.kind === 'jet' && hit.ref) {
+        run.onTargetT += dt;
+        if (jetLaseredStep(hit.ref, CONFIG.laser.jetDps, dt)) {
+          killJet(hit.ref);
+        }
+      } else if (hit.kind === 'missile' && hit.ref) {
+        run.onTargetT += dt;
+        hit.ref.hp -= CONFIG.laser.missileDps * dt;
+        if (hit.ref.hp <= 0) { hit.ref.alive = false; explode(hit.ref.pos.clone(), false); }
+      } else if (hit.kind === 'building' || hit.kind === 'ground') {
+        PART.emit(hitP.x, hitP.y, hitP.z, rnd(-8, 8), rnd(2, 10), rnd(-8, 8), 1, 0.6, 0.3, rnd(0.6, 1.4), 0.8, rnd(0.2, 0.4), 9.8, 0.1);
+      }
+      if (Math.random() < 0.6) {
+        PART.emit(hitP.x, hitP.y, hitP.z, rnd(-14, 14), rnd(2, 16), rnd(-14, 14), 1, 0.7, 0.3, rnd(0.5, 1.2), 0.9, rnd(0.2, 0.4), 9.8, 0.2);
+      }
+      hitLight.position.copy(hitP); hitLight.intensity = 30;
+      firedThisFrame = true;
+    } else {
+      hitLight.intensity = Math.max(0, hitLight.intensity - dt * 200);
+    }
+    // missiles: fire and homing
+    missileTimer += dt;
+    if (missileTimer > CONFIG.missile.every && mission.phase === 'catch' || mission.phase === 'arrest' || mission.phase === 'intercept') {
+      if (missileTimer > CONFIG.missile.every) {
+        const m = missiles.find((x) => !x.alive);
+        const shooter = jets.find((x) => x.alive && x.state === 'attack');
+        if (m && shooter && shooter.pos.distanceTo(hero.pos) > CONFIG.missile.minRange) {
+          spawnMissile(m, shooter.pos, plane.pos.distanceTo(hero.pos) < 800 && mission.phase !== 'intercept' ? plane : hero);
+          hudRadio('Missile away');
+        }
+        missileTimer = 0;
+      }
+    }
+    for (const m of missiles) {
+      if (!m.alive) continue;
+      const r = missileStep(m, dt);
+      if (r === 'hit') {
+        if (m.target === hero) { heroDamage(hero, CONFIG.hero.missileDmg, simT); }
+        else { plane.hull = Math.max(0, plane.hull - CONFIG.airliner.missileDmg); }
+        explode(m.pos.clone(), false);
+        hudPopup('MISSILE HIT');
+      } else if (r === 'miss') {
+        explode(m.pos.clone(), false);
+      }
+    }
+    // tracers: move, hit tests on hero and plane
+    for (const t of tracers.items) {
+      if (!t.live) continue;
+      t.life -= dt;
+      if (t.life <= 0) { t.live = false; continue; }
+      t.pos.addScaledVector(t.vel, dt);
+      if (t.pos.distanceTo(hero.pos) < 1.4 && hero.alive) { heroDamage(hero, CONFIG.hero.tracerDmg, simT); t.live = false; chase.kick = 0.5; }
+      else if (plane.held && t.pos.distanceTo(plane.pos) < 14) { plane.hull = Math.max(0, plane.hull - CONFIG.airliner.tracerDmg); t.live = false; }
+    }
+    // wrecks
+    for (const w of wrecks) {
+      if (!w.alive) continue;
+      const r = wreckStep(w, dt, grid);
+      if (r === 'land') { explode(w.pos.clone(), false); }
+      if (Math.random() < 0.6) PART.emit(w.pos.x, w.pos.y, w.pos.z, rnd(-2, 2), rnd(0, 3), rnd(-2, 2), 0.3, 0.3, 0.3, rnd(4, 8), 0.5, rnd(2, 4), -0.5, 0.2);
+      if (Math.random() < 0.4) PART.emit(w.pos.x, w.pos.y, w.pos.z, rnd(-3, 3), rnd(0, 6), rnd(-3, 3), 1, 0.4, 0.1, rnd(3, 6), 0.8, rnd(0.2, 0.5), 2, 0.3);
+    }
+    // waves: clear and advance
+    const liveJets = jets.filter((j) => j.alive).length;
+    if (liveJets === 0 && mission.waveIndex >= 0 && waveJetsLeft <= 0) {
+      if (mission.waveIndex === 1 && mission.phase === 'catch' && !mission.wave3) { mission.wave3 = true; }
+    }
+    if (liveJets === 0 && waveJetsLeft > 0) waveJetsLeft = 0;
+    // catch: three jets attack the airliner; grabbing the nose enters holding
+    if (mission.phase === 'catch' && !mission.catchStarted) { mission.catchStarted = true; spawnWave(1); }
+    if (mission.phase === 'arrest' && !mission.arrestWaves) {
+      mission.arrestWaves = true; spawnWave(2);
+    }
+    if (mission.phase === 'arrest' && mission.arrestWaves && !mission.arrest2 && (simT > 40 || plane.hull < 50)) {
+      mission.arrest2 = true; spawnWave(3);
+    }
+    // kill counting handled in killJet
+    // catch animation timers
+    if (catchAnimT > 0) catchAnimT -= dt;
+    if (slowMoT > 0) slowMoT -= dt;
+    timeScale = slowMoT > 0 ? 0.3 : (catchAnimT > 0 ? 0.3 : 1);
+    // phase advancement with a snapshot
+    const snap = {
+      heroNearPlane: dPlaneHero,
+      holding: hero.mode === 'holding',
+      planeNearStadium: plane.pos.distanceTo(new V3(CONFIG.stadium.x, 0, CONFIG.stadium.z)) < 400,
+      planeSpeed: Math.hypot(plane.vel.x, plane.vel.y, plane.vel.z),
+      touchdownOver: mission.touchdownDone === true,
+    };
+    if (mission.phase === 'arrest' && plane.pos.x < CONFIG.stadium.x - 300) {
+      missionFail(mission, 'PLANE PASSED THE STADIUM');
+    }
+    missionStep(mission, snap, dt);
+    if (mission.phase === 'results') finishRun(true);
+    if (mission.failed && mission.phase === 'failed') finishRun(false);
+  }
+
+  function tryGrab() {
+    const N = CONFIG.airliner;
+    grabPoints(plane, nosePt, tailPt);
+    const dN = hero.pos.distanceTo(nosePt), dT = hero.pos.distanceTo(tailPt);
+    const sp = hero.vel.distanceTo(plane.vel);
+    if (sp > CONFIG.airliner.speedMatch) { hudPopup('MATCH SPEED'); return; }
+    if (dT < N.catchRange && !plane.tailTear && !plane.held) {
+      plane.tailGrabbed = true; plane.tailGrabT = 0; catchAnimT = 0.8; slowMoT = 1; sfxGroan(1);
+      hudRadio('Tail grabbed. Unstable. Let go or go to the nose.');
+      chase.wide = 1;
+      return;
+    }
+    if (dN < N.catchRange && (!plane.held)) {
+      plane.held = true; plane.tailGrabbed = false; plane.tailGrabT = 0;
+      hero.mode = 'holding'; catchAnimT = 0.8; slowMoT = 1; sfxGroan(1.2); sfxClunk();
+      hudRadio('Nose secured. Push back and lift.');
+      chase.wide = 1; chase.shake = 0.6;
+      if (!mission.catchDone) { mission.catchDone = true; }
+    }
+  }
+
+  function killJet(j) {
+    j.alive = false;
+    run.jets++;
+    mission.jetsKilled++;
+    explode(j.pos.clone(), true);
+    chase.kick = 0.6;
+    // wreck: tumbling, smoke trail, explodes again where it lands
+    const w = wrecks.find((x) => !x.alive);
+    if (w) {
+      w.alive = true; w.pos.copy(j.pos); w.vel.copy(j.vel).multiplyScalar(0.6);
+      w.spin.set(rnd(-2, 2), rnd(-2, 2), rnd(-2, 2));
+    }
+    hudPopup('SPLASH ONE');
+    if (waveJetsLeft > 0) waveJetsLeft--;
+    events.emit('jetKilled', { index: j.index });
+  }
+  function fireTracer(j, tgt) {
+    sfxCannon();
+    const t = tracers.items.find((x) => !x.live);
+    if (!t) return;
+    t.live = true; t.life = 1.5;
+    t.pos.copy(j.pos);
+    T1.copy(tgt.pos).sub(j.pos).normalize();
+    t.vel.copy(T1).multiplyScalar(CONFIG.jet.cannonSpeed);
+  }
+
+  function restartMission(full) {
+    if (full) {
+      for (const j of jets) j.alive = false;
+      for (const m of missiles) m.alive = false;
+      for (const w of wrecks) w.alive = false;
+      plane.down = false; plane.held = false; plane.hull = CONFIG.airliner.hpMax;
+      plane.stress = 0; plane.pitchBias = 0; plane.sinkExtra = 0; plane.tailTear = false; plane.tailGrabbed = false;
+      plane.t = 0; plane.pos.set(CONFIG.airliner.spawnX, CONFIG.airliner.altitude, 0);
+      plane.yaw = -Math.PI / 2; plane.pitch = 0; plane.roll = 0;
+      hero.pos.set(300, 150, 0); hero.vel.set(0, 0, 0); hero.hp = CONFIG.hero.hpMax; hero.alive = true; hero.mode = 'hover'; hero.stunT = 0;
+      hero.boost = 1; hero.heat = 0; heatOverheat = 0;
+      waveJetsLeft = 0;
+      run.jets = 0; run.time = 0; run.fireT = 0; run.onTargetT = 0;
+      lastHull = plane.hull;
+      mission.reason = ''; mission.failed = false; mission.won = false;
+      mission.wave2 = mission.wave3 = mission.catchStarted = mission.catchDone = mission.arrestWaves = mission.arrest2 = mission.touchdownDone = false;
+      mission.jetsKilled = 0; mission.history = ['title'];
+      missionEnter(mission, 'intercept');
+      spawnWave(0);
+      HUD.results.classList.add('hidden');
+      HUD.impact.textContent = '';
+      hudPopup('RESTART');
+    }
+  }
+  function retryPhase() {
+    if (!mission.failed && mission.phase !== 'failed') return;
+    const ph = missionRetry(mission);
+    if (ph === 'intercept') restartMission(true);
+    else {
+      mission.failed = false;
+      plane.down = false;
+      hero.alive = true; hero.hp = CONFIG.hero.hpMax; hero.mode = 'hover';
+      HUD.impact.textContent = '';
+      hudPopup('RETRY ' + ph.toUpperCase());
+    }
+  }
+
+  function finishRun(won) {
+    if (!won) {
+      HUD.results.classList.remove('hidden');
+      HUD.results.innerHTML = `<div class="card"><div id="fail">MISSION FAILED — ${mission.reason}</div><div>Press R to retry the phase · Shift+R restart</div></div>`;
+      return;
+    }
+    if (HUD.results.classList.contains('hidden') === false) return;
+    const sr = scoreRun({ jets: run.jets, hull: plane.hull, heroHp: hero.hp, accuracy: run.fireT > 0 ? run.onTargetT / run.fireT : 0, time: run.time, sink: run.sink });
+    if (sr.score > bestScore) { bestScore = sr.score; saveBest('lastflight-best', bestScore); }
+    HUD.results.classList.remove('hidden');
+    HUD.results.innerHTML = `<div class="card">
+      <div>218 SOULS SAVED</div>
+      <div class="grade">${sr.grade}</div>
+      <div>TIME ${run.time.toFixed(1)} s · JETS ${run.jets} · HULL ${plane.hull.toFixed(0)} · HERO HP ${hero.hp.toFixed(0)}</div>
+      <div>TOUCHDOWN SINK ${run.sink.toFixed(1)} m/s · LASER ${run.fireT > 0 ? Math.round(100 * run.onTargetT / run.fireT) : 0}%</div>
+      <div>SCORE ${sr.score} · BEST ${bestScore}</div>
+      <div style="opacity:.7;font-size:1.6vmin">R to play again</div>
+    </div>`;
+    events.emit('missionWon', { score: sr.score });
+    mission.won = true;
+  }
+
+  // ----- render-side update -----
+  const tmpAim = new V3();
+  function visualUpdate(dt) {
+    const dtv = Math.min(dt, 0.05);
+    // hero visuals
+    updateHeroVisuals(heroRig, hero, dtv, simT);
+    // eyes and laser beams
+    const eyeIntensity = 0.6 + hero.heat / 100 * 2 + (firing ? 1.2 : 0);
+    heroRig.eyeMat.emissiveIntensity = heatOverheat > 0 ? 0.05 : eyeIntensity;
+    // beams
+    camera.getWorldDirection(laserDir);
+    const beamDir = laserDir;
+    headingVec(hero.aimYaw, T1);
+    heroRig.head.getWorldPosition(T2);
+    rightVec(hero.aimYaw, T3);
+    eyeL.copy(T2).addScaledVector(T3, -0.08); eyeR.copy(T2).addScaledVector(T3, 0.08);
+    const showBeams = firing;
+    for (let i = 0; i < 2; i++) {
+      const b = beams[i];
+      b.core.visible = showBeams; b.glow.visible = showBeams;
+      if (!showBeams) continue;
+      const from = i === 0 ? eyeL : eyeR;
+      const to = hitP;
+      const len = from.distanceTo(to);
+      const mid = T4.copy(from).add(to).multiplyScalar(0.5);
+      const dir = T1.copy(to).sub(from).normalize();
+      const q = new THREE.Quaternion().setFromUnitVectors(new V3(0, 1, 0), dir);
+      b.core.position.copy(mid); b.core.quaternion.copy(q); b.core.scale.set(1, len, 1);
+      b.glow.position.copy(mid); b.glow.quaternion.copy(q); b.glow.scale.set(1, len, 1);
+      b.core.material.opacity = 0.95 * (0.95 + Math.random() * 0.05);
+    }
+    eyeLight.position.copy(eyeL).lerp(eyeR, 0.5);
+    eyeLight.intensity = showBeams ? 10 : 0;
+    // plane visuals
+    updateAirlinerRig(planeRig, plane, dtv, simT, plane.held);
+    planeRig.tailCone.parent && (planeRig.tail.visible = !plane.tailTear);
+    // jets
+    for (let i = 0; i < jets.length; i++) {
+      const j = jets[i], r = jetRigs[i];
+      r.group.visible = j.alive;
+      if (!j.alive) continue;
+      r.group.position.copy(j.pos);
+      T1.copy(j.vel).normalize();
+      const q = new THREE.Quaternion().setFromUnitVectors(new V3(0, 0, -1), T1);
+      q.multiply(new THREE.Quaternion().setFromAxisAngle(new V3(0, 0, 1), j.roll));
+      r.group.quaternion.copy(q);
+      r.after.scale.setScalar(1 + (j.state === 'attack' ? 0.3 : 0.1));
+      r.afterMat.opacity = 0.6 + Math.random() * 0.2;
+    }
+    // missiles
+    for (let i = 0; i < missiles.length; i++) {
+      const m = missiles[i], r = missileRigs[i];
+      r.visible = m.alive;
+      if (!m.alive) continue;
+      r.position.copy(m.pos);
+      T1.copy(m.vel).normalize();
+      r.quaternion.setFromUnitVectors(new V3(0, 0, -1), T1);
+      if (Math.random() < 0.5) PART.emit(m.pos.x, m.pos.y, m.pos.z, rnd(-1, 1), rnd(-1, 1), rnd(-1, 1), 0.8, 0.8, 0.8, rnd(3, 6), 0.6, rnd(1, 2.4), -0.2, 0.1);
+    }
+    // wrecks
+    for (let i = 0; i < wrecks.length; i++) {
+      const w = wrecks[i], r = wreckRigs[i];
+      r.visible = w.alive;
+      if (!w.alive) continue;
+      r.position.copy(w.pos);
+      r.rotation.set(w.rot.x, w.rot.y, w.rot.z);
+    }
+    // tracers
+    let tc = 0;
+    for (const t of tracers.items) {
+      T1.copy(t.vel).normalize();
+      const m4 = new THREE.Matrix4();
+      const q = new THREE.Quaternion().setFromUnitVectors(new V3(0, 0, 1), T1);
+      if (t.live) m4.compose(t.pos, q, new V3(1, 1, 1)); else m4.makeScale(0, 0, 0);
+      tracers.mesh.setMatrixAt(tc++, m4);
+    }
+    tracers.mesh.instanceMatrix.needsUpdate = true;
+    // particles and explosions
+    speedStreaksEmit(hero, camera);
+    boostTrailEmit(hero);
+    if (firing && Math.random() < 0.6) {
+      PART.emit(hitP.x, hitP.y, hitP.z, rnd(-10, 10), rnd(2, 12), rnd(-10, 10), 1, 0.7, 0.3, rnd(0.4, 1), 0.9, rnd(0.2, 0.4), 9.8, 0.2);
+    }
+    if (plane.stress > 70 && Math.random() < 0.35) PART.emit(plane.pos.x, plane.pos.y, plane.pos.z, rnd(-3, 3), rnd(-1, 4), rnd(-3, 3), 0.7, 0.7, 0.7, rnd(4, 8), 0.5, rnd(0.8, 1.6), -0.5, 0.4);
+    if (!plane.down && plane.hull < 100 && Math.random() < 0.9) {
+      // fire on the left engine
+      const eng = new V3(plane.pos.x, plane.pos.y - 2.6, plane.pos.z);
+      PART.emit(eng.x, eng.y, eng.z, rnd(-2, 2), rnd(1, 4), rnd(-2, 2), 1, 0.6, 0.2, rnd(3, 6), 0.9, rnd(0.25, 0.6), -1, 0.8);
+    }
+    explosionsUpdate(dtv, camera);
+    PART.update(dtv);
+    PART.setScale(renderer.domElement.height, camera);
+    // clouds drift
+    clouds.group.rotation.y += dtv * 0.002;
+    // water
+    city.river.material.uniforms.uT.value = simT;
+    // sun shadow follows the hero
+    sunShadow.position.copy(hero.pos).addScaledVector(sunDir, 600);
+    sunShadow.target.position.copy(hero.pos);
+    sunShadow.target.updateMatrixWorld();
+    // camera
+    camera.getWorldDirection(aimDirCam);
+    headingVec(hero.aimYaw, T1);
+    aimVec(hero.aimYaw, hero.aimPitch, tmpAim);
+    if (freeFly) {
+      // free-fly: camera drifts behind the hero with no mission
+      chaseCamUpdate(chase, hero, tmpAim, dtv, lockTarget, 'flight');
+    } else {
+      chaseCamUpdate(chase, hero, tmpAim, dtv, lockTarget, hero.mode === 'holding' ? 'holding' : 'flight');
+    }
+    // lock HUD
+    if (lockTarget && lockTarget.alive) {
+      const v = T2.copy(lockTarget.pos).project(camera);
+      const sx = (v.x * 0.5 + 0.5) * window.innerWidth, sy = (-v.y * 0.5 + 0.5) * window.innerHeight;
+      const dd = Math.round(lockTarget.pos.distanceTo(hero.pos));
+      HUD.lockbox.classList.remove('hidden');
+      HUD.lockbox.style.left = sx + 'px'; HUD.lockbox.style.top = sy + 'px';
+      HUD.lockl.textContent = `BANDIT ${lockTarget.index + 1} · ${dd} m · HP ${Math.max(0, Math.round(lockTarget.hp))}`;
+    } else HUD.lockbox.classList.add('hidden');
+    // arrow to objective
+    const objPos = mission.phase === 'arrest' || mission.phase === 'setdown'
+      ? new V3(CONFIG.stadium.x, 0, CONFIG.stadium.z)
+      : plane.pos;
+    const d = hero.pos.distanceTo(objPos);
+    HUD.objd.textContent = mission.phase === 'arrest' || mission.phase === 'setdown'
+      ? `STADIUM ${(plane.pos.distanceTo(new V3(CONFIG.stadium.x, 0, CONFIG.stadium.z)) / 1000).toFixed(1)} KM`
+      : `${(d / 1000).toFixed(1)} KM`;
+    // grab prompt
+    grabPoints(plane, nosePt, tailPt);
+    const near = hero.pos.distanceTo(nosePt) < CONFIG.airliner.grabRange || hero.pos.distanceTo(tailPt) < CONFIG.airliner.grabRange;
+    HUD.grab.classList.toggle('hidden', !(near && !plane.held && mission.phase === 'catch') && !(plane.held && mission.phase === 'setdown'));
+    HUD.grab.textContent = plane.held ? 'PRESS E TO RELEASE' : (hero.pos.distanceTo(nosePt) < CONFIG.airliner.grabRange ? 'NOSE · PRESS E TO GRAB' : 'TAIL — UNSTABLE · PRESS E');
+    // HUD values
+    const kmh = Math.round(hero.speed * 3.6);
+    HUD.spd.textContent = String(kmh);
+    HUD.spdtier.textContent = `${hero.mode.toUpperCase()} · ${hero.speed < 6 ? 'HOVER' : hero.speed < 65 ? 'CRUISE' : hero.speed < 140 ? 'FAST' : 'SUPERSONIC'}`;
+    HUD.alt.textContent = `ALT ${Math.max(0, Math.round(hero.pos.y - surfaceAt(grid, hero.pos.x, hero.pos.z)))} m`;
+    HUD.hp.style.width = (hero.hp / CONFIG.hero.hpMax * 100).toFixed(0) + '%';
+    HUD.boostbar.style.width = (hero.boost * 100).toFixed(0) + '%';
+    HUD.heatbar.style.width = hero.heat.toFixed(0) + '%';
+    HUD.heatbar.style.background = hero.heat > 75 ? '#ff4d4d' : '#ffb347';
+    HUD.waves.textContent = `WAVE ${Math.max(0, mission.waveIndex + 1)}/12`;
+    HUD.timer.textContent = formatTime(run.time);
+    HUD.score.textContent = `SCORE ${Math.round(run.jets * 500)}`;
+    HUD.kills.textContent = `JETS ${run.jets}`;
+    if (plane.held || mission.phase === 'arrest' || mission.phase === 'setdown') {
+      HUD.br.classList.remove('hidden');
+      HUD.hull.textContent = plane.hull.toFixed(0);
+      HUD.hullbar.style.width = plane.hull.toFixed(0) + '%';
+      HUD.stress.style.width = plane.stress.toFixed(0) + '%';
+      HUD.buckle.classList.toggle('hidden', !plane.buckle);
+      HUD.planespd.textContent = Math.hypot(plane.vel.x, plane.vel.y, plane.vel.z).toFixed(0);
+      const sink = -plane.vel.y;
+      HUD.sinkg.textContent = `SINK ${sink.toFixed(1)} m/s`;
+      HUD.sinkg.style.color = sink < 4 ? '#7dffb0' : sink < 10 ? '#ffd166' : '#ff6b6b';
+      HUD.setdownzone.textContent = mission.phase === 'setdown' ? 'SET-DOWN ZONE · SPEED < 8 m/s' : '';
+    } else HUD.br.classList.add('hidden');
+    // impact countdown
+    if (mission.phase === 'intercept' || mission.phase === 'catch' || mission.phase === 'arrest') {
+      const sinkRate = Math.max(0.1, -plane.vel.y);
+      const ahead = COLLIDE.maxHeightAhead(grid, plane.pos.x, plane.pos.z, plane.vel.x, plane.vel.z, 1200, 48);
+      const alt = Math.max(0, plane.pos.y - ahead);
+      const secs = Math.max(0, alt / sinkRate);
+      const clear = ahead < plane.pos.y - 30;
+      HUD.impact.textContent = plane.held ? `IMPACT IN ${formatMmSs(secs)}` : `IMPACT IN ${formatMmSs(secs)}`;
+      HUD.impact.classList.toggle('ok', clear);
+      HUD.impact.style.color = secs < 30 && !clear ? '#ff6b6b' : '';
+    }
+    // radio big text while cinematic
+    HUD['hud-main'].style.opacity = mission.phase === 'cinematic' ? '0.2' : '1';
+    // edge: low HP and missile warnings
+    HUD.edge.style.boxShadow = hero.hp < 30 ? 'inset 0 0 14vmin rgba(255,40,40,0.5)' : 'inset 0 0 14vmin rgba(255,40,40,0)';
+    // free fly flag
+    HUD.missile.classList.toggle('hidden', !missiles.some((m) => m.alive));
+    // sonic boom on crossing 140 m/s, re-arm below 120
+    if (!flashBoomArmed && hero.speed < 120) flashBoomArmed = true;
+    if (flashBoomArmed && hero.speed >= 140) { flashBoomArmed = false; sfxBoom(); hudPopup('SUPERSONIC'); chase.shake = 1; flashScreen(0.4); }
+    // audio updates
+    if (audio.ctx) {
+      const t = audio.ctx.currentTime;
+      audio.windGain.gain.setTargetAtTime(clamp(hero.speed / 300, 0, 0.5), t, 0.1);
+      audio.wind.frequency.setTargetAtTime(300 + hero.speed * 4, t, 0.1);
+      audio.boostGain.gain.setTargetAtTime(hero.boosting ? 0.2 : 0, t, 0.1);
+      audio.humGain.gain.setTargetAtTime(firing ? 0.06 : 0, t, 0.05);
+      audio.hum.frequency.setTargetAtTime(180 + hero.heat * 1.2, t, 0.05);
+      audio.droneGain.gain.setTargetAtTime(mission.phase === 'setdown' ? 0.02 : 0.05, t, 0.5);
+    }
+    // radio pulses
+    if (plane.held && !inRadioDone) { inRadioDone = true; }
+    // shake / time scale visible effects
+    const fovK = chase.fov;
+    radial.setStrength(clamp((hero.speed - 140) / 80, 0, 1) + (explosionNearStrength()));
+    chroma.offset.set(0.0005 * clamp(hero.speed / 190, 0, 1), 0.0005 * clamp(hero.speed / 190, 0, 1));
+    tone.blendMode.opacity.value = 1;
+    godRays.uniforms = godRays.uniforms || godRays.uniforms;
+    // lens flare intensity follows the sun vs the camera
+    const sunScreen = T1.copy(sunMesh.position).project(camera);
+    const sunVis = sunScreen.z < 1 ? clamp(1 - Math.hypot(sunScreen.x, sunScreen.y) * 0.6, 0, 1) : 0;
+    lensflare.visible = sunVis > 0.05;
+    speedlinesStrength = clamp((hero.speed - 40) / 100, 0, 1);
+  }
+  let flashBoomArmed = true;
+  let speedlinesStrength = 0;
+  function explosionNearStrength() {
+    let s = 0;
+    for (const F of EXPL.fire) {
+      if (F.t < 1) {
+        const d = F.mesh.position.distanceTo(camera.position);
+        s = Math.max(s, clamp(1 - d / 400, 0, 0.6) * (1 - F.t));
+      }
+    }
+    return s;
+  }
+  function formatTime(t) {
+    const m = Math.floor(t / 60), s = t - m * 60;
+    return `${String(m).padStart(2, '0')}:${s.toFixed(1).padStart(4, '0')}`;
+  }
+  function formatMmSs(sec) {
+    const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
+    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  }
+
+  // ----- the set-down: over the zone at speed < 8 m/s, lower; E releases -----
+  function setdownUpdate(dt) {
+    if (mission.phase !== 'setdown') return;
+    const dx = plane.pos.x - CONFIG.stadium.x, dz = plane.pos.z - CONFIG.stadium.z;
+    const inZone = Math.abs(dx) < CONFIG.stadium.zoneW / 2 && Math.abs(dz) < CONFIG.stadium.zoneD / 2;
+    const gearAlt = plane.pos.y - 5;
+    if (plane.held && inZone && gearAlt <= 0.2 && !mission.touchdownDone) {
+      const sink = -plane.vel.y;
+      run.sink = sink;
+      mission.touchdownDone = true;
+      if (sink > CONFIG.stadium.hard) { plane.down = true; missionFail(mission, 'CRASH TOUCHDOWN'); return; }
+      if (sink >= CONFIG.stadium.perfect) { plane.hull = Math.max(0, plane.hull - CONFIG.airliner.hardTouch); hudPopup('HARD TOUCHDOWN'); }
+      else hudPopup('SMOOTH TOUCHDOWN');
+      plane.vel.set(0, 0, 0);
+      plane.pos.y = 5;
+      explode(new V3(plane.pos.x, 0, plane.pos.z), false);
+      flashScreen(0.6);
+      setScoreboard(stadium, '218 SAVED', 'FLIGHT 227 DOWN', '#7dffb0');
+      sfxBoom();
+      timeScale = 0.3;
+      slowMoT = 3;
+      hudShowCard('218 SOULS SAVED');
+    }
+    if (mission.touchdownDone && mission.held !== false && plane.held && mouse.ePressed) {
+      mouse.ePressed = false;
+      plane.held = false; hero.mode = 'hover';
+      hero.pos.x -= 3;
+      hero.vel.set(0, 0, 0);
+      PART.emit(plane.pos.x, 2, plane.pos.z, 0, 4, 0, 1, 0.8, 0.5, 6, 0.8, 1.5, 0.1, 0.3);
+      hudRadio('Released. Plane is on its gear.');
+      mission.touchdownDone = true;
+      missionEnter(mission, 'results');
+    }
+  }
+
+  // ----- bootstrap -----
+  hudRadio('Systems up. Click to fly.');
+  const hudTitleFlags = { shown: true };
+  // reference for the cinematic letterbox
+  const cineText = HUD['radio-big'];
+  void cineText;
+  let last = performance.now();
+  let acc = 0;
+  let lastFrame = 0;
+  // draw first frame
+  // main loop: fixed step for simulation, one render per frame
+  function frame(now) {
+    requestAnimationFrame(frame);
+    let dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    lastFrame = dt;
+    const simDt = dt * timeScale;
+    acc += simDt;
+    let steps = 0;
+    while (acc >= FIXED && steps < 12) {
+      if (mission.phase === 'setdown') setdownUpdate(FIXED);
+      fixedUpdate(FIXED);
+      acc -= FIXED; steps++;
+    }
+    if (steps >= 12) acc = 0;
+    // title screen: slow camera drift over the live city
+    if (!HUD.title.classList.contains('hidden')) {
+      const t = now * 0.00005;
+      camera.position.set(Math.cos(t) * 500 + 300, 260, Math.sin(t) * 500);
+      camera.lookAt(0, 120, 0);
+      camera.fov = 72;
+      camera.updateProjectionMatrix();
+    } else {
+      visualUpdate(dt);
+    }
+    // render through post-processing; fall back if the composer throws
+    try {
+      composer.render(dt);
+    } catch (err) {
+      renderer.render(scene, camera);
+    }
+  }
+  window.addEventListener('resize', () => { /* handled above */ });
+  // debug panel
+  debugInit();
+  requestAnimationFrame(frame);
+}
+</script>
+</body>
+</html>
