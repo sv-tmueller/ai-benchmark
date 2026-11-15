@@ -1,20 +1,31 @@
 #!/usr/bin/env python3
-"""Write ``dashboard.html``: a local, self-contained page listing every result.
+"""Write ``dashboard.html``: a self-contained page listing every result.
 
 ``dashboard.py`` walks ``results/`` and writes ``<repo root>/dashboard.html``
 with one row per result (a deliverable with a paired ``.meta.json``): prompt,
 model, effort, generation date, and the duration, output tokens and cost from
 the result's ``<deliverable stem>.run.json`` where it has one. The file is
-git-ignored; run the command again after pulling new results.
+committed: ``harness/merge_results.py`` regenerates it from the results on
+``origin/main`` and carries it in its docs PR. Running the command by hand on
+a checkout whose dashboard is current writes the same bytes and leaves
+``git status`` clean.
 
 Usage::
 
     python3 harness/dashboard.py
 
+The rows come from one pure core, :func:`collect_rows_from`, fed by one of two
+readers: :func:`collect_rows` walks the working tree, :func:`collect_rows_at`
+reads a git tree (``git ls-tree`` plus one ``git cat-file --batch`` for the
+sidecars and run files only), so a page built from ``origin/main`` is byte for
+byte what a hand run on a clean checkout of it writes. Symlinks under
+``results/`` are not results in either reader.
+
 Deliverables under ``results/`` are untrusted model output. They are never
-opened, embedded or executed here: the page only links to them, by a relative
-``results/...`` path. Every value that comes from a sidecar, a run file or a
-file name is HTML-escaped; the page's script and style are fixed text.
+opened, embedded or executed here, and the git reader never even requests
+their blobs: the page only links to them, by a relative ``results/...`` path.
+Every value that comes from a sidecar, a run file or a file name is
+HTML-escaped; the page's script and style are fixed text.
 """
 
 import argparse
@@ -28,7 +39,7 @@ import re
 import sys
 import urllib.parse
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -37,10 +48,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from harness.grade import iter_results, read_meta  # noqa: E402
-from harness.modes._common import EFFORT_LEVELS, derive_model, pair_meta  # noqa: E402
+from harness.grade import META_SUFFIX, is_result_file  # noqa: E402
+from harness.modes._common import EFFORT_LEVELS, derive_model  # noqa: E402
 
 RUN_SUFFIX = ".run.json"
+REGULAR_FILE_MODES = (b"100644", b"100755")
+_OID = re.compile(rb"[0-9a-f]{40}|[0-9a-f]{64}")
 GENERATED_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 GENERATED_SHAPE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 SURROGATES = re.compile("[\ud800-\udfff]")
@@ -116,23 +129,36 @@ def _parse_generated(value):
     return value
 
 
-def _read_run_file(run_path, relpath, warnings):
+class GitReadError(Exception):
+    """A git read failed, or git answered in a shape this reader does not know."""
+
+
+def _load_json(data):
+    """Parse ``data`` (bytes) as UTF-8 JSON.
+
+    Decoded explicitly: ``json.loads`` on bytes would detect UTF-16/32 and
+    accept files that the text-mode read of the old working-tree path rejects.
+    """
+    return json.loads(data.decode("utf-8"))
+
+
+def _read_run_file(run_rel, files, read, warnings):
     """Return ``(duration, output_tokens, cost)`` from a run file; missing is ``None``."""
-    if not run_path.is_file():
+    if run_rel not in files:
         return None, None, None
     try:
-        data = json.loads(run_path.read_text(encoding="utf-8"))
+        data = _load_json(read(run_rel))
     except (OSError, ValueError, RecursionError) as exc:
-        warnings.append("%s: cannot read run file (%s)" % (relpath, exc))
+        warnings.append("%s: cannot read run file (%s)" % (run_rel, exc))
         return None, None, None
     if not isinstance(data, dict):
-        warnings.append("%s: run file is not a JSON object" % relpath)
+        warnings.append("%s: run file is not a JSON object" % run_rel)
         return None, None, None
     values = []
     for key in ("duration_seconds", "output_tokens", "cost_usd"):
         value = data.get(key)
         if key in data and not _is_number(value):
-            warnings.append("%s: %s is not a non-negative number" % (relpath, key))
+            warnings.append("%s: %s is not a non-negative number" % (run_rel, key))
             value = None
         elif value is not None:
             value = abs(value)  # -0.0 is zero
@@ -140,45 +166,152 @@ def _read_run_file(run_path, relpath, warnings):
     return tuple(values)
 
 
+def _read_meta_file(meta_rel, read):
+    """Return the parsed sidecar, or ``None`` when it is unreadable or not an object."""
+    try:
+        meta = _load_json(read(meta_rel))
+    except (OSError, ValueError, RecursionError):  # RecursionError: a deeply nested sidecar
+        return None
+    return meta if isinstance(meta, dict) else None
+
+
 def collect_rows(repo_root):
     """Return ``(rows, warnings)`` for every result under ``repo_root/results``.
 
-    A file is a row exactly when it has a paired ``.meta.json``. Warnings are
+    Reads the working tree. A symlink (folder, deliverable, sidecar or run
+    file) is not listed, so it is never a result and never read.
+    """
+    repo_root = Path(repo_root)
+    results_dir = repo_root / "results"
+    if not results_dir.is_dir():
+        return [], []
+    files = set()
+    for directory in results_dir.iterdir():
+        if not directory.is_dir() or directory.is_symlink():
+            continue
+        for path in directory.iterdir():
+            if path.is_file() and not path.is_symlink():
+                files.add(path.relative_to(repo_root).as_posix())
+    return collect_rows_from(files, lambda rel: (repo_root / rel).read_bytes())
+
+
+def _list_regular_files(listing):
+    """Return ``{path: oid}`` for the ``results/<folder>/<name>`` files in ``ls-tree -r -z`` output.
+
+    Only modes 100644 and 100755 count; a symlink (120000) or a gitlink
+    (160000) is not a file, matching the working-tree reader. Paths are
+    decoded as ``os.listdir`` would give them (UTF-8, bad bytes as surrogates).
+    """
+    found = {}
+    for entry in listing.split(b"\0"):
+        if not entry:
+            continue
+        head, tab, raw_path = entry.partition(b"\t")
+        fields = head.split(b" ")
+        if not tab or len(fields) != 3 or not _OID.fullmatch(fields[2]):
+            raise GitReadError("unexpected git ls-tree output")
+        if fields[0] not in REGULAR_FILE_MODES:
+            continue
+        relpath = raw_path.decode("utf-8", "surrogateescape")
+        parts = relpath.split("/")
+        if len(parts) == 3 and parts[0] == "results":
+            found[relpath] = fields[2].decode("ascii")
+    return found
+
+
+def _read_blobs(git, oids):
+    """Return ``{oid: bytes}`` from one ``git cat-file --batch``; a missing blob is absent."""
+    if not oids:
+        return {}
+    request = "".join(oid + "\n" for oid in oids).encode("ascii")
+    out = git(["cat-file", "--batch"], input=request)
+    blobs = {}
+    pos = 0
+    for oid in oids:
+        end = out.find(b"\n", pos)
+        if end < 0:
+            raise GitReadError("git cat-file ended early")
+        header = out[pos:end].split(b" ")
+        pos = end + 1
+        want = oid.encode("ascii")
+        if header == [want, b"missing"]:
+            continue
+        if len(header) != 3 or header[0] != want or header[1] != b"blob" or not header[2].isdigit():
+            raise GitReadError("unexpected git cat-file output")
+        size = int(header[2])  # a count of bytes, not characters
+        if out[pos + size:pos + size + 1] != b"\n":
+            raise GitReadError("git cat-file output is truncated")
+        blobs[oid] = out[pos:pos + size]
+        pos += size + 1
+    if pos != len(out):
+        raise GitReadError("git cat-file printed more than was asked for")
+    return blobs
+
+
+def collect_rows_at(rev, git):
+    """Return ``(rows, warnings)`` for the results in the git tree of ``rev``.
+
+    ``git(args, input=None)`` runs ``git <args>`` and returns its stdout as
+    bytes; it raises :class:`GitReadError` on a non-zero exit. Nothing is
+    written to disk. Only the ``.meta.json`` and ``.run.json`` blobs are
+    requested, in one call; a deliverable's blob never is. The same files give
+    the same rows and warnings as :func:`collect_rows`.
+    """
+    oids = _list_regular_files(git(["ls-tree", "-r", "-z", rev, "--", "results"]))
+    wanted = {rel for rel in oids if rel.endswith((META_SUFFIX, RUN_SUFFIX))}
+    blobs = _read_blobs(git, list(dict.fromkeys(oids[rel] for rel in sorted(wanted))))
+
+    def read(relpath):
+        if relpath not in wanted or oids[relpath] not in blobs:
+            raise OSError("blob of %s is not available" % relpath)
+        return blobs[oids[relpath]]
+
+    return collect_rows_from(set(oids), read)
+
+
+def collect_rows_from(files, read):
+    """Return ``(rows, warnings)`` for the result files in ``files``. No I/O of its own.
+
+    ``files`` is the set of ``results/<folder>/<name>`` paths (POSIX, exactly
+    two levels down) of the regular files that exist; ``read(path)`` returns a
+    file's bytes or raises ``OSError``. It is only ever called for a result's
+    ``.meta.json`` and ``.run.json``, never for a deliverable.
+
+    A file is a row exactly when it passes ``is_result_file`` and has a
+    paired ``.meta.json`` in ``files``. Warnings are
     ``"<path relative to the repo>: <reason>"`` strings for unreadable
     sidecars and run files, and for names that are not valid UTF-8; those
     results still appear. ``Row.relpath`` keeps the name's raw (surrogate)
     characters so the link can reproduce its bytes; every text meant for
     display or printing is cleaned.
+
+    The files are visited in ``(folder, name)`` order, as a directory walk
+    gives them, so rows that tie on every sort key keep that order whichever
+    reader built ``files``: git's own tree order differs (folder ``a.b``
+    sorts before ``a``).
     """
-    repo_root = Path(repo_root)
-    results_dir = repo_root / "results"
+    files = set(files)
     warnings = []
     pending = []
-    if not results_dir.is_dir():
-        return [], warnings
-    for path in iter_results(results_dir):
-        if path.name.endswith(RUN_SUFFIX):
+    for relpath in sorted(files, key=lambda rel: tuple(rel.split("/"))):
+        path = PurePosixPath(relpath)
+        if not is_result_file(path):
             continue
-        meta_path = pair_meta(path)
-        if meta_path is None:
+        meta_rel = path.with_name(path.stem + META_SUFFIX).as_posix()
+        if meta_rel not in files:
             continue
-        relpath = path.relative_to(repo_root).as_posix()
         if SURROGATES.search(relpath):
             warnings.append("%s: name is not valid UTF-8" % relpath)
-        try:
-            meta = read_meta(path)
-        except RecursionError:  # a deeply nested sidecar; read_meta does not catch it
-            meta = None
+        meta = _read_meta_file(meta_rel, read)
         if meta is None:
-            warnings.append("%s: cannot read meta file" % meta_path.relative_to(repo_root).as_posix())
+            warnings.append("%s: cannot read meta file" % meta_rel)
             meta = {}
         params = meta.get("params")
         meta_effort = _text(params.get("reasoning_effort")) if isinstance(params, dict) else None
         tag_model, tag_effort = _split_tag(
             _clean(derive_model(path, {"file_prefix": path.parent.name})))
-        run_path = path.with_name(path.stem + RUN_SUFFIX)
-        duration, output_tokens, cost = _read_run_file(
-            run_path, run_path.relative_to(repo_root).as_posix(), warnings)
+        run_rel = path.with_name(path.stem + RUN_SUFFIX).as_posix()
+        duration, output_tokens, cost = _read_run_file(run_rel, files, read, warnings)
         pending.append(dict(
             relpath=relpath,
             file=_clean(path.name),
@@ -515,7 +648,8 @@ def parse_args(argv):
     parser = argparse.ArgumentParser(
         description="Write dashboard.html at the repo root: one row per result under "
                     "results/, sortable and groupable, for opening straight from the "
-                    "checkout. The file is git-ignored; run again after pulling new results."
+                    "checkout. The file is committed and kept current by the merge "
+                    "step; run this to regenerate it by hand."
     )
     return parser.parse_args(argv)
 
@@ -535,7 +669,7 @@ def main(argv=None, repo_root=REPO_ROOT, out=None, err=None):
         rows, warnings = collect_rows(repo_root)
         for warning in warnings:
             print("warning: %s" % warning, file=err)
-        target.write_text(render(rows), encoding="utf-8")
+        target.write_text(render(rows), encoding="utf-8", newline="\n")
     except OSError as exc:
         print("error: %s" % _clean(str(exc)), file=err)
         return 1
