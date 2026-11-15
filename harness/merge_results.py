@@ -71,7 +71,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from harness import dashboard  # noqa: E402
-from harness.modes._common import EFFORT_LEVELS, derive_model  # noqa: E402
+from harness.modes._common import EFFORT_LEVELS, derive_model, printable  # noqa: E402
 
 META_SUFFIX = ".meta.json"
 GRADING_SUFFIX = "_grading.json"
@@ -426,6 +426,22 @@ def first_line(text):
     return ""
 
 
+def _emit(out, message):
+    """Write ``message`` and a line break to ``out``: the only place this module writes output.
+
+    Text from GitHub or git (check names, file paths, error lines) reaches the output inside
+    messages, so every non-printable character is written as its escape here: a value cannot
+    start a line of its own or drive the terminal. Text ``out`` cannot encode is written with
+    backslash escapes instead of raising. Display only: the result is never compared or stored.
+    """
+    text = printable(message)
+    try:
+        print(text, file=out)
+    except UnicodeEncodeError:
+        encoding = getattr(out, "encoding", None) or "utf-8"
+        print(text.encode(encoding, "backslashreplace").decode(encoding, "replace"), file=out)
+
+
 class Merger:
     """One command run: reads, gate, merges, ledger. All I/O goes through ``run``."""
 
@@ -443,7 +459,7 @@ class Merger:
         self.planned_files = set()
 
     def say(self, message):
-        print(message, file=self.out)
+        _emit(self.out, message)
 
     def json_call(self, argv, want):
         """Run ``argv`` and return its parsed stdout if it is a ``want``, else ``None``."""
@@ -932,7 +948,7 @@ def main(argv=None, run=None, sleep=None, prompts_dir=None, out=None):
         model_id = normalize_model_id(args.model)
         tag = model_tag(model_id)
     except ValueError as exc:
-        print("bad model id: %s" % exc, file=out)
+        _emit(out, "bad model id: %s" % exc)
         return 2
     prompts = load_prompt_files(PROMPTS_DIR if prompts_dir is None else prompts_dir)
     merger = Merger(model_id, tag, prompts, run or default_run, sleep or time.sleep,

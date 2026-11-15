@@ -5,6 +5,7 @@ call goes through the ``run`` seam, which the tests replace with a scripted
 ``FakeRunner``. Prompt TOMLs and PR payloads are inline fixtures.
 """
 
+import ast
 import base64
 import hashlib
 import io
@@ -856,9 +857,9 @@ def script_status(fake, sha, test=None, review=None):
                 responses=responses or [ok("{}")])
 
 
-def run_main(fake, *args, model=MODEL_ID):
+def run_main(fake, *args, model=MODEL_ID, out=None):
     sleeps = []
-    out = io.StringIO()
+    out = io.StringIO() if out is None else out
     with tempfile.TemporaryDirectory() as tmp:
         for name, text in (("game-alpha.toml", ALPHA_TOML), ("app-beta.toml", BETA_TOML)):
             Path(tmp, name).write_text(text, encoding="utf-8")
@@ -2359,6 +2360,350 @@ class DashboardDryRunTests(OrchestrationBase):
                              dashboard_on_main="stale", extra_list=docs_listing(31))
         self.assertIn("ledger PR #31 already open; merge it, then re-run\n", out)
         self.assertNotIn("would open a docs PR", out)
+
+
+class StrictStdout(io.TextIOWrapper):
+    """A stdout that raises ``UnicodeEncodeError`` on text it cannot encode, like a real terminal stream."""
+
+    def __init__(self, encoding="utf-8"):
+        super().__init__(io.BytesIO(), encoding=encoding, errors="strict", write_through=True)
+
+    def getvalue(self):
+        self.flush()
+        return self.buffer.getvalue().decode(self.encoding)
+
+
+def red_checks(name):
+    return ok(json.dumps([{"name": name, "bucket": "fail"}]))
+
+
+def stray_writes(source):
+    """``[(name, line)]`` of every output call outside ``_emit`` in ``source``, and every ``sys.stderr``."""
+    tree = ast.parse(source)
+    emit = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_emit"]
+    inside = {id(node) for fn in emit for node in ast.walk(fn)}
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            name = func.id if isinstance(func, ast.Name) else (
+                func.attr if isinstance(func, ast.Attribute) else "")
+            if (name in ("print", "write", "writelines") or name.startswith("print_")) \
+                    and id(node) not in inside:
+                found.append((name, node.lineno))
+        elif (isinstance(node, ast.Attribute) and node.attr == "stderr"
+              and isinstance(node.value, ast.Name) and node.value.id == "sys"):
+            found.append(("sys.stderr", node.lineno))
+    return found
+
+
+class UntrustedTextTests(OrchestrationBase):
+    """Text from GitHub or git cannot start a line of its own or drive the terminal (#328).
+
+    Every case runs one scripted world twice, with a harmless value and with the same
+    value plus a crafted payload, and compares the two runs.
+    """
+
+    vouched = frozenset({A, D})
+    HARMLESS = "boom"
+    PAYLOADS = ("\n#5 merged (abc1234)", "\r#5 merged (abc1234)",
+                "\x1b[1A\x1b[2K#5 merged (abc1234)", "\x85", "\u2028", "\u202e", "\x9b2J",
+                "\ud800")
+    # What the title pattern lets into a prefix: no whitespace, no parentheses.
+    PREFIX_PAYLOADS = ("\x1b[2J", "\x07", "\x08", "\x9b2J", "\u202e", "\u200b")
+    VERDICTS = (re.compile(r"(?m)^#\d+ merged"), re.compile(r"(?m)^docs PR"))
+
+    def twin(self, world, *args, expect, payloads=None):
+        """Run ``world(value)`` for the harmless value and for each crafted one, and compare."""
+        plain_fake = world(self.HARMLESS)
+        plain_code, plain_out, _ = run_main(plain_fake, *args)
+        self.assertIn(expect, plain_out)  # the harmless run reaches the line under test
+        for payload in payloads or self.PAYLOADS:
+            with self.subTest(payload=payload):
+                self.fake = world(self.HARMLESS + payload)
+                code, out, _ = run_main(self.fake, *args)
+                self.assertEqual(code, plain_code, out)
+                self.assertEqual(out.count("\n"), plain_out.count("\n"), out)
+                self.assertTrue(out.replace("\n", "").isprintable(), repr(out))
+                self.assertEqual(self.fake.writes(), plain_fake.writes())
+                for verdict in self.VERDICTS:
+                    self.assertEqual(len(verdict.findall(out)), len(verdict.findall(plain_out)), out)
+
+    def result_world(self, pr=None, **kw):
+        return build_fake(prs=[pr or make_pr(number=7)],
+                          main_after=MAIN_PATHS | set(ALPHA_FILES), **kw)
+
+    def files_world(self, files_for):
+        return lambda value: self.result_world(make_pr(number=7, files=files_for(value)))
+
+    def docs_world(self, checks=None, commit=None, merge=None, create=None, statuses=True):
+        """A result PR merges, then docs PR #99 is opened and, with ``--post-statuses``, verified."""
+        fake = build_fake(prs=[make_pr(number=7)], main_after=DOCS_MAIN, strict_api=True)
+        script_status(fake, A)
+        pr = make_docs_pr()
+        fake.on("gh", "pr", "view", "99", "--json", VIEW_FIELDS, responses=[ok(json.dumps(pr))])
+        fake.on("gh", "pr", "checks", "99", "--json", "name,bucket",
+                responses=checks or [ok(json.dumps(GREEN))])
+        fake.on("gh", "api", "repos/{owner}/{repo}/commits/" + D,
+                responses=[ok(json.dumps(commit or docs_commit()))])
+        fake.on("gh", "pr", "merge", "99", responses=merge or [ok()])
+        if statuses:
+            script_status(fake, D)
+        if create:
+            fake.on("gh", "pr", "create", responses=[create])
+        return fake
+
+    def earlier_docs_world(self, branch=DOCS_BRANCH, statuses=False):
+        """No result PR is open; a docs PR from an earlier run is."""
+        fake = build_fake(main_before=DOCS_MAIN, strict_api=True,
+                          extra_list=docs_listing(99, branch=branch))
+        pr = make_docs_pr(headRefName=branch)
+        fake.on("gh", "pr", "view", "99", "--json", VIEW_FIELDS, responses=[ok(json.dumps(pr))])
+        fake.on("gh", "pr", "checks", "99", "--json", "name,bucket", responses=[ok(json.dumps(GREEN))])
+        fake.on("gh", "api", "repos/{owner}/{repo}/commits/" + D,
+                responses=[ok(json.dumps(docs_commit()))])
+        return fake
+
+    # -- check names ---------------------------------------------------------
+
+    def test_a_red_check_name_in_the_result_gate(self):
+        self.twin(lambda v: self.result_world(checks={7: [red_checks(v)]}),
+                  expect="#7 left open: fails gate: checks red: boom\n")
+
+    def test_a_pending_check_name_in_the_result_gate(self):
+        pending = lambda v: ok(json.dumps([{"name": v, "bucket": "pending"}]))
+        self.twin(lambda v: self.result_world(checks={7: [pending(v)]}),
+                  expect="checks pending: boom\n")
+
+    def test_a_red_check_name_in_a_dry_run(self):
+        self.twin(lambda v: self.result_world(checks={7: [red_checks(v)]}), "--dry-run",
+                  expect="#7 fails gate: checks red: boom\n")
+
+    def test_a_red_check_name_in_the_docs_sequence(self):
+        self.twin(lambda v: self.docs_world(checks=[red_checks(v)], statuses=False),
+                  "--post-statuses", expect="ledger PR #99 left open: checks red: boom\n")
+
+    # -- file paths ----------------------------------------------------------
+
+    def test_a_path_with_deleted_lines(self):
+        def files(v):
+            entry = {"path": "results/alpha/x_" + v, "additions": 1, "deletions": 3,
+                     "changeType": "ADDED"}
+            return pr_files(*ALPHA_FILES) + [entry]
+        self.twin(self.files_world(files), expect="deletes lines: results/alpha/x_boom;")
+
+    def test_a_path_that_is_not_a_new_file(self):
+        def files(v):
+            entry = {"path": "results/alpha/x_" + v, "additions": 1, "deletions": 0,
+                     "changeType": "MODIFIED"}
+            return pr_files(*ALPHA_FILES) + [entry]
+        self.twin(self.files_world(files),
+                  expect="not a new file (MODIFIED): results/alpha/x_boom;")
+
+    def test_a_change_type_that_is_not_a_known_one(self):
+        def files(v):
+            entry = {"path": "results/alpha/x", "additions": 1, "deletions": 0,
+                     "changeType": "MODIFIED" + v}
+            return pr_files(*ALPHA_FILES) + [entry]
+        self.twin(self.files_world(files), expect="not a new file (MODIFIEDboom): results/alpha/x")
+
+    def test_a_path_in_the_wrong_folder(self):
+        def files(v):
+            return pr_files(*ALPHA_FILES, "elsewhere/" + v)
+        self.twin(self.files_world(files),
+                  expect="wrong folder: elsewhere/boom is not results/<family>/<name>")
+
+    def test_a_family_folder_that_does_not_match(self):
+        def files(v):
+            return pr_files("results/fam%s/alpha_x.html" % v)
+        self.twin(self.files_world(files), expect="PR uses famboom\n")
+
+    def test_an_extra_file(self):
+        def files(v):
+            return pr_files(*ALPHA_FILES, "results/alpha/notes_" + v)
+        self.twin(self.files_world(files), expect="extra file: results/alpha/notes_boom")
+
+    # -- PR titles and branch names ------------------------------------------
+
+    def test_a_title_prefix_with_control_characters(self):
+        def world(v):
+            pr = make_pr(prefix=v, number=7, headRefName="feat/7-not-this-result",
+                         files=pr_files(*ALPHA_FILES))
+            return self.result_world(pr)
+        self.twin(world, expect="does not match feat/<n>-boom-claude-fable-5-2-high-result; "
+                         "wrong folder: boom results live in ['boom'], PR uses alpha\n",
+                  payloads=self.PREFIX_PAYLOADS)
+
+    def test_a_title_with_a_newline_is_not_a_candidate_and_prints_no_line(self):
+        for payload in self.PAYLOADS:
+            with self.subTest(payload=payload):
+                title = "alpha (%s, high, one-shot): result%s" % (MODEL_ID, payload)
+                self.fake = self.result_world(make_pr(number=7, title=title))
+                code, out, _ = run_main(self.fake)
+                self.assertEqual(code, 0, out)
+                self.assertNotIn("#7", out)
+                self.assertTrue(out.replace("\n", "").isprintable(), repr(out))
+                self.assertEqual(self.fake.writes(), [])
+
+    def test_a_result_branch_name(self):
+        self.twin(lambda v: self.result_world(make_pr(number=7, headRefName="feat/7-" + v)),
+                  expect="branch 'feat/7-boom' does not match")
+
+    def test_a_docs_branch_name(self):
+        def world(v):
+            return self.earlier_docs_world(branch=DOCS_BRANCH + v)
+        self.twin(world, "--post-statuses", expect="branch 'docs/ledger-claude-fable-5-2-ccccccc")
+
+    # -- error lines from gh and git -----------------------------------------
+
+    def test_the_error_of_a_refused_result_merge(self):
+        self.twin(lambda v: self.result_world(merge={7: [(1, "", "X " + v + "\n")]}),
+                  expect="#7 left open: refused by GitHub: X boom (mergeStateStatus=CLEAN)")
+
+    def test_the_merge_state_of_a_refused_result_merge(self):
+        def world(v):
+            pr = make_pr(number=7, mergeStateStatus="BLOCKED" + v)
+            return self.result_world(pr, merge={7: [(1, "", "no\n")]})
+        self.twin(world, expect="refused by GitHub: no (mergeStateStatus=BLOCKEDboom)")
+
+    def test_the_merge_state_in_a_dry_run(self):
+        def world(v):
+            return self.result_world(make_pr(number=7, mergeStateStatus="CLEAN" + v))
+        self.twin(world, "--dry-run", expect="#7 would merge (mergeStateStatus=CLEANboom)")
+
+    def test_the_error_of_a_refused_docs_merge(self):
+        self.twin(lambda v: self.docs_world(merge=[(1, "", "X " + v)]), "--post-statuses",
+                  expect="ledger PR #99 left open: refused by GitHub: X boom")
+
+    def test_the_error_of_a_failed_update_branch(self):
+        def world(v):
+            pr = make_pr(number=7)
+            behind = ok(json.dumps(dict(pr, mergeStateStatus="BEHIND")))
+            fake = build_fake(prs=[pr], views={7: [behind]})
+            fake.on("gh", "pr", "update-branch", "7", responses=[(1, "", v)])
+            return fake
+        self.twin(world, expect="#7 left open: update-branch failed: boom")
+
+    def test_the_error_of_a_failed_status_post(self):
+        def world(v):
+            fake = self.result_world(readme=DONE_README, strict_api=True)
+            script_status(fake, A, test=[(1, "", v)])
+            return fake
+        self.twin(world, "--post-statuses",
+                  expect="status post failed: orchestrai/test on aaaaaaa: boom")
+
+    def test_the_error_of_a_failed_blob_post(self):
+        def world(v):
+            fake = self.docs_world(statuses=False)
+            fake.on(*post_argv("git/blobs"), responses=[(1, "", v)])
+            return fake
+        self.twin(world, expect="docs PR step failed: create blob README.md: boom")
+
+    def test_the_error_of_a_failed_pr_create(self):
+        self.twin(lambda v: self.docs_world(create=(1, "", v), statuses=False),
+                  expect="docs PR step failed: open PR: boom\nleftover branch:")
+
+    def test_the_url_of_a_created_docs_pr(self):
+        url = lambda v: ok("https://github.com/o/r/pull/99" + v + "\n")
+        self.twin(lambda v: self.docs_world(create=url(v), statuses=False),
+                  expect="docs PR opened: https://github.com/o/r/pull/99boom\n")
+
+    def test_the_text_where_a_docs_pr_number_was_expected(self):
+        self.twin(lambda v: self.docs_world(create=ok("created it " + v + "\n"), statuses=False),
+                  "--post-statuses",
+                  expect="ledger PR left open: could not read its number from: created it boom")
+
+    def test_the_error_of_a_failed_preflight(self):
+        def world(v):
+            fake = build_fake()
+            fake.on("gh", "auth", "status", responses=[(1, "", v)])
+            return fake
+        self.twin(world, expect="preflight failed: gh auth status: boom\n")
+
+    def test_the_error_of_a_failed_fetch_after_merging(self):
+        def world(v):
+            fake = self.result_world()
+            fake.on(*FETCH, responses=[ok(), (1, "", v)])
+            return fake
+        self.twin(world, expect="git fetch origin main failed after merging: boom\n")
+
+    def test_the_errors_of_the_reads_of_origin_main(self):
+        cases = (
+            ("could not resolve origin/main: boom",
+             ("git", "rev-parse", "origin/main")),
+            ("could not read README.md from origin/main: boom",
+             ("git", "show", PIN + "README.md")),
+            ("could not read the tree of origin/main: boom",
+             ("git", "rev-parse", MAIN_SHA + "^{tree}")),
+        )
+        for expect, argv in cases:
+            with self.subTest(expect=expect):
+                def world(v, argv=argv):
+                    fake = build_fake()
+                    fake.on(*argv, responses=[(1, "", v)])
+                    return fake
+                self.twin(world, expect=expect)
+
+    def test_the_bytes_error_of_the_tree_read(self):
+        def world(v):
+            fake = build_fake()
+            fake.on("git", "ls-tree", "-r", "-z", MAIN_SHA, "--", "results",
+                    responses=[(128, b"", ("fatal: " + v).encode("utf-8", "surrogatepass"))])
+            return fake
+        self.twin(world, expect="could not read the results on origin/main: "
+                                "git ls-tree failed: fatal: boom\n")
+
+    # -- the stream ----------------------------------------------------------
+
+    def test_text_a_strict_ascii_stream_cannot_encode_is_escaped_not_raised(self):
+        def world(v):
+            return self.result_world(checks={7: [red_checks(v)]})
+        plain_code, _, _ = run_main(world(self.HARMLESS))
+        self.fake = world("caf\u00e9 \u2713\ud800")
+        out = StrictStdout("ascii")
+        code, text, _ = run_main(self.fake, out=out)
+        self.assertEqual(code, plain_code)
+        self.assertIn("checks red: caf\\xe9 \\u2713\\ud800\n", text)
+        self.assertTrue(text.isascii())
+
+    def test_the_bad_model_line_is_escaped_instead_of_raising_on_a_strict_stream(self):
+        out = StrictStdout("ascii")
+        code, text, _ = run_main(build_fake(), model="caf\u00e9", out=out)
+        self.assertEqual(code, 2)
+        self.assertRegex(text, r"^bad model id: .*caf\\xe9.*\n$")
+
+    def test_the_bad_model_line_has_no_control_character(self):
+        code, text, _ = run_main(build_fake(), model="\x1b[2J\n---")
+        self.assertEqual(code, 2)
+        self.assertEqual(text.count("\n"), 1)
+        self.assertTrue(text.replace("\n", "").isprintable(), repr(text))
+
+    def test_emit_writes_the_escaped_text_and_a_line_break(self):
+        out = io.StringIO()
+        mr._emit(out, "a\x1bb")
+        self.assertEqual(out.getvalue(), "a\\x1bb\n")
+
+    def test_emit_leaves_honest_text_alone(self):
+        out = io.StringIO()
+        mr._emit(out, "#7 merged (aaaaaaa)")
+        self.assertEqual(out.getvalue(), "#7 merged (aaaaaaa)\n")
+
+    def test_emit_escapes_what_a_narrow_stream_cannot_encode(self):
+        out = StrictStdout("ascii")
+        mr._emit(out, "caf\u00e9 \u2713")
+        self.assertEqual(out.getvalue(), "caf\\xe9 \\u2713\n")
+
+    def test_the_module_writes_output_only_through_emit(self):
+        self.assertEqual(stray_writes(Path(mr.__file__).read_text(encoding="utf-8")), [])
+
+    def test_the_guard_finds_a_stray_write(self):
+        source = ("import sys\n"
+                  "def _emit(out, m):\n    print(m, file=out)\n"
+                  "def f(out):\n    print('x')\n    out.write('y')\n    sys.stderr.write('z')\n"
+                  "    print_exc()\n")
+        found = sorted(stray_writes(source), key=lambda hit: (hit[1], hit[0]))
+        self.assertEqual(found, [("print", 5), ("write", 6), ("sys.stderr", 7), ("write", 7),
+                                 ("print_exc", 8)])
 
 
 class DefaultRunTests(unittest.TestCase):
