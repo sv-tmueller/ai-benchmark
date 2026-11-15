@@ -351,7 +351,7 @@ def docs_gate(pr, commit, main_sha, main_blob, text, changes, dashboard_sha, tag
     entries = [e if isinstance(e, dict) else {} for e in commit.get("files") or []]
     names = [e.get("filename") if isinstance(e.get("filename"), str) else None for e in entries]
     for name in sorted({n for n in names if n not in changes}, key=str):
-        reasons.append("extra file: %s" % name)
+        reasons.append("extra file: %r" % name)
     for name in sorted(set(changes) - set(names)):
         reasons.append("missing: %s" % name)
     for name in sorted({n for n in names if n in changes and names.count(n) > 1}):
