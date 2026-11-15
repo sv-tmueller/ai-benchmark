@@ -678,8 +678,13 @@ def main(argv=None, repo_root=REPO_ROOT, out=None, err=None):
         page = render(rows).encode("utf-8")
         # An up-to-date file is left alone: rewriting identical bytes still
         # changes its stat data, and with core.autocrlf=true git then reports
-        # the checkout as modified.
-        if not (target.is_file() and target.read_bytes() == page):
+        # the checkout as modified. The look is best effort: a file that cannot
+        # be read is simply written, and only a failed write is an error.
+        try:
+            current = target.is_file() and target.read_bytes() == page
+        except OSError:
+            current = False
+        if not current:
             target.write_text(page.decode("utf-8"), encoding="utf-8", newline="\n")
     except OSError as exc:
         print("error: %s" % _clean(str(exc)), file=err)

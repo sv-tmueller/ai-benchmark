@@ -1182,13 +1182,58 @@ class MainSkipsUnchangedWriteTest(TempRootCase):
         self.assertEqual(code, 0)
         self.assertTrue((self.root / "dashboard.html").is_file())
 
-    def test_a_target_that_cannot_be_read_is_an_error_not_a_crash(self):
-        # A folder where the file should be: reading it fails, and so would writing it.
-        (self.root / "dashboard.html").mkdir()
+    def _mode_has_effect(self, target, mode, *, read=False, write=False):
+        """Skip unless chmod ``mode`` really denies the requested access here."""
+        target.chmod(mode)
+        self.addCleanup(target.chmod, 0o600)
+        if read:
+            try:
+                target.read_bytes()
+            except OSError:
+                pass
+            else:
+                self.skipTest("file modes do not block reading here (root or no mode support)")
+        if write:
+            try:
+                with open(target, "ab"):
+                    pass
+            except OSError:
+                pass
+            else:
+                self.skipTest("file modes do not block writing here (root or no mode support)")
+
+    def test_a_writable_but_unreadable_stale_file_is_rewritten(self):
+        _add_result(self.root, "alpha", "alpha_m_low.html", meta={})
+        target = self.root / "dashboard.html"
+        target.write_text("old", encoding="utf-8")
+        self._mode_has_effect(target, 0o200, read=True)
         err = io.StringIO()
         code = dashboard.main([], repo_root=self.root, out=io.StringIO(), err=err)
-        self.assertEqual(code, 1)
-        self.assertIn("error:", err.getvalue())
+        self.assertEqual((code, err.getvalue()), (0, ""))
+        target.chmod(0o600)
+        self.assertTrue(target.read_text(encoding="utf-8").startswith("<!DOCTYPE html>"))
+
+    def test_a_target_that_can_be_neither_read_nor_written_is_one_error_line(self):
+        target = self.root / "dashboard.html"
+        target.write_text("old", encoding="utf-8")
+        self._mode_has_effect(target, 0o000, read=True, write=True)
+        out, err = io.StringIO(), io.StringIO()
+        code = dashboard.main([], repo_root=self.root, out=out, err=err)
+        self.assertEqual((code, out.getvalue()), (1, ""))
+        self.assertEqual(len(err.getvalue().splitlines()), 1)
+        self.assertTrue(err.getvalue().startswith("error: "))
+        self.assertNotIn("Traceback", err.getvalue())
+        target.chmod(0o600)
+        self.assertEqual(target.read_text(encoding="utf-8"), "old")
+
+    def test_a_folder_at_the_target_path_is_one_error_line(self):
+        (self.root / "dashboard.html").mkdir()
+        out, err = io.StringIO(), io.StringIO()
+        code = dashboard.main([], repo_root=self.root, out=out, err=err)
+        self.assertEqual((code, out.getvalue()), (1, ""))
+        self.assertEqual(len(err.getvalue().splitlines()), 1)
+        self.assertTrue(err.getvalue().startswith("error: "))
+        self.assertNotIn("Traceback", err.getvalue())
 
 
 @unittest.skipUnless(shutil.which("git"), "git is not installed")
