@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lava Lamp</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #1b1816; }
+  canvas { position: fixed; left: 0; top: 0; width: 100vw; height: 100vh; display: block; background: #1b1816; }
+</style>
+<script type="application/json" id="bridgebench-manifest">
+{"id":"lava-lamp","name":"lava-lamp","title":"Lava Lamp","version":"1.0.0","controls":[],"state":{"heat":0.65,"paletteIndex":0},"stateKeys":["heat","paletteIndex"],"palettes":["Ember"],"deterministic":true,"api":["getManifest","getState","reset","destroy","pause","resume","advance","step","seek","render"]}
+</script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script id="vs" type="x-shader/x-vertex">
+attribute vec2 aPos;
+void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
+</script>
+<script id="fs" type="x-shader/x-fragment">
+precision highp float;
+
+#define NB 20
+uniform vec2 uRes;
+uniform float uTan;
+uniform vec4 uB[NB];
+
+const vec3 CAM = vec3(0.0, 2.95, 12.5);
+const vec3 TARGET = vec3(0.0, 2.2, 0.0);
+const float YOFF = -0.00485;
+const float WAXK = 0.26;
+
+float h1(float x) { return fract(sin(x * 127.1) * 43758.5453); }
+float vn(float x) {
+  float i = floor(x), f = fract(x);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(h1(i), h1(i + 1.0), f);
+}
+
+float smin(float a, float b, float k) {
+  float h = max(k - abs(a - b), 0.0) / k;
+  return min(a, b) - h * h * k * 0.25;
+}
+
+// capped cone around the y axis: centre height yc, half height h, bottom radius r1, top radius r2
+float sdCone(vec3 p, float yc, float h, float r1, float r2) {
+  vec2 q = vec2(length(p.xz), p.y - yc);
+  vec2 k1 = vec2(r2, h);
+  vec2 k2 = vec2(r2 - r1, 2.0 * h);
+  vec2 ca = vec2(q.x - min(q.x, (q.y < 0.0) ? r1 : r2), abs(q.y) - h);
+  vec2 cb = q - k1 + k2 * clamp(dot(k1 - q, k2) / dot(k2, k2), 0.0, 1.0);
+  float s = (cb.x < 0.0 && ca.y < 0.0) ? -1.0 : 1.0;
+  return s * sqrt(min(dot(ca, ca), dot(cb, cb)));
+}
+
+float sdBase(vec3 p) {
+  float a = sdCone(p, 0.285, 0.245, 0.76, 0.40) - 0.02;
+  float b = sdCone(p, 0.90, 0.33, 0.40, 0.63) - 0.02;
+  float d = smin(a, b, 0.10);
+  float rr = length(p.xz);
+  float ring = length(vec2(rr - 0.43, p.y - 0.56)) - 0.045;
+  d = smin(d, ring, 0.03);
+  float lip = length(vec2(rr - 0.765, p.y - 0.035)) - 0.035;
+  d = smin(d, lip, 0.03);
+  return d;
+}
+float sdCap(vec3 p) { return sdCone(p, 4.175, 0.185, 0.315, 0.245) - 0.02; }
+float sdBottle(vec3 p) { return sdCone(p, 2.57, 1.42, 0.6266, 0.2985); }
+float sdInner(vec3 p) { return sdCone(p, 2.61, 1.32, 0.5754, 0.2705); }
+
+vec2 mapOuter(vec3 p) {
+  float dm = min(sdBase(p), sdCap(p));
+  float dg = sdBottle(p);
+  return dm < dg ? vec2(dm, 1.0) : vec2(dg, 2.0);
+}
+
+vec3 nrmOuter(vec3 p) {
+  const vec2 k = vec2(1.0, -1.0);
+  const float h = 0.0012;
+  return normalize(k.xyy * mapOuter(p + k.xyy * h).x + k.yyx * mapOuter(p + k.yyx * h).x +
+                   k.yxy * mapOuter(p + k.yxy * h).x + k.xxx * mapOuter(p + k.xxx * h).x);
+}
+vec3 nrmInner(vec3 p) {
+  const vec2 k = vec2(1.0, -1.0);
+  const float h = 0.0012;
+  return normalize(k.xyy * sdInner(p + k.xyy * h) + k.yyx * sdInner(p + k.yyx * h) +
+                   k.yxy * sdInner(p + k.yxy * h) + k.xxx * sdInner(p + k.xxx * h));
+}
+
+float wax(vec3 p) {
+  float d = 1000.0;
+  for (int i = 0; i < NB; i++) {
+    d = smin(d, length(p - uB[i].xyz) - uB[i].w, WAXK);
+  }
+  return d;
+}
+vec3 nrmWax(vec3 p) {
+  const vec2 k = vec2(1.0, -1.0);
+  const float h = 0.003;
+  return normalize(k.xyy * wax(p + k.xyy * h) + k.yyx * wax(p + k.yyx * h) +
+                   k.yxy * wax(p + k.yxy * h) + k.xxx * wax(p + k.xxx * h));
+}
+
+// ---------- studio ----------
+vec3 backdrop(vec3 rd) {
+  vec3 c = mix(vec3(0.064, 0.055, 0.049), vec3(0.036, 0.032, 0.030), smoothstep(-0.1, 0.9, rd.y));
+  float g = max(dot(rd, normalize(vec3(0.0, 0.02, -1.0))), 0.0);
+  c += vec3(0.052, 0.040, 0.031) * pow(g, 24.0);
+  return c;
+}
+
+vec3 tableCol(vec3 q) {
+  float r = length(q.xz);
+  vec3 c = vec3(0.030, 0.026, 0.024);
+  c += vec3(0.012, 0.013, 0.015) * smoothstep(6.0, 0.0, length(q.xz - vec2(-1.5, 2.5)));
+  c *= 0.3 + 0.7 * smoothstep(0.70, 1.25, r);
+  float g = exp(-max(r - 0.8, 0.0) * 1.5) * smoothstep(0.74, 0.95, r);
+  c += vec3(1.0, 0.36, 0.07) * 0.22 * g;
+  return c;
+}
+float tableFog(vec3 q) { return smoothstep(5.0, 22.0, length(q.xz)); }
+
+vec3 world(vec3 ro, vec3 rd) {
+  vec3 bg = backdrop(rd);
+  if (rd.y < -0.0001) {
+    float t = -ro.y / rd.y;
+    vec3 q = ro + rd * t;
+    return mix(tableCol(q), bg, tableFog(q));
+  }
+  return bg;
+}
+
+float strip(vec3 rd, float az, float w, float y0, float y1) {
+  float a = atan(rd.x, rd.z);
+  float el = rd.y / max(length(rd.xz), 0.0001);
+  float sx = smoothstep(w, w * 0.55, abs(a - az));
+  float sy = smoothstep(y0 - 0.08, y0 + 0.02, el) * smoothstep(y1 + 0.10, y1 - 0.02, el);
+  return sx * sy;
+}
+vec3 strips(vec3 rd) {
+  vec3 c = vec3(0.82, 0.90, 1.0) * 7.0 * strip(rd, -0.85, 0.07, -0.25, 1.3);
+  c += vec3(0.90, 0.94, 1.0) * 4.5 * strip(rd, 1.05, 0.045, -0.20, 1.1);
+  return c;
+}
+vec3 env(vec3 ro, vec3 rd) { return world(ro, rd) + strips(rd); }
+
+// ---------- materials ----------
+vec3 shadeMetal(vec3 p, vec3 n, vec3 rd) {
+  vec3 t = normalize(vec3(-p.z, 0.0, p.x) + vec3(0.0001, 0.0, 0.0));
+  vec3 b = normalize(cross(n, t));
+  float s = p.y * 90.0 + length(p.xz) * 90.0;
+  float streak = vn(s) * 0.6 + vn(s * 2.7 + 11.0) * 0.4;
+  vec3 n2 = normalize(n + b * (streak - 0.5) * 0.07);
+  vec3 r = reflect(rd, n2);
+  vec3 acc = vec3(0.0);
+  float ws = 0.0;
+  for (int i = 0; i < 7; i++) {
+    float fi = (float(i) - 3.0) / 3.0;
+    float w = exp(-fi * fi * 2.0);
+    vec3 d = normalize(r + b * fi * 0.22 + t * sin(fi * 7.0) * 0.03);
+    acc += env(p, d) * w;
+    ws += w;
+  }
+  vec3 col = acc / ws;
+  float cosi = clamp(dot(-rd, n), 0.0, 1.0);
+  vec3 F = mix(vec3(0.88, 0.89, 0.92), vec3(1.0), pow(1.0 - cosi, 5.0));
+  col *= F;
+  col *= 0.92 + 0.16 * streak;
+  vec3 warm = vec3(1.0, 0.42, 0.10);
+  // heater bounce on the cup rim, the waist and the cap skirt
+  col += warm * 0.55 * exp(-max(1.27 - p.y, 0.0) * 6.0) * step(p.y, 1.6);
+  col += warm * 0.10 * smoothstep(0.0, 0.7, r.y) * step(p.y, 1.6);
+  col += warm * 0.32 * exp(-max(p.y - 3.97, 0.0) * 9.0) * step(3.5, p.y);
+  col *= mix(0.55, 1.0, smoothstep(0.0, 0.25, p.y));
+  col += vec3(0.010, 0.010, 0.011);
+  return col;
+}
+
+vec3 shadeWax(vec3 p, vec3 rd) {
+  vec3 n = nrmWax(p);
+  float h = clamp((p.y - 1.3) / 2.6, 0.0, 1.0);
+  float I = 1.0 / (1.0 + 3.5 * h * h);
+  float th = 0.0;
+  vec3 q = p;
+  for (int i = 0; i < 8; i++) {
+    q += rd * 0.06;
+    th += 0.06 * step(wax(q), 0.0);
+  }
+  float sigScale = mix(0.45, 1.0, smoothstep(0.0, 0.5, h));
+  vec3 sig = vec3(0.35, 3.2, 11.0) * sigScale;
+  vec3 trans = exp(-sig * th * 2.2);
+  vec3 col = vec3(1.0, 0.72, 0.36) * 2.3 * I * trans;
+  // hot pool emission near the heater
+  col += vec3(1.0, 0.55, 0.12) * 1.5 * exp(-max(p.y - 1.3, 0.0) * 3.5);
+  // body colour
+  vec3 alb = vec3(0.78, 0.13, 0.02);
+  float below = 0.6 + 0.4 * max(-n.y, 0.0);
+  col += alb * (0.30 * I * below + 0.05);
+  vec3 L1 = normalize(vec3(-0.75, 0.35, 0.66));
+  vec3 L2 = normalize(vec3(0.867, 0.30, 0.497));
+  col += alb * (0.16 * max(dot(n, L1), 0.0) + 0.09 * max(dot(n, L2), 0.0));
+  vec3 v = -rd;
+  float s1 = pow(max(dot(n, normalize(L1 + v)), 0.0), 70.0);
+  float s2 = pow(max(dot(n, normalize(L2 + v)), 0.0), 90.0);
+  col += vec3(1.0, 0.93, 0.85) * (0.45 * s1 + 0.28 * s2);
+  // thin warm rim
+  float rim = pow(1.0 - max(dot(n, v), 0.0), 3.0);
+  col += vec3(1.0, 0.5, 0.12) * 0.35 * rim * I;
+  return col;
+}
+
+vec3 shadeGlass(vec3 p, vec3 n, vec3 rd) {
+  float cosi = clamp(dot(-rd, n), 0.0, 1.0);
+  float F = 0.04 + 0.96 * pow(1.0 - cosi, 5.0);
+  vec3 refl = env(p, reflect(rd, n));
+  vec3 ri = refract(rd, n, 1.0 / 1.33);
+  if (dot(ri, ri) < 0.01) ri = rd;
+
+  float t = 0.0;
+  bool inside = false;
+  for (int i = 0; i < 12; i++) {
+    float d = sdInner(p + ri * t);
+    if (d < 0.0) { inside = true; break; }
+    t += max(d, 0.004);
+    if (t > 0.7) break;
+  }
+
+  vec3 inner;
+  if (!inside) {
+    vec3 warm = vec3(1.0, 0.5, 0.14) * 0.9;
+    inner = mix(warm, world(p, rd) * 0.92, smoothstep(1.3, 1.6, p.y));
+  } else {
+    float t0 = t + 0.004;
+    float t1 = t0 + 0.006;
+    for (int i = 0; i < 40; i++) {
+      float d = sdInner(p + ri * t1);
+      if (d > -0.001) break;
+      t1 += max(-d, 0.004);
+    }
+    float tw = t0;
+    bool hw = false;
+    for (int i = 0; i < 56; i++) {
+      float d = wax(p + ri * tw);
+      if (d < 0.002) { hw = true; break; }
+      tw += d * 0.9;
+      if (tw > t1) break;
+    }
+    float pathLen;
+    if (hw && tw <= t1) {
+      inner = shadeWax(p + ri * tw, ri);
+      pathLen = tw - t0;
+    } else {
+      vec3 pe = p + ri * t1;
+      vec3 ne = nrmInner(pe);
+      vec3 ro2 = refract(ri, -ne, 1.33);
+      if (dot(ro2, ro2) < 0.01) ro2 = reflect(ri, -ne);
+      vec3 bg = world(pe, ro2);
+      if (pe.y < 1.32) bg = vec3(1.0, 0.6, 0.2) * 1.5;
+      bg *= vec3(0.97, 0.95, 0.92);
+      // softboxes mirrored on the inside of the far wall
+      bg += strips(reflect(ri, ne)) * 0.018;
+      // warm bounce of the wax on the far wall
+      bg += vec3(1.0, 0.45, 0.12) * 0.035 * exp(-max(pe.y - 1.3, 0.0) * 0.9);
+      inner = bg;
+      pathLen = t1 - t0;
+    }
+    float ym = p.y + ri.y * (t0 + 0.5 * pathLen);
+    inner += vec3(1.0, 0.55, 0.16) * 0.13 * exp(-max(ym - 1.3, 0.0) * 1.3) * pathLen;
+  }
+  inner *= mix(1.0, 0.82, pow(1.0 - cosi, 3.0));
+  return mix(inner, refl, F);
+}
+
+bool marchOuter(vec3 ro, vec3 rd, out float t, out float mat) {
+  t = 0.0; mat = 0.0;
+  vec2 o = ro.xz, d = rd.xz;
+  float a = dot(d, d);
+  float b = dot(o, d);
+  float c = dot(o, o) - 0.7225;
+  float tf = 60.0;
+  if (a > 0.000001) {
+    float disc = b * b - a * c;
+    if (disc < 0.0) return false;
+    float sq = sqrt(disc);
+    t = max((-b - sq) / a, 0.0);
+    tf = (-b + sq) / a;
+    if (tf < 0.0) return false;
+  } else if (c > 0.0) {
+    return false;
+  }
+  for (int i = 0; i < 96; i++) {
+    vec3 p = ro + rd * t;
+    vec2 m = mapOuter(p);
+    if (m.x < 0.0008) { mat = m.y; return true; }
+    t += m.x;
+    if (t > tf + 0.05) break;
+  }
+  return false;
+}
+
+vec3 aces(vec3 x) {
+  return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+}
+
+void main() {
+  vec2 uv = (gl_FragCoord.xy - 0.5 * uRes) / (0.5 * uRes.y);
+  vec3 f = normalize(TARGET - CAM);
+  vec3 r = vec3(1.0, 0.0, 0.0);
+  vec3 u = cross(r, f);
+  vec3 ro = CAM;
+  vec3 rd = normalize(f + r * (uv.x * uTan) + u * (uv.y * uTan + YOFF));
+
+  vec3 col = vec3(0.0);
+  float w = 1.0;
+  for (int bounce = 0; bounce < 2; bounce++) {
+    float tL, mat;
+    bool hit = marchOuter(ro, rd, tL, mat);
+    float tP = (rd.y < -0.0001) ? -ro.y / rd.y : 1.0e9;
+    if (hit && tL < tP) {
+      vec3 p = ro + rd * tL;
+      vec3 n = nrmOuter(p);
+      vec3 c = (mat < 1.5) ? shadeMetal(p, n, rd) : shadeGlass(p, n, rd);
+      if (bounce == 1) w *= exp(-p.y * 0.5);
+      col += w * c;
+      break;
+    }
+    if (tP < 1.0e8) {
+      vec3 q = ro + rd * tP;
+      float fog = tableFog(q);
+      vec3 tc = mix(tableCol(q), backdrop(rd), fog);
+      if (bounce == 1) { col += w * tc; break; }
+      float k = (0.34 + 0.3 * pow(1.0 - abs(rd.y), 5.0)) * (1.0 - fog);
+      col += w * (1.0 - k) * tc;
+      w *= k;
+      ro = q + vec3(0.0, 0.001, 0.0);
+      rd = reflect(rd, vec3(0.0, 1.0, 0.0));
+      continue;
+    }
+    col += w * backdrop(rd);
+    break;
+  }
+
+  // gentle vignette, tone map, gamma, dither
+  vec2 vq = gl_FragCoord.xy / uRes - 0.5;
+  col *= 1.0 - 0.35 * dot(vq, vq);
+  col = aces(col);
+  col = pow(col, vec3(1.0 / 2.2));
+  float dn = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
+  col += (dn - 0.5) / 255.0;
+  gl_FragColor = vec4(col, 1.0);
+}
+</script>
+<script>
+(function () {
+  'use strict';
+
+  var HEAT = 0.65;
+  var PALETTE_INDEX = 0;           // Ember
+  var DEFAULT_SEED = 1337;
+  var NB = 20;
+  var DT = 1 / 120;                // fixed simulation substep
+  var PIXEL_BUDGET = 3.0e6;
+
+  var manifest = {
+    id: 'lava-lamp',
+    name: 'lava-lamp',
+    title: 'Lava Lamp',
+    version: '1.0.0',
+    controls: [],
+    state: { heat: HEAT, paletteIndex: PALETTE_INDEX },
+    stateKeys: ['heat', 'paletteIndex'],
+    palettes: ['Ember'],
+    deterministic: true,
+    api: ['getManifest', 'getState', 'reset', 'destroy', 'pause', 'resume', 'advance', 'step', 'seek', 'render']
+  };
+
+  var canvas = document.getElementById('c');
+  var gl = null, prog = null, vsh = null, fsh = null, buf = null;
+  var locRes = null, locTan = null, locB = null, locPos = -1;
+
+  var state = { heat: HEAT, paletteIndex: PALETTE_INDEX };
+  var seed = DEFAULT_SEED;
+  var sim = null;                  // seeded blob parameters
+  var steps = 0;                   // completed fixed substeps since epoch
+  var acc = 0;                     // accumulated sub-step remainder (seconds)
+  var lastNow = null;
+  var paused = false;
+  var destroyed = false;
+  var rafId = 0;
+  var blobData = new Float32Array(NB * 4);
+  var resizeObserver = null;
+
+  // ---------- deterministic simulation ----------
+  function mulberry32(a) {
+    return function () {
+      a |= 0; a = (a + 0x6D2B79F5) | 0;
+      var t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  function normSeed(s) {
+    if (typeof s === 'number' && isFinite(s)) return Math.floor(s) >>> 0;
+    if (typeof s === 'string' && s.length) {
+      var n = Number(s);
+      if (isFinite(n)) return Math.floor(n) >>> 0;
+      var h = 2166136261;
+      for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+      return h >>> 0;
+    }
+    return DEFAULT_SEED;
+  }
+
+  function buildSim(sd) {
+    var rnd = mulberry32((sd ^ 0x9E3779B9) >>> 0);
+    var sizes = [0.25, 0.20, 0.16, 0.22, 0.13, 0.18, 0.11, 0.15];
+    var blobs = [];
+    var TWO_PI = Math.PI * 2;
+    for (var i = 0; i < 8; i++) {
+      var r = sizes[i] + (rnd() - 0.5) * 0.03;
+      var yb = 1.36;
+      var ytMax = 1.25 + (0.55 - r) / 0.1155;
+      var yt = Math.min(3.78, ytMax) - rnd() * 0.45;
+      var T = 24 + 26 * rnd() + r * 40;
+      blobs.push({
+        r: r, yb: yb, yt: yt, T: T,
+        phi: (i + rnd() * 0.7) / 8,
+        lag: Math.max(0.02, Math.min(0.12, 1.15 * r / ((yt - yb) * Math.PI))),
+        a0: rnd() * TWO_PI,
+        w: (0.02 + 0.04 * rnd()) * (rnd() < 0.5 ? -1 : 1),
+        wr: 0.03 + 0.05 * rnd(),
+        a1: rnd() * TWO_PI
+      });
+    }
+    return {
+      blobs: blobs,
+      prewarm: 60 + rnd() * 120,
+      c0: rnd() * TWO_PI, c1: rnd() * TWO_PI, c2: rnd() * TWO_PI, c3: rnd() * TWO_PI
+    };
+  }
+
+  function innerRadius(y) { return 0.58 - 0.1155 * (y - 1.25); }
+
+  function blobY(b, ph) {
+    ph = ph - Math.floor(ph);
+    var ph2 = ph + 0.05 * Math.sin(2 * Math.PI * ph);
+    var u = 0.5 - 0.5 * Math.cos(2 * Math.PI * ph2);
+    return b.yb + (b.yt - b.yb) * u;
+  }
+
+  function computeBlobs() {
+    var speed = 0.35 + state.heat;
+    var t = sim.prewarm + steps * DT * speed;
+    var d = blobData, o = 0;
+
+    // amber pool over the heater
+    d[o++] = 0; d[o++] = 0.67 + 0.015 * Math.sin(t * 0.21); d[o++] = 0; d[o++] = 0.9 + 0.012 * Math.sin(t * 0.17 + 1.0);
+    // cooled wax gathered under the cap
+    d[o++] = 0.02; d[o++] = 3.95; d[o++] = 0; d[o++] = 0.2 + 0.02 * Math.sin(t * 0.11);
+
+    // standing column: a bulb bridged to the pool by a neck
+    var ca = sim.c0 + t * 0.015;
+    var cr = 0.2;
+    var bulbR = 0.165 + 0.02 * Math.sin(t * 0.19 + sim.c2);
+    var bulbY = 1.98 + 0.10 * Math.sin(t * 0.13 + sim.c1);
+    var poolTop = d[1] + Math.sqrt(Math.max(0, d[3] * d[3] - cr * cr));
+    var gap = Math.max(0, (bulbY - bulbR) - poolTop);
+    var neckR = 0.06 + 0.2 * gap;
+    var cx = Math.cos(ca) * cr, cz = Math.sin(ca) * cr;
+    d[o++] = cx; d[o++] = bulbY; d[o++] = cz; d[o++] = bulbR;
+    d[o++] = cx * 0.95; d[o++] = poolTop + gap * 0.5; d[o++] = cz * 0.95; d[o++] = neckR;
+
+    // travelling blobs: head + trailing tail (teardrops and necks)
+    for (var i = 0; i < sim.blobs.length; i++) {
+      var b = sim.blobs[i];
+      var ph = t / b.T + b.phi;
+      var ang = b.a0 + b.w * t;
+      var fr = 0.45 + 0.35 * Math.sin(t * b.wr + b.a1);
+      var ca2 = Math.cos(ang), sa2 = Math.sin(ang);
+
+      var rh = b.r * (1 + 0.05 * Math.sin(t * 0.3 + b.a1));
+      var yh = blobY(b, ph);
+      var mh = Math.max(0, innerRadius(yh) - 0.03 - rh) * fr;
+      d[o++] = ca2 * mh; d[o++] = yh; d[o++] = sa2 * mh; d[o++] = rh;
+
+      var rt = b.r * 0.62;
+      var yt = blobY(b, ph - b.lag);
+      var mt = Math.max(0, innerRadius(yt) - 0.03 - rt) * fr;
+      d[o++] = ca2 * mt; d[o++] = yt; d[o++] = sa2 * mt; d[o++] = rt;
+    }
+  }
+
+  // ---------- renderer ----------
+  function compile(type, src) {
+    var s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+      if (window.console) console.error(gl.getShaderInfoLog(s));
+    }
+    return s;
+  }
+
+  function initGL() {
+    var opts = { antialias: false, alpha: false, depth: false, stencil: false, preserveDrawingBuffer: true, powerPreference: 'high-performance' };
+    gl = canvas.getContext('webgl', opts) || canvas.getContext('experimental-webgl', opts);
+    if (!gl) return false;
+    vsh = compile(gl.VERTEX_SHADER, document.getElementById('vs').textContent);
+    fsh = compile(gl.FRAGMENT_SHADER, document.getElementById('fs').textContent);
+    prog = gl.createProgram();
+    gl.attachShader(prog, vsh);
+    gl.attachShader(prog, fsh);
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      if (window.console) console.error(gl.getProgramInfoLog(prog));
+      return false;
+    }
+    gl.useProgram(prog);
+    buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+    locPos = gl.getAttribLocation(prog, 'aPos');
+    gl.enableVertexAttribArray(locPos);
+    gl.vertexAttribPointer(locPos, 2, gl.FLOAT, false, 0, 0);
+    locRes = gl.getUniformLocation(prog, 'uRes');
+    locTan = gl.getUniformLocation(prog, 'uTan');
+    locB = gl.getUniformLocation(prog, 'uB[0]') || gl.getUniformLocation(prog, 'uB');
+    gl.disable(gl.DEPTH_TEST);
+    gl.disable(gl.BLEND);
+    return true;
+  }
+
+  function releaseGL() {
+    if (!gl) return;
+    try {
+      if (locPos >= 0) gl.disableVertexAttribArray(locPos);
+      gl.bindBuffer(gl.ARRAY_BUFFER, null);
+      gl.useProgram(null);
+      if (buf) gl.deleteBuffer(buf);
+      if (prog) {
+        if (vsh) gl.detachShader(prog, vsh);
+        if (fsh) gl.detachShader(prog, fsh);
+        gl.deleteProgram(prog);
+      }
+      if (vsh) gl.deleteShader(vsh);
+      if (fsh) gl.deleteShader(fsh);
+    } catch (e) { /* context may already be lost */ }
+    buf = prog = vsh = fsh = null;
+    locRes = locTan = locB = null;
+  }
+
+  function fitCanvas() {
+    var cw = Math.max(1, canvas.clientWidth || window.innerWidth || 1);
+    var ch = Math.max(1, canvas.clientHeight || window.innerHeight || 1);
+    var dpr = window.devicePixelRatio || 1;
+    var scale = Math.max(1.5, Math.min(dpr, 2));
+    var px = cw * ch * scale * scale;
+    if (px > PIXEL_BUDGET) scale *= Math.sqrt(PIXEL_BUDGET / px);
+    var w = Math.max(1, Math.round(cw * scale));
+    var h = Math.max(1, Math.round(ch * scale));
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+  }
+
+  function render() {
+    if (destroyed || !gl || !prog) return;
+    if (gl.isContextLost && gl.isContextLost()) return;
+    fitCanvas();
+    computeBlobs();
+    var w = canvas.width, h = canvas.height;
+    var aspect = w / h;
+    // lamp bounds fill at most 72% of either viewport dimension
+    var tanH = Math.max(0.18445 / 0.72, 0.0675 / (0.72 * aspect));
+    gl.viewport(0, 0, w, h);
+    gl.useProgram(prog);
+    gl.uniform2f(locRes, w, h);
+    gl.uniform1f(locTan, tanH);
+    gl.uniform4fv(locB, blobData);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  function addTime(seconds) {
+    if (!(seconds > 0) || !isFinite(seconds)) return;
+    acc += seconds;
+    var n = Math.floor(acc / DT);
+    if (n > 0) { steps += n; acc -= n * DT; }
+  }
+
+  function frame(now) {
+    if (destroyed) return;
+    rafId = requestAnimationFrame(frame);
+    if (lastNow === null) lastNow = now;
+    var dt = (now - lastNow) / 1000;
+    lastNow = now;
+    if (!paused) addTime(dt);
+    render();
+  }
+
+  function onResize() {
+    if (destroyed) return;
+    render();
+  }
+
+  function onContextLost(e) {
+    e.preventDefault();
+  }
+
+  function onContextRestored() {
+    if (destroyed) return;
+    initGL();
+    render();
+  }
+
+  // ---------- public API ----------
+  function getState() {
+    return { heat: state.heat, paletteIndex: state.paletteIndex };
+  }
+
+  function reset(s) {
+    if (destroyed) return getState();
+    seed = (s === undefined || s === null) ? DEFAULT_SEED : normSeed(s);
+    state.heat = HEAT;
+    state.paletteIndex = PALETTE_INDEX;
+    sim = buildSim(seed);
+    steps = 0;
+    acc = 0;
+    lastNow = null;
+    render();
+    return getState();
+  }
+
+  function destroy() {
+    if (destroyed) return;
+    if (rafId) cancelAnimationFrame(rafId);
+    rafId = 0;
+    window.removeEventListener('resize', onResize);
+    canvas.removeEventListener('webglcontextlost', onContextLost);
+    canvas.removeEventListener('webglcontextrestored', onContextRestored);
+    if (resizeObserver) { resizeObserver.disconnect(); resizeObserver = null; }
+    releaseGL();
+    if (gl) {
+      var ext = gl.getExtension && gl.getExtension('WEBGL_lose_context');
+      if (ext) { try { ext.loseContext(); } catch (e) { /* ignore */ } }
+    }
+    gl = null;
+    destroyed = true;
+  }
+
+  function advance(seconds) {
+    if (destroyed) return getState();
+    addTime(Number(seconds));
+    render();
+    return getState();
+  }
+
+  function seek(seconds) {
+    if (destroyed) return getState();
+    var t = Math.max(0, Number(seconds) || 0);
+    steps = Math.floor(t / DT + 1e-9);
+    acc = t - steps * DT;
+    if (acc < 0) acc = 0;
+    lastNow = null;
+    render();
+    return getState();
+  }
+
+  var api = {
+    manifest: manifest,
+    controls: manifest.controls,
+    getManifest: function () { return manifest; },
+    getState: getState,
+    setState: function () { return getState(); },
+    reset: reset,
+    destroy: destroy,
+    pause: function () { paused = true; },
+    resume: function () { paused = false; lastNow = null; },
+    advance: advance,
+    step: function (dt) { return advance(dt === undefined ? DT : dt); },
+    seek: seek,
+    setTime: seek,
+    render: render
+  };
+
+  // ---------- boot ----------
+  sim = buildSim(seed);
+  var ok = initGL();
+  if (ok) {
+    window.addEventListener('resize', onResize);
+    canvas.addEventListener('webglcontextlost', onContextLost);
+    canvas.addEventListener('webglcontextrestored', onContextRestored);
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(onResize);
+      resizeObserver.observe(canvas);
+    }
+    render();
+    rafId = requestAnimationFrame(frame);
+  }
+
+  var existing = window.BridgeBench;
+  window.BridgeBench = api;
+  window.bridgeBench = api;
+  window.__BRIDGEBENCH__ = api;
+  window.__bridgeBench = api;
+  window.benchmark = api;
+  window.bench = api;
+  window.manifest = manifest;
+  if (existing && typeof existing.register === 'function') {
+    try { existing.register(api); } catch (e) { /* ignore */ }
+  }
+  try {
+    window.dispatchEvent(new CustomEvent('bridgebench:ready', { detail: api }));
+  } catch (e) { /* ignore */ }
+})();
+</script>
+</body>
+</html>
