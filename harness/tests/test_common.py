@@ -8,7 +8,8 @@ directory names diverge from prompt ids across the corpus.
 import unittest
 from pathlib import Path
 
-from harness.modes._common import EFFORT_LEVELS, derive_model, model_tag, run_tag, session_effort
+from harness.modes._common import (EFFORT_LEVELS, derive_model, model_tag, printable, run_tag,
+                                    session_effort)
 
 
 class DeriveModelTest(unittest.TestCase):
@@ -72,6 +73,62 @@ class ModelTagTest(unittest.TestCase):
             with self.subTest(bad=bad):
                 with self.assertRaises(ValueError):
                     model_tag(bad)
+
+
+class PrintableTest(unittest.TestCase):
+    """``printable`` turns every non-printable character into its ``repr`` escape, nothing else."""
+
+    ESCAPED = (
+        ("line feed", "a\nb", "a\\nb"),
+        ("carriage return", "a\rb", "a\\rb"),
+        ("next line (C1)", "a\x85b", "a\\x85b"),
+        ("line separator", "a\u2028b", "a\\u2028b"),
+        ("paragraph separator", "a\u2029b", "a\\u2029b"),
+        ("file separators", "\x1c\x1d\x1e", "\\x1c\\x1d\\x1e"),
+        ("escape", "\x1b[2J", "\\x1b[2J"),
+        ("bell and backspace", "\a\b", "\\x07\\x08"),
+        ("C1 control sequence introducer", "\x9b2J", "\\x9b2J"),
+        ("right-to-left override", "a\u202eb", "a\\u202eb"),
+        ("zero-width space", "a\u200bb", "a\\u200bb"),
+        ("lone surrogate", "\ud800", "\\ud800"),
+        ("tab", "a\tb", "a\\tb"),
+        ("no-break space", "a\xa0b", "a\\xa0b"),
+        ("delete", "\x7f", "\\x7f"),
+        ("nul", "\x00", "\\x00"),
+    )
+
+    UNCHANGED = ("", "plain text", "caf\u00e9 \u2713 \ufffd", "branch 'feat/1-x'",
+                 "back\\slash", "a\\nb", "'quoted \\x1b'", "  two  spaces  ")
+
+    def test_each_class_of_character_is_replaced_by_its_repr_escape(self):
+        for label, raw, expected in self.ESCAPED:
+            with self.subTest(label):
+                self.assertEqual(printable(raw), expected)
+
+    def test_the_result_has_only_printable_characters(self):
+        for label, raw, _ in self.ESCAPED:
+            with self.subTest(label):
+                self.assertTrue(printable(raw).isprintable())
+
+    def test_printable_text_and_existing_repr_output_come_back_unchanged(self):
+        for text in self.UNCHANGED:
+            with self.subTest(text=text):
+                self.assertEqual(printable(text), text)
+
+    def test_no_quotes_are_added_and_nothing_is_cut_or_collapsed(self):
+        long_line = "word " * 500
+        self.assertEqual(printable(long_line), long_line)
+        self.assertEqual(printable("a\x1bb"), "a\\x1bb")
+
+    def test_applying_it_twice_gives_the_same_result(self):
+        for label, raw, _ in self.ESCAPED:
+            with self.subTest(label):
+                self.assertEqual(printable(printable(raw)), printable(raw))
+
+    def test_a_value_that_is_not_a_string_goes_through_str(self):
+        self.assertEqual(printable(12), "12")
+        self.assertEqual(printable(["a\n"]), "['a\\n']")
+        self.assertEqual(printable(ValueError("x\ny")), "x\\ny")
 
 
 class EffortTest(unittest.TestCase):

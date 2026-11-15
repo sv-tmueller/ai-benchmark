@@ -12,6 +12,19 @@ META_SUFFIX = ".meta.json"
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 
+def printable(value):
+    """Return ``str(value)`` with every non-printable character written as its ``repr`` escape.
+
+    Line breaks (``\\n``, ``\\r``, ``\\x85``, ``\\u2028``), ESC and the other control codes, C1
+    controls, bidi controls, zero-width characters, lone surrogates, tabs and no-break spaces
+    all become visible escapes, so text from outside this repo (a check name, a file path, a
+    ``gh`` error line) cannot start a line of its own or drive the terminal. No quote marks are
+    added, backslashes are not doubled, nothing is cut and whitespace is not collapsed, so an
+    honest value is unchanged and applying this twice gives the same result as once.
+    """
+    return "".join(c if c.isprintable() else repr(c)[1:-1] for c in str(value))
+
+
 def pair_meta(result_path):
     """Return the ``<stem>.meta.json`` sibling of ``result_path``, or ``None``.
 
