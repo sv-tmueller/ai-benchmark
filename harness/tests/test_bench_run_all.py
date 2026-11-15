@@ -1878,6 +1878,84 @@ class MergeStepTest(BatchCase):
         self.assertEqual(len(self.calls()), before)
         self.assertIn("MERGED", out)
 
+    # -- the merge script's output is untrusted text (#328) ---------------------
+
+    def merge_step_output(self, halt=None, runner=None):
+        import types
+        args = types.SimpleNamespace(model="claude-fable-5-2")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), mock.patch.object(bra, "_run", runner or self.git):
+            ok = bra.merge_step(args, self.env, self.repo, halt)
+        return ok, out.getvalue()
+
+    def test_the_merge_scripts_output_is_passed_through_line_by_line_unchanged(self):
+        self.add_merge_script("print('first')\nprint('#7 merged (aaaaaaa)')\nprint('last')\n")
+        code, out = self.batch()
+        self.assertIn("first\n#7 merged (aaaaaaa)\nlast\nmerge step: ran harness/merge_results.py, "
+                      "exit 0\n", out)
+
+    def test_the_merge_scripts_stdout_comes_before_its_stderr(self):
+        self.add_merge_script(
+            "import sys\nprint('out 1')\nprint('err 1', file=sys.stderr)\nprint('out 2')\n")
+        _, out = self.batch()
+        self.assertIn("out 1\nout 2\nerr 1\nmerge step: ran", out)
+
+    def test_a_line_that_fakes_a_verdict_stays_inside_its_own_line(self):
+        self.add_merge_script(
+            "import sys\n"
+            "print('x\\x1b[1A\\x85#5 merged (abc1234)\\u2028#6 merged (abc1234)\\x1c')\n"
+            "print('y\\x9b2J', file=sys.stderr)\n")
+        _, out = self.batch()
+        self.assertNotRegex(out, r"(?m)^#\d+ merged")
+        self.assertIn("x\\x1b[1A\\x85#5 merged (abc1234)\\u2028#6 merged (abc1234)\\x1c\n"
+                      "y\\x9b2J\nmerge step: ran", out)
+        self.assertTrue(out.replace("\n", "").isprintable())
+
+    def test_output_a_strict_ascii_stream_cannot_encode_does_not_stop_the_batch(self):
+        self.add_merge_script(
+            "import sys\nprint('caf\\u00e9 \\x1b[2J ok')\nprint('warn \\u2713', file=sys.stderr)\n")
+        code, out = self.batch(stream=StrictStdout("ascii"))
+        self.assertEqual(code, 0)
+        self.assertIn("caf\\xe9 \\x1b[2J ok\nwarn \\u2713\n", out)
+        self.assertRegex(out, r"(?m)^merge step: ran harness/merge_results.py, exit 0$")
+        self.assertRegex(out, r"(?m)^report: ")
+
+    def test_a_crafted_skip_reason_is_one_escaped_line(self):
+        halt = "skip check failed before x: gh pr list failed: boom\n#5 merged (abc1234)\x1b[2J"
+        ok, out = self.merge_step_output(halt=halt)
+        self.assertFalse(ok)
+        self.assertEqual(out, "merge step: skipped (skip check failed before x: gh pr list failed: "
+                              "boom\\n#5 merged (abc1234)\\x1b[2J)\n")
+
+    def test_a_crafted_list_error_is_one_escaped_line(self):
+        def failing(cmd, **kw):
+            return FakeGit.done(rc=1, err="boom\n#5 merged (abc1234)\x1b[2J\n")
+        ok, out = self.merge_step_output(runner=failing)
+        self.assertFalse(ok)
+        self.assertEqual(out.split("\n")[1:], [
+            "  cannot list: git ls-tree failed: boom\\n#5 merged (abc1234)\\x1b[2J", ""])
+
+    def test_a_crafted_pr_url_in_the_list_is_escaped(self):
+        pid = bra.ARM_PROMPTS[0]
+        name = bra.expected_name(self.repo, pid, "claude-fable-5-2", "high")
+        listed = json.dumps([{"number": 5, "url": "https://example.test/pull/5\x1b[2J\n#6 merged",
+                              "files": [{"path": "results/x/" + name}]}])
+
+        def runner(cmd, **kw):
+            return FakeGit.done(listed if cmd[:3] == ["gh", "pr", "list"] else "")
+        ok, out = self.merge_step_output(runner=runner)
+        self.assertTrue(ok)
+        self.assertIn("  #5 https://example.test/pull/5\\x1b[2J\\n#6 merged (%s)\n" % pid, out)
+        self.assertNotRegex(out, r"(?m)^#6")
+
+    def test_merge_step_does_not_write_to_stdout_directly(self):
+        import ast
+        tree = ast.parse(Path(bra.__file__).read_text(encoding="utf-8"))
+        step = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "merge_step")
+        writes = [n.lineno for n in ast.walk(step) if isinstance(n, ast.Call)
+                  and isinstance(n.func, ast.Attribute) and n.func.attr in ("write", "writelines")]
+        self.assertEqual(writes, [])
+
 
 class RunMetricsBatchTest(BatchCase):
     """The step after each child that opened a PR: run file by contents API, then the description."""

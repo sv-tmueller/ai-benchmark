@@ -74,7 +74,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from harness.modes._common import EFFORT_LEVELS, model_tag, run_tag, session_effort  # noqa: E402
+from harness.modes._common import (EFFORT_LEVELS, model_tag, printable, run_tag,  # noqa: E402
+                                    session_effort)
 
 # The 14 prompts of the one-shot arm, in ledger order: every prompt under
 # prompts/. A unit test checks this against the README ledger table and the
@@ -1167,13 +1168,13 @@ def merge_step(args, environ, repo_root, halt):
     ``repo_root`` is the batch worktree: the merge command runs its copy.
     """
     if halt:
-        _say("merge step: skipped (%s)" % halt)
+        _say("merge step: skipped (%s)" % printable(halt))
         return False
     if Path(repo_root, MERGE_SCRIPT).is_file():
         try:
             tree = tree_state(repo_root)
         except GitError as exc:
-            _say("merge step: skipped (%s)" % exc)
+            _say("merge step: skipped (%s)" % printable(exc))
             return False
         if tree.lines or tree.branch:
             _say("merge step: skipped (worktree not clean and detached)")
@@ -1184,21 +1185,24 @@ def merge_step(args, environ, repo_root, halt):
         except subprocess.TimeoutExpired:
             _say("merge step: ran %s, timed out after %d s" % (MERGE_SCRIPT, MERGE_TIMEOUT))
             return False
-        sys.stdout.write(done.stdout)
-        sys.stdout.write(done.stderr)
+        for text in (done.stdout, done.stderr):
+            # split("\n"), not splitlines(): \x85, \u2028 and \x1c-\x1e must not become lines.
+            lines = text.split("\n")
+            for line in lines[:-1] if lines[-1] == "" else lines:
+                _say(printable(line))
         _say("merge step: ran %s, exit %d" % (MERGE_SCRIPT, done.returncode))
         return done.returncode == 0
     _say("merge step: %s not present; open PRs for this arm:" % MERGE_SCRIPT)
     try:
         snap = snapshot(repo_root)
     except GitError as exc:
-        _say("  cannot list: %s" % exc)
+        _say("  cannot list: %s" % printable(exc))
         return False
     by_name = {expected_name(repo_root, pid, args.model, environ["CLAUDE_EFFORT"]): pid
                for pid in ARM_PROMPTS}
     found = [(n, u, by_name[nm]) for n, u, names in snap.prs for nm in sorted(names) if nm in by_name]
     for number, url, pid in found:
-        _say("  #%d %s (%s)" % (number, url, pid))
+        _say("  #%d %s (%s)" % (number, printable(url), pid))
     if not found:
         _say("  none")
     return True
