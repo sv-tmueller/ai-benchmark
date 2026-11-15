@@ -549,8 +549,15 @@ GROUP_OPTIONS = (("", "none"), ("prompt", "prompt"), ("model", "model"), ("effor
 
 
 def _esc(value):
-    """Escape a value for HTML text or a double-quoted attribute."""
-    return html.escape(str(value), quote=True)
+    """Escape a value for HTML text or a double-quoted attribute.
+
+    A carriage return becomes ``&#13;`` so the page never holds a raw CR. The
+    committed file is pinned to LF (``dashboard.html text eol=lf``), and git
+    normalises a CRLF in it on ``git status``, so a raw CRLF would show a
+    clean checkout as modified. A browser reads the reference back as the CR.
+    The replacement comes after ``html.escape``, which would escape its ``&``.
+    """
+    return html.escape(str(value), quote=True).replace("\r", "&#13;")
 
 
 def _number(value):

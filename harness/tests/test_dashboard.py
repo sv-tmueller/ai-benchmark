@@ -279,6 +279,19 @@ class FormatTest(unittest.TestCase):
         self.assertEqual(dashboard.format_generated("2026-11-14T18:00:59Z"), "2026-11-14 18:00")
 
 
+class EscTest(unittest.TestCase):
+    def test_a_carriage_return_becomes_a_character_reference_after_escaping(self):
+        self.assertEqual(dashboard._esc("a\r\nb\r"), "a&#13;\nb&#13;")
+        self.assertEqual(dashboard._esc("\r"), "&#13;")
+        # Replaced after escaping: the reference is not itself escaped, and a
+        # literal reference in the text still is.
+        self.assertEqual(dashboard._esc("&#13;"), "&amp;#13;")
+        self.assertEqual(dashboard._esc("<&>\"'\r"), "&lt;&amp;&gt;&quot;&#x27;&#13;")
+
+    def test_a_line_feed_is_left_alone(self):
+        self.assertEqual(dashboard._esc("a\nb"), "a\nb")
+
+
 class PageParser(html.parser.HTMLParser):
     """Collect the parts of a rendered page the tests look at."""
 
@@ -537,6 +550,40 @@ class RenderTest(TempRootCase):
     def test_render_is_deterministic(self):
         self._fixture()
         self.assertEqual(_page(self.root), _page(self.root))
+
+    def _cr_sidecars(self):
+        """Folder, file and sidecar values carrying CR, alone and as CRLF."""
+        _add_result(
+            self.root, "cr\rdir", "cr\rfile_x.html",
+            meta={"prompt_id": "pro\r\nmpt", "title": "ti\rtle\r\nline", "model": "mo\rdel",
+                  "params": {"reasoning_effort": "eff\r\nort"}})
+        _add_result(
+            self.root, "plain", "plain_x.html",
+            meta={"prompt_id": "p", "title": "a\r\nb", "model": "m\r\n",
+                  "params": {"reasoning_effort": "\r"}})
+
+    def test_a_carriage_return_in_sidecar_text_never_reaches_the_page_raw(self):
+        try:
+            self._cr_sidecars()
+        except (OSError, ValueError) as exc:
+            self.skipTest("filesystem refuses carriage returns in names: %s" % exc)
+        page = _page(self.root)
+        self.assertEqual(page.count("\r"), 0)
+        self.assertIn("&#13;", page)
+        self.assertNotIn("&amp;#13;", page)
+        rows = {r["cells"][0]["text"]: r["cells"] for r in _parse(page).rows}
+        cells = rows["pro\r\nmpt"]
+        self.assertEqual(cells[0]["attrs"]["data-sort"], "pro\r\nmpt")
+        self.assertEqual(cells[0]["attrs"]["title"], "ti\rtle\r\nline")
+        self.assertEqual((cells[1]["text"], cells[1]["attrs"]["data-sort"]), ("mo\rdel",) * 2)
+        self.assertEqual(cells[2]["text"], "eff\r\nort")
+        self.assertEqual(cells[7]["text"], "cr\rfile_x.html")
+        self.assertEqual(cells[7]["attrs"]["data-sort"], "cr\rfile_x.html")
+        self.assertEqual(cells[7]["links"][0]["href"], "results/cr%0Ddir/cr%0Dfile_x.html")
+        cells = rows["p"]
+        self.assertEqual(cells[0]["attrs"]["title"], "a\r\nb")
+        self.assertEqual((cells[1]["text"], cells[1]["attrs"]["data-sort"]), ("m\r\n",) * 2)
+        self.assertEqual(cells[2]["text"], "\r")
 
 
 # Items as the page script builds them from the table: data-sort values (null
@@ -942,6 +989,28 @@ class ReaderParityTest(TempRootCase):
         self.assertEqual(from_git, by_hand)
         self.assertEqual(len(from_git[0]), 2)
         self.assertEqual(len(from_git[1]), 2)
+
+    def test_carriage_returns_give_the_same_rows_and_the_same_bytes_in_both_readers(self):
+        entries = [
+            (b"results/cr\rdir/cr\rfile_x.html", b"<p>"),
+            (b"results/cr\rdir/cr\rfile_x.meta.json",
+             _meta(prompt="pro\r\nmpt", model="mo\rdel", effort="eff\r\nort", title="ti\r\ntle\r")),
+            (b"results/plain/plain_x.html", b"<p>"),
+            (b"results/plain/plain_x.meta.json", _meta(title="a\r\nb")),
+        ]
+        try:
+            _write_entries(self.root, entries)
+        except (OSError, UnicodeError) as exc:
+            self.skipTest("filesystem refuses carriage returns in names: %s" % exc)
+        by_hand = dashboard.collect_rows(self.root)
+        from_git = dashboard.collect_rows_at("REV", FakeGit(entries))
+        self.assertEqual(from_git, by_hand)
+        self.assertEqual(len(from_git[0]), 2)
+        page = dashboard.render(from_git[0])
+        self.assertEqual(page, dashboard.render(by_hand[0]))
+        self.assertEqual(page.encode("utf-8"), dashboard.render(by_hand[0]).encode("utf-8"))
+        self.assertEqual(page.count("\r"), 0)
+        self.assertIn("&#13;", page)
 
     def test_no_results_gives_no_rows(self):
         rows, warnings = dashboard.collect_rows_at("REV", FakeGit([]))
@@ -1351,6 +1420,49 @@ class RealGitReaderTest(unittest.TestCase):
                 self.repo.mkdir()
                 self.git("init", "-q", "-b", "main")
                 self.assertEqual(self._clone_and_hand_run(autocrlf, False), "")
+
+    def _crlf_page_clone_status(self):
+        """Commit a page made from a CRLF sidecar title exactly as the API stores it.
+
+        The merge step commits ``dashboard.html`` through the API, so the blob
+        holds the generated bytes; ``git add`` would turn CRLF into LF under
+        ``text eol=lf`` and hide the problem, so the blob is written with
+        ``--no-filters``. Returns the clone's ``git status --porcelain`` after
+        a hand run there.
+        """
+        _write_entries(self.repo, [
+            (b"results/.gitkeep", b""),
+            (b"results/a/p_m_low.html", b"<html>a</html>"),
+            (b"results/a/p_m_low.meta.json", _meta(title="a\r\nb")),
+        ])
+        shutil.copyfile(dashboard.REPO_ROOT / ".gitattributes", self.repo / ".gitattributes")
+        code = dashboard.main([], repo_root=self.repo, out=io.StringIO(), err=io.StringIO())
+        self.assertEqual(code, 0)
+        self.git("add", ".gitattributes", "results")
+        oid = self.git("hash-object", "-w", "--no-filters", "dashboard.html")
+        self.git("update-index", "--add", "--cacheinfo", "100644,%s,dashboard.html" % oid)
+        self.git("commit", "-q", "-m", "results and dashboard")
+        clone = Path(self.tmp.name) / "clone"
+        done = subprocess.run(["git", "clone", "-q", str(self.repo), str(clone)],
+                              capture_output=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        # Make git compare the content instead of trusting the file's timestamp.
+        os.utime(clone / "dashboard.html", ns=(10**18, 10**18))
+        code = dashboard.main([], repo_root=clone, out=io.StringIO(), err=io.StringIO())
+        self.assertEqual(code, 0)
+        done = subprocess.run(["git", "status", "--porcelain"], cwd=clone, capture_output=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return done.stdout.decode("utf-8")
+
+    def test_a_page_from_a_crlf_sidecar_title_is_clean_after_a_hand_run(self):
+        self.assertEqual(self._crlf_page_clone_status(), "")
+
+    def test_without_encoding_the_carriage_return_the_hand_run_leaves_the_page_modified(self):
+        # Documents the bug: with a raw CRLF in the committed page, git's LF
+        # normalisation of the working file never matches the stored blob.
+        raw = lambda value: html.escape(str(value), quote=True)
+        with mock.patch.object(dashboard, "_esc", raw):
+            self.assertEqual(self._crlf_page_clone_status().rstrip("\n"), " M dashboard.html")
 
     def test_the_repo_gitattributes_pins_only_dashboard_html_to_lf(self):
         text = (dashboard.REPO_ROOT / ".gitattributes").read_text(encoding="utf-8")

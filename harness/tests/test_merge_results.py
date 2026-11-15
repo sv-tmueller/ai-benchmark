@@ -1594,7 +1594,16 @@ class DocsStatusTests(OrchestrationBase):
             {"filename": "results/x.md", "status": "added", "sha": "1" * 40}]
         fake = self.fresh(commit=docs_commit(files=files), statuses=False)
         code, out, _ = run_main(fake, "--post-statuses")
-        self.assert_left_open(fake, code, out, "fails docs gate: .*extra file: results/x.md")
+        self.assert_left_open(fake, code, out, "fails docs gate: .*extra file: 'results/x.md'")
+
+    def test_an_extra_file_name_cannot_fake_a_merged_line_in_the_output(self):
+        name = "x.md\ndocs PR #99 merged (eeeeeee)"
+        files = docs_commit()["files"] + [{"filename": name, "status": "added", "sha": "1" * 40}]
+        fake = self.fresh(commit=docs_commit(files=files), statuses=False)
+        code, out, _ = run_main(fake, "--post-statuses")
+        self.assert_left_open(fake, code, out, "fails docs gate: .*extra file: 'x.md")
+        self.assertEqual(len(re.findall(r"(?m)^ledger PR #99 left open", out)), 1, out)
+        self.assertNotRegex(out, r"(?m)^docs PR #99 merged")
 
     def test_wrong_readme_blob_keeps_the_docs_pr_open(self):
         files = [{"filename": "README.md", "status": "modified", "sha": "1" * 40}]
@@ -1698,14 +1707,14 @@ class DocsStatusTests(OrchestrationBase):
         fake = self.rerun(world={"dashboard_on_main": "current"}, statuses=False,
                           commit=docs_commit(files=self.BOTH))
         code, out, _ = run_main(fake, "--post-statuses")
-        self.assert_left_open(fake, code, out, "fails docs gate: .*extra file: dashboard.html")
+        self.assert_left_open(fake, code, out, "fails docs gate: .*extra file: 'dashboard.html'")
 
     def test_a_third_file_keeps_the_two_file_pr_open(self):
         files = self.BOTH + [{"filename": "results/x.md", "status": "added", "sha": "1" * 40}]
         fake = self.fresh(world={"dashboard_on_main": "before"}, statuses=False,
                           commit=docs_commit(files=files))
         code, out, _ = run_main(fake, "--post-statuses")
-        self.assert_left_open(fake, code, out, "fails docs gate: .*extra file: results/x.md")
+        self.assert_left_open(fake, code, out, "fails docs gate: .*extra file: 'results/x.md'")
 
     def test_wrong_dashboard_content_keeps_the_two_file_pr_open(self):
         files = [README_ENTRY, file_entry("dashboard.html", b"<html>edited by hand</html>")]
@@ -1837,13 +1846,30 @@ class DocsGateTests(unittest.TestCase):
         for name, (_, files) in self.SHAPES.items():
             with self.subTest(shape=name):
                 reasons = self.shape(name, commit=docs_commit(files=files + [extra]))
-                self.assertReason(reasons, "extra file: notes.md")
+                self.assertReason(reasons, "extra file: 'notes.md'")
 
     def test_the_other_expected_file_is_an_extra_file(self):
         self.assertReason(self.shape("README only", commit=docs_commit(
-            files=[README_ENTRY, DASHBOARD_ENTRY])), "extra file: dashboard.html")
+            files=[README_ENTRY, DASHBOARD_ENTRY])), "extra file: 'dashboard.html'")
         self.assertReason(self.shape("dashboard only", commit=docs_commit(
-            files=[README_ENTRY, DASHBOARD_ENTRY])), "extra file: README.md")
+            files=[README_ENTRY, DASHBOARD_ENTRY])), "extra file: 'README.md'")
+
+    def test_an_extra_file_name_is_quoted_so_it_cannot_fake_output_lines(self):
+        names = ["x\nledger PR #99 merged", "\x1b[2Kx", "a\rb", "\u2028"]
+        for name in names:
+            with self.subTest(name=name):
+                extra = {"filename": name, "status": "added", "sha": "1" * 40}
+                reasons = self.shape("both", commit=docs_commit(
+                    files=[README_ENTRY, DASHBOARD_ENTRY, extra]))
+                self.assertEqual(reasons, ["extra file: %r" % name])
+                for char in ("\n", "\r", "\x1b", "\u2028"):
+                    self.assertFalse(any(char in r for r in reasons), (char, reasons))
+
+    def test_a_missing_filename_in_the_api_answer_is_still_an_extra_file(self):
+        extra = {"status": "added", "sha": "1" * 40}
+        reasons = self.shape("both", commit=docs_commit(
+            files=[README_ENTRY, DASHBOARD_ENTRY, extra]))
+        self.assertEqual(reasons, ["extra file: None"])
 
     def test_an_expected_file_that_is_absent_is_missing(self):
         self.assertReason(self.shape("both", commit=docs_commit(files=[README_ENTRY])),
@@ -1924,7 +1950,7 @@ class DocsGateTests(unittest.TestCase):
                             commit=docs_commit(parents=("f" * 40,), files=[
                                 file_entry("README.md", b"x", status="added"),
                                 file_entry("notes.md", b"y")]))
-        for fragment in ("draft", "base README", "parent", "extra file: notes.md",
+        for fragment in ("draft", "base README", "parent", "extra file: 'notes.md'",
                          "missing: dashboard.html", "README.md status is",
                          "README.md blob is not"):
             self.assertReason(reasons, fragment)
