@@ -1,0 +1,940 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bridge Horror House</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font-family: Georgia, 'Times New Roman', serif; color: #d8d2c4; }
+  canvas { display: block; }
+  .overlay { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; flex-direction: column; text-align: center; pointer-events: none; }
+  .overlay.on { display: flex; }
+  #title { background: radial-gradient(ellipse at center, rgba(0,0,0,0.55), #000 80%); pointer-events: auto; cursor: pointer; }
+  #title h1 { font-size: 64px; letter-spacing: 6px; margin: 0; color: #a31414; text-shadow: 0 0 18px #500; }
+  #title p { max-width: 560px; line-height: 1.5; color: #9a9384; font-size: 18px; }
+  #title .hint { margin-top: 28px; color: #bbb; font-size: 16px; animation: blink 1.6s infinite; }
+  @keyframes blink { 50% { opacity: 0.25; } }
+  #hud { position: fixed; inset: 0; pointer-events: none; display: none; }
+  #hud.on { display: block; }
+  #objective { position: absolute; top: 18px; left: 22px; font-size: 16px; text-shadow: 0 0 6px #000; }
+  #keys { position: absolute; top: 18px; right: 22px; font-size: 16px; text-shadow: 0 0 6px #000; }
+  #battery { position: absolute; left: 22px; bottom: 22px; width: 220px; }
+  #battery .label { font-size: 13px; margin-bottom: 4px; text-shadow: 0 0 6px #000; }
+  #battery .bar { height: 12px; background: rgba(0,0,0,0.6); border: 1px solid #555; }
+  #battery .fill { height: 100%; width: 100%; background: #d9c98a; transition: width 0.2s; }
+  #battery .fill.low { background: #b33; }
+  #burn { position: absolute; left: 50%; top: 55%; transform: translateX(-50%); width: 140px; height: 8px; background: rgba(0,0,0,0.6); border: 1px solid #a55; display: none; }
+  #burn.on { display: block; }
+  #burn .fill { height: 100%; width: 0%; background: #ff7a1a; }
+  #crosshair { position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px 0 0 -3px; border-radius: 50%; background: rgba(230,230,220,0.7); }
+  #note { background: rgba(10,8,6,0.94); pointer-events: auto; display: none; }
+  #note.on { display: flex; }
+  #note .paper { max-width: 520px; padding: 36px 40px; background: #e8dcc0; color: #2a2118; font-family: 'Courier New', monospace; font-size: 17px; line-height: 1.6; text-align: left; box-shadow: 0 0 40px #000; }
+  #note .paper small { display: block; margin-top: 18px; color: #6b5a3c; }
+  #flash { position: fixed; inset: 0; pointer-events: none; opacity: 0; background: #fff; }
+  #flash.red { background: #7a0000; }
+  #jumpscare { background: #000; pointer-events: auto; }
+  #jumpscare .face { width: 360px; height: 460px; border-radius: 45% 45% 40% 40%; background: radial-gradient(ellipse at 50% 40%, #e8e2d6, #8a8270 70%, #222); box-shadow: 0 0 80px #600; position: relative; }
+  #jumpscare .face::before, #jumpscare .face::after { content: ''; position: absolute; top: 34%; width: 64px; height: 90px; background: #000; border-radius: 50%; }
+  #jumpscare .face::before { left: 26%; }
+  #jumpscare .face::after { right: 26%; }
+  #jumpscare .mouth { position: absolute; left: 30%; right: 30%; bottom: 18%; height: 110px; background: #000; border-radius: 0 0 60px 60px; }
+  #death, #win { background: rgba(0,0,0,0.88); pointer-events: auto; }
+  #death h2, #win h2 { font-size: 52px; margin: 0 0 14px; letter-spacing: 4px; }
+  #death h2 { color: #a31414; }
+  #win h2 { color: #d9c98a; }
+  .btn { margin-top: 26px; padding: 12px 32px; font-family: inherit; font-size: 18px; background: transparent; color: #ddd; border: 1px solid #888; cursor: pointer; pointer-events: auto; }
+  .btn:hover { background: #222; }
+  #grain { position: fixed; inset: -50%; pointer-events: none; opacity: 0.07; background-image: radial-gradient(#fff 1px, transparent 1px); background-size: 3px 3px; display: none; }
+  #grain.on { display: block; animation: grainmove 0.3s steps(4) infinite; }
+  @keyframes grainmove { 0% { transform: translate(0,0); } 25% { transform: translate(-3%,2%); } 50% { transform: translate(2%,-3%); } 75% { transform: translate(-2%,-1%); } 100% { transform: translate(0,0); } }
+  #vignette { position: fixed; inset: 0; pointer-events: none; display: none; background: radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.85) 100%); }
+  #vignette.on { display: block; }
+</style>
+</head>
+<body>
+
+<div id="title" class="overlay on">
+  <h1>BRIDGE HORROR HOUSE</h1>
+  <p>You wake up locked inside an abandoned house at night. Every exit is sealed. Three brass keys are hidden in the dark rooms of the house. Find them, unlock the front door, and escape &mdash; but you are not alone in here.</p>
+  <p class="hint">Click to begin &middot; headphones recommended</p>
+</div>
+
+<div id="hud">
+  <div id="objective">Objective: find the brass keys</div>
+  <div id="keys">Keys 0/3</div>
+  <div id="crosshair"></div>
+  <div id="burn"><div class="fill"></div></div>
+  <div id="battery">
+    <div class="label">Torch</div>
+    <div class="bar"><div class="fill"></div></div>
+  </div>
+</div>
+
+<div id="note" class="overlay"><div class="paper"><span id="noteText"></span><small>Press E to close</small></div></div>
+<div id="jumpscare" class="overlay"><div class="face"><div class="mouth"></div></div></div>
+<div id="death" class="overlay"><h2>CAUGHT</h2><div>It has you now.</div><button class="btn" id="restartBtn">Try again</button></div>
+<div id="win" class="overlay"><h2>ESCAPED</h2><div id="winStats"></div><button class="btn" id="winRestart">Play again</button></div>
+<div id="flash"></div>
+<div id="vignette"></div>
+<div id="grain"></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+// ---------- Textures (procedural canvas) ----------
+const Textures = {
+  canvas(w, h, draw) {
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const g = c.getContext('2d'); draw(g, w, h);
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace; t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    return t;
+  },
+  wood() {
+    return this.canvas(256, 256, (g, w, h) => {
+      g.fillStyle = '#3a2616'; g.fillRect(0, 0, w, h);
+      for (let i = 0; i < 4; i++) {
+        const x = i * 64;
+        for (let y = 0; y < h; y += 2) {
+          const v = 40 + Math.random() * 18;
+          g.fillStyle = `rgb(${v + 30},${v + 14},${v})`; g.fillRect(x, y, 62, 2);
+        }
+        g.fillStyle = '#120a05'; g.fillRect(x, 0, 2, h);
+      }
+      for (let i = 0; i < 60; i++) { g.fillStyle = 'rgba(0,0,0,0.25)'; g.fillRect(Math.random() * w, Math.random() * h, 1, 20 + Math.random() * 40); }
+    });
+  },
+  wallpaper() {
+    return this.canvas(256, 256, (g, w, h) => {
+      g.fillStyle = '#3b2a22'; g.fillRect(0, 0, w, h);
+      for (let x = 0; x < w; x += 32) { g.fillStyle = 'rgba(90,60,40,0.55)'; g.fillRect(x, 0, 14, h); }
+      for (let i = 0; i < 400; i++) { g.fillStyle = `rgba(0,0,0,${Math.random() * 0.2})`; g.fillRect(Math.random() * w, Math.random() * h, 3, 3); }
+      for (let i = 0; i < 6; i++) { g.fillStyle = 'rgba(40,25,10,0.35)'; g.beginPath(); g.arc(Math.random() * w, Math.random() * h, 10 + Math.random() * 20, 0, 7); g.fill(); }
+    });
+  },
+  plaster() {
+    return this.canvas(256, 256, (g, w, h) => {
+      g.fillStyle = '#4a4a44'; g.fillRect(0, 0, w, h);
+      for (let i = 0; i < 90; i++) { g.strokeStyle = 'rgba(0,0,0,0.5)'; g.lineWidth = 1; g.beginPath(); let x = Math.random() * w, y = Math.random() * h; g.moveTo(x, y); for (let k = 0; k < 5; k++) { x += (Math.random() - 0.5) * 30; y += Math.random() * 14; g.lineTo(x, y); } g.stroke(); }
+    });
+  },
+  face(kind) {
+    return this.canvas(128, 128, (g, w, h) => {
+      g.fillStyle = '#6d6356'; g.fillRect(0, 0, w, h);
+      g.fillStyle = '#c8bca6'; g.beginPath(); g.ellipse(64, 66, 38, 50, 0, 0, 7); g.fill();
+      g.fillStyle = '#000';
+      const e = kind % 2 ? 1 : 0.5;
+      g.beginPath(); g.ellipse(50, 56, 7, 4 * e + 2, 0, 0, 7); g.fill();
+      g.beginPath(); g.ellipse(78, 56, 7, 4 * e + 2, 0, 0, 7); g.fill();
+      g.beginPath(); g.ellipse(64, 92, 14 + kind * 2, 6 + kind * 3, 0, 0, 7); g.fill();
+      g.strokeStyle = '#1a0f0a'; g.lineWidth = 3; g.beginPath(); g.moveTo(44, 40); g.lineTo(60, 46); g.moveTo(84, 40); g.lineTo(68, 46); g.stroke();
+    });
+  },
+};
+
+// ---------- Audio (synthesized Web Audio) ----------
+const AudioEngine = {
+  ctx: null, master: null, droneGain: null, rainGain: null, heartTimer: null, breathGain: null, chaseOn: false,
+  init() {
+    if (this.ctx) return;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    this.ctx = new AC();
+    this.master = this.ctx.createGain(); this.master.gain.value = 0.7; this.master.connect(this.ctx.destination);
+    this.makeReverb();
+    this.startDrone(); this.startRain(); this.startBreath();
+    this.scheduleAmbient();
+  },
+  makeReverb() {
+    const len = this.ctx.sampleRate * 3.5;
+    const buf = this.ctx.createBuffer(2, len, this.ctx.sampleRate);
+    for (let c = 0; c < 2; c++) { const d = buf.getChannelData(c); for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3); }
+    this.reverb = this.ctx.createConvolver(); this.reverb.buffer = buf;
+    this.reverbGain = this.ctx.createGain(); this.reverbGain.gain.value = 0.5;
+    this.reverb.connect(this.reverbGain); this.reverbGain.connect(this.master);
+  },
+  noiseBuffer(sec) {
+    const n = this.ctx.sampleRate * sec; const b = this.ctx.createBuffer(1, n, this.ctx.sampleRate);
+    const d = b.getChannelData(0); for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1; return b;
+  },
+  startDrone() {
+    const o1 = this.ctx.createOscillator(); o1.type = 'sawtooth'; o1.frequency.value = 38;
+    const o2 = this.ctx.createOscillator(); o2.type = 'sine'; o2.frequency.value = 38.7;
+    const lp = this.ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 160;
+    this.droneGain = this.ctx.createGain(); this.droneGain.gain.value = 0.12;
+    o1.connect(lp); o2.connect(lp); lp.connect(this.droneGain); this.droneGain.connect(this.master); this.droneGain.connect(this.reverb);
+    o1.start(); o2.start();
+  },
+  startRain() {
+    const src = this.ctx.createBufferSource(); src.buffer = this.noiseBuffer(4); src.loop = true;
+    const bp = this.ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 2200; bp.Q.value = 0.4;
+    this.rainGain = this.ctx.createGain(); this.rainGain.gain.value = 0.06;
+    src.connect(bp); bp.connect(this.rainGain); this.rainGain.connect(this.master);
+    src.start();
+  },
+  startBreath() {
+    const src = this.ctx.createBufferSource(); src.buffer = this.noiseBuffer(2); src.loop = true;
+    const lp = this.ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 500;
+    this.breathGain = this.ctx.createGain(); this.breathGain.gain.value = 0;
+    src.connect(lp); lp.connect(this.breathGain); this.breathGain.connect(this.master);
+    src.start();
+  },
+  setBreath(v) { if (this.breathGain) this.breathGain.gain.setTargetAtTime(v * 0.25, this.ctx.currentTime, 0.2); },
+  setDrone(v) { if (this.droneGain) this.droneGain.gain.setTargetAtTime(0.12 + v * 0.1, this.ctx.currentTime, 0.5); },
+  panned(pan) { const p = this.ctx.createStereoPanner(); p.pan.value = pan; p.connect(this.master); return p; },
+  thump(pan = 0, vol = 0.6) {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    const o = this.ctx.createOscillator(); o.frequency.setValueAtTime(90, t); o.frequency.exponentialRampToValueAtTime(30, t + 0.4);
+    const g = this.ctx.createGain(); g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
+    o.connect(g); g.connect(this.panned(pan)); o.start(t); o.stop(t + 0.5);
+  },
+  stinger(vol = 0.9) {
+    if (!this.ctx) return;
+    const src = this.ctx.createBufferSource(); src.buffer = this.noiseBuffer(0.6);
+    const hp = this.ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 1500;
+    const g = this.ctx.createGain(); g.gain.setValueAtTime(vol, this.ctx.currentTime); g.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.6);
+    src.connect(hp); hp.connect(g); g.connect(this.master); g.connect(this.reverb); src.start();
+    this.thump(0, vol);
+  },
+  whisper(pan) {
+    if (!this.ctx) return;
+    const src = this.ctx.createBufferSource(); src.buffer = this.noiseBuffer(1.8);
+    const bp = this.ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1100; bp.Q.value = 3;
+    const g = this.ctx.createGain(); const t = this.ctx.currentTime;
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.08, t + 0.6); g.gain.linearRampToValueAtTime(0, t + 1.8);
+    src.connect(bp); bp.connect(g); g.connect(this.panned(pan)); g.connect(this.reverb); src.start();
+  },
+  creak(pan) {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    const o = this.ctx.createOscillator(); o.type = 'sawtooth';
+    o.frequency.setValueAtTime(120, t); o.frequency.linearRampToValueAtTime(260, t + 0.9);
+    const g = this.ctx.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.05, t + 0.3); g.gain.linearRampToValueAtTime(0, t + 0.9);
+    o.connect(g); g.connect(this.panned(pan)); o.start(t); o.stop(t + 1);
+  },
+  scheduleAmbient() {
+    const loop = () => {
+      if (!this.ctx) return;
+      const r = Math.random();
+      const pan = Math.random() * 2 - 1;
+      if (r < 0.35) this.creak(pan);
+      else if (r < 0.6) this.whisper(pan);
+      else if (r < 0.8) this.thump(pan, 0.25);
+      setTimeout(loop, 4000 + Math.random() * 7000);
+    };
+    setTimeout(loop, 3000);
+  },
+  startHeartbeat(rate) {
+    this.stopHeartbeat();
+    const beat = () => { this.thump(0, 0.35); setTimeout(() => this.thump(0, 0.25), 180); this.heartTimer = setTimeout(beat, 60000 / rate); };
+    beat();
+  },
+  stopHeartbeat() { clearTimeout(this.heartTimer); this.heartTimer = null; },
+  chase(on) {
+    this.chaseOn = on;
+    if (!on) return;
+    const o = this.ctx.createOscillator(); o.type = 'square';
+    const g = this.ctx.createGain(); g.gain.value = 0.03;
+    const lp = this.ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 300;
+    o.frequency.value = 55; o.connect(lp); lp.connect(g); g.connect(this.master); o.start();
+    this.chaseOsc = o; this.chaseGain = g;
+  },
+};
+
+// ---------- House (floor plan, walls, doors, furniture, lights, items) ----------
+const House = {
+  W: 20, D: 16, H: 3,
+  walls: [],       // {minX,maxX,minZ,maxZ}
+  doors: [],       // {mesh, pivot, closedBox, open, angle, minX..., hinge}
+  items: [],       // {kind, mesh, pos, taken}
+  lights: [],
+  rooms: {},
+  scene: null,
+  build(scene) {
+    this.scene = scene;
+    const wallTex = Textures.wallpaper(), floorTex = Textures.wood(), ceilTex = Textures.plaster();
+    wallTex.repeat.set(4, 2); floorTex.repeat.set(5, 4); ceilTex.repeat.set(5, 4);
+    const wallMat = new THREE.MeshStandardMaterial({ map: wallTex, roughness: 0.95 });
+    const floorMat = new THREE.MeshStandardMaterial({ map: floorTex, roughness: 0.7 });
+    const ceilMat = new THREE.MeshStandardMaterial({ map: ceilTex, roughness: 1 });
+
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(this.W, this.D), floorMat);
+    floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
+    const ceil = new THREE.Mesh(new THREE.PlaneGeometry(this.W, this.D), ceilMat);
+    ceil.rotation.x = Math.PI / 2; ceil.position.y = this.H; scene.add(ceil);
+
+    // Exterior and interior wall segments: [x0, z0, x1, z1]
+    const T = 0.25;
+    const segs = [
+      // outer shell
+      [-10, -8, 10, -8], [-10, 8, -4, 8], [4, 8, 10, 8], [-10, -8, -10, 8], [10, -8, 10, 8],
+      // hallway south wall with archways (gaps at x -4..-1? handled as archways)
+      [-10, 0, -6, 0], [-4, 0, -2, 0], [2, 0, 4, 0], [6, 0, 10, 0],
+      // north row dividers
+      [-3.5, -8, -3.5, -4], [3.5, -8, 3.5, -4],
+      // north room wall at z -4 (study/bedroom/kitchen front, door openings)
+      [-10, -4, -5, -4], [-2, -4, 2, -4], [5, -4, 10, -4],
+      // south room dividers
+      [-4, 4, -4, 8], [4, 4, 4, 8], [-4, 4, -4, 0], [4, 4, 4, 0],
+    ];
+    for (const [x0, z0, x1, z1] of segs) this.addWall(x0, z0, x1, z1, T, wallMat);
+
+    // Doors on hinges (study, bedroom, front door)
+    this.addDoor(-5, -4, 'study', wallMat);
+    this.addDoor(0, -4, 'bedroom', wallMat);
+    this.addDoor(-1.5, 8, 'front', wallMat);
+    this.makeFurnitureAndLights();
+  },
+  addWall(x0, z0, x1, z1, t, mat) {
+    const len = Math.hypot(x1 - x0, z1 - z0);
+    const geo = new THREE.BoxGeometry(len, this.H, t);
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set((x0 + x1) / 2, this.H / 2, (z0 + z1) / 2);
+    m.rotation.y = Math.abs(x1 - x0) > Math.abs(z1 - z0) ? 0 : Math.PI / 2;
+    m.castShadow = true; m.receiveShadow = true; this.scene.add(m);
+    const hx = Math.abs(x1 - x0) > Math.abs(z1 - z0) ? len / 2 : t / 2;
+    const hz = Math.abs(x1 - x0) > Math.abs(z1 - z0) ? t / 2 : len / 2;
+    this.walls.push({ minX: (x0 + x1) / 2 - hx, maxX: (x0 + x1) / 2 + hx, minZ: (z0 + z1) / 2 - hz, maxZ: (z0 + z1) / 2 + hz });
+  },
+  addDoor(x, z, name, mat) {
+    const pivot = new THREE.Group(); pivot.position.set(x - 0.6, 0, z); this.scene.add(pivot);
+    const door = new THREE.Mesh(new THREE.BoxGeometry(1.2, 2.2, 0.08), new THREE.MeshStandardMaterial({ color: 0x2a1a10, roughness: 0.6, map: Textures.wood() }));
+    door.position.set(0.6, 1.1, 0); door.castShadow = true; pivot.add(door);
+    this.doors.push({ name, pivot, open: false, angle: 0, targetAngle: 0, locked: name === 'front', hinge: { x: x - 0.6, z }, halfW: 0.6 });
+  },
+  makeFurnitureAndLights() {
+    const woodMat = new THREE.MeshStandardMaterial({ color: 0x2b1a0e, roughness: 0.8 });
+    const box = (w, h, d, x, y, z, mat = woodMat) => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+      m.position.set(x, y, z); m.castShadow = true; m.receiveShadow = true; this.scene.add(m); return m;
+    };
+    // collidable furniture: table, cabinet, chair, bed, sofa
+    const furn = [
+      [-7, 5, 2.0, 0.9, 1.0],   // living room sofa
+      [7, 5, 1.6, 0.9, 1.0],    // dining table
+      [-7, -6, 2.0, 0.9, 1.0],  // study desk
+      [0, -6, 1.8, 2.0, 1.0],   // bedroom bed
+      [7, -6, 1.6, 1.8, 0.8],   // kitchen counter
+      [4, 2, 0.8, 1.6, 0.8],    // hallway cabinet
+      [-2, -7, 0.6, 1.1, 0.6],  // chair
+    ];
+    this.solids = [];
+    for (const [x, z, w, h, d] of furn) {
+      box(w, h, d, x, h / 2, z);
+      this.solids.push({ minX: x - w / 2, maxX: x + w / 2, minZ: z - d / 2, maxZ: z + d / 2 });
+    }
+    // portraits with procedural faces
+    for (let i = 0; i < 4; i++) {
+      const mat = new THREE.MeshStandardMaterial({ map: Textures.face(i), roughness: 0.9 });
+      const p = new THREE.Mesh(new THREE.PlaneGeometry(0.7, 0.9), mat);
+      p.position.set(-9.8 + i * 4.9, 1.8, i % 2 ? 7.8 : -7.8); p.rotation.y = i % 2 ? Math.PI : 0; this.scene.add(p);
+    }
+    // cobwebs
+    const web = new THREE.MeshBasicMaterial({ color: 0x777777, transparent: true, opacity: 0.25 });
+    for (let i = 0; i < 6; i++) { const w = new THREE.Mesh(new THREE.CircleGeometry(0.6, 8), web); w.position.set(-9.8, 2.8, -7.8 + i * 3); w.rotation.y = Math.PI / 2; this.scene.add(w); }
+    // candles (flickering warm lights) in foyer and hallway
+    const flameGeo = new THREE.SphereGeometry(0.05, 8, 8);
+    const flameMat = new THREE.MeshBasicMaterial({ color: 0xffaa33 });
+    this.candleLights = [];
+    for (const [x, z] of [[-1, 6], [1, 6], [-6, 0.5], [6, 0.5]]) {
+      const pl = new THREE.PointLight(0xff9a40, 1.2, 6, 2); pl.position.set(x, 2.2, z); this.scene.add(pl);
+      const f = new THREE.Mesh(flameGeo, flameMat); f.position.set(x, 2.3, z); this.scene.add(f);
+      this.candleLights.push({ light: pl, base: 1.2, phase: Math.random() * 10 });
+    }
+    // moonlight point lights at windows (cold blue)
+    this.moon = [];
+    for (const [x, z] of [[-9.6, -2], [9.6, 2], [-9.6, 2]]) {
+      const pl = new THREE.PointLight(0x6f86c4, 0.5, 8, 2); pl.position.set(x, 2.4, z); this.scene.add(pl); this.moon.push(pl);
+    }
+    // items: 3 keys (randomized), batteries (fixed), notes (fixed)
+    const keyRooms = [
+      { name: 'kitchen', x: 7, z: -6.5 },
+      { name: 'study', x: -7, z: -6.5 },
+      { name: 'bedroom', x: 0, z: -6.5 },
+    ];
+    const shuffled = keyRooms.sort(() => Math.random() - 0.5);
+    this.keySpots = shuffled.map((r) => ({ x: r.x + (Math.random() - 0.5) * 1.2, z: r.z + (Math.random() - 0.5) * 0.8, room: r.name }));
+    const keyMat = new THREE.MeshStandardMaterial({ color: 0xd4a017, metalness: 1, roughness: 0.3, emissive: 0x332200 });
+    this.keys = this.keySpots.map((s, i) => {
+      const m = new THREE.Mesh(new THREE.TorusGeometry(0.06, 0.02, 6, 12), keyMat);
+      m.position.set(s.x, 0.9, s.z); this.scene.add(m);
+      const glint = new THREE.PointLight(0xffd27a, 0.4, 2.5, 2); glint.position.set(s.x, 1.1, s.z); this.scene.add(glint);
+      return { mesh: m, glint, x: s.x, z: s.z, taken: false, index: i, room: s.room };
+    });
+    const batMat = new THREE.MeshStandardMaterial({ color: 0x223322, roughness: 0.5 });
+    this.batteries = [[-7, 6], [7, 6], [0, 0], [7, -4]].map(([x, z]) => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.18, 0.1), batMat);
+      m.position.set(x, 0.7, z); this.scene.add(m); return { mesh: m, x, z, taken: false };
+    });
+    this.notes = [
+      { x: -1.2, z: 6.8, y: 1.0, text: 'The house keeps its doors shut when it is hungry.\n\nIf the light touches him, he cannot hold his shape for long.\n\n— E.' },
+      { x: -7, z: -5.2, y: 0.9, text: 'Day 14. I hear it in the walls again.\nIt only moves when I am looking away.\nIt stopped when I held the lamp on it.' },
+    ].map((n) => {
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(0.22, 0.3), new THREE.MeshStandardMaterial({ color: 0xd8ccae, roughness: 1 }));
+      m.position.set(n.x, n.y, n.z); this.scene.add(m);
+      return { mesh: m, x: n.x, z: n.z, text: n.text, taken: false };
+    });
+    // ceiling bulbs in foyer (flicker)
+    this.foyerFlicker = new THREE.PointLight(0xffb070, 0.6, 5, 2); this.foyerFlicker.position.set(0, 2.8, 6); this.scene.add(this.foyerFlicker);
+  },
+  collide(x, z, r) {
+    const boxes = [...this.walls, ...(this.solids || [])];
+    for (const d of this.doors) {
+      if (d.angle > 0.2) continue;
+      const cx = d.hinge.x + 0.6, cz = d.hinge.z;
+      boxes.push({ minX: cx - 0.6, maxX: cx + 0.6, minZ: cz - 0.06, maxZ: cz + 0.06 });
+    }
+    for (const b of boxes) {
+      const nx = Math.max(b.minX, Math.min(x, b.maxX));
+      const nz = Math.max(b.minZ, Math.min(z, b.maxZ));
+      const dx = x - nx, dz = z - nz;
+      if (dx * dx + dz * dz < r * r) return true;
+    }
+    if (Math.abs(x) > 9.6 || Math.abs(z) > 7.6) return true;
+    return false;
+  },
+  updateDoors(dt) {
+    for (const d of this.doors) {
+      if (!d.locked || d.name !== 'front') {}
+      d.angle += (d.targetAngle - d.angle) * Math.min(1, dt * 4);
+      d.pivot.rotation.y = -d.angle;
+    }
+  },
+  flicker(t) {
+    for (const c of this.candleLights) c.light.intensity = c.base * (0.8 + 0.2 * Math.sin(t * 9 + c.phase) + 0.1 * Math.random());
+    this.foyerFlicker.intensity = Math.random() < 0.05 ? 0.05 : 0.6 + Math.random() * 0.2;
+  },
+  nearest(list, px, pz, range) {
+    let best = null, bd = range;
+    for (const it of list) {
+      if (it.taken) continue;
+      const d = Math.hypot(it.x - px, it.z - pz);
+      if (d < bd) { bd = d; best = it; }
+    }
+    return best;
+  },
+};
+
+// ---------- Player (controls, collision, flashlight, battery) ----------
+const Player = {
+  pos: new THREE.Vector3(0, 1.6, 6.5), vel: new THREE.Vector3(),
+  yaw: 0, pitch: 0, bobT: 0, locked: false,
+  keys: {}, battery: 1.0, torchOn: true, spareCount: 0, sprint: false,
+  radius: 0.3,
+  camera: null, spot: null, spotTarget: null,
+  init(camera, scene) {
+    this.camera = camera;
+    this.spot = new THREE.SpotLight(0xfff4e0, 22, 18, Math.PI / 6.5, 0.45, 1.6);
+    this.spot.castShadow = true;
+    this.spot.shadow.mapSize.set(1024, 1024);
+    this.spot.shadow.bias = -0.0004;
+    this.spot.shadow.radius = 4;
+    this.spotTarget = new THREE.Object3D();
+    scene.add(this.spot, this.spotTarget);
+    this.spot.target = this.spotTarget;
+    this.swayX = 0; this.swayY = 0;
+    this.spotLag = new THREE.Vector3();
+  },
+  updateLook(dx, dy) {
+    this.yaw -= dx * 0.0022; this.pitch -= dy * 0.0022;
+    this.pitch = Math.max(-1.4, Math.min(1.4, this.pitch));
+  },
+  update(dt, t) {
+    const sprint = this.keys['ShiftLeft'] || this.keys['ShiftRight'];
+    const speed = (sprint ? 3.6 : 1.9) * (Game.stuck ? 0.25 : 1);
+    let mx = 0, mz = 0;
+    if (this.keys['KeyW']) mz -= 1;
+    if (this.keys['KeyS']) mz += 1;
+    if (this.keys['KeyA']) mx -= 1;
+    if (this.keys['KeyD']) mx += 1;
+    const len = Math.hypot(mx, mz) || 1;
+    const fwdX = -Math.sin(this.yaw), fwdZ = -Math.cos(this.yaw);
+    const rightX = Math.cos(this.yaw), rightZ = -Math.sin(this.yaw);
+    const dxw = (fwdX * -mz + rightX * mx) / len, dzw = (fwdZ * -mz + rightZ * mx) / len;
+    const moving = mx !== 0 || mz !== 0;
+    const step = speed * dt * (moving ? 1 : 0);
+    let nx = this.pos.x + dxw * step, nz = this.pos.z + dzw * step;
+    if (!House.collide(nx, this.pos.z, this.radius)) this.pos.x = nx;
+    if (!House.collide(this.pos.x, nz, this.radius)) this.pos.z = nz;
+    this.sprinting = moving && sprint;
+    this.bobT += dt * (moving ? (sprint ? 12 : 8) : 1.5);
+    const bobY = moving ? Math.sin(this.bobT) * 0.035 : Math.sin(this.bobT) * 0.008;
+
+    this.camera.position.set(this.pos.x, 1.6 + bobY, this.pos.z);
+    this.camera.rotation.set(this.pitch, this.yaw, 0, 'YXZ');
+
+    // flashlight with lag and sway
+    const look = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
+    const target = this.camera.position.clone().add(look.multiplyScalar(10));
+    this.spotLag.lerp(target, Math.min(1, dt * 8));
+    this.swayX += (Math.sin(t * 1.3) * 0.05 - this.swayX) * 0.05;
+    this.spotTarget.position.copy(this.spotLag).add(new THREE.Vector3(this.swayX, this.swayY, 0));
+    this.spot.position.copy(this.camera.position).add(new THREE.Vector3(0.18, -0.16, 0));
+    this.spot.visible = this.torchOn && this.battery > 0;
+
+    // battery drain
+    if (this.torchOn && this.battery > 0) this.battery = Math.max(0, this.battery - dt / 120 - (Game.burning ? dt / 25 : 0));
+    if (this.battery <= 0) this.torchOn = false;
+    if (this.battery <= 0.0001) this.battery = 0;
+  },
+  beamHits(target, range = 9, halfAngle = 0.28) {
+    const from = this.camera.position;
+    const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
+    const to = target.clone().sub(from);
+    const d = to.length();
+    if (d > range) return false;
+    to.normalize();
+    return dir.angleTo(to) < halfAngle;
+  },
+  toggleTorch() { this.torchOn = !this.torchOn; },
+};
+
+// ---------- Ghost (entity visuals, AI) ----------
+const Ghost = {
+  root: null, faceMat: null, eyes: [], vapor: null, mesh: null,
+  state: 'hidden', // hidden | apparition | stalk | chase
+  pos: new THREE.Vector3(0, 0, -6), targetPos: new THREE.Vector3(), timer: 0,
+  burn: 0, banishedTimer: 0, banishCount: 0, reformAt: 0, glowLight: null, pursuing: false, speed: 1.2,
+  build(scene) {
+    this.root = new THREE.Group(); scene.add(this.root);
+    const bodyMat = new THREE.MeshStandardMaterial({ color: 0x0c0c0e, roughness: 1, emissive: 0x050505 });
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.28, 2.4, 10), bodyMat);
+    body.position.y = 1.2; this.root.add(body);
+    this.mesh = body;
+    // tattered strips
+    const stripMat = new THREE.MeshStandardMaterial({ color: 0x1a1816, roughness: 1, side: THREE.DoubleSide });
+    for (let i = 0; i < 9; i++) {
+      const s = new THREE.Mesh(new THREE.PlaneGeometry(0.1, 0.9), stripMat);
+      const a = (i / 9) * Math.PI * 2;
+      s.position.set(Math.cos(a) * 0.22, 1.1, Math.sin(a) * 0.22); s.rotation.y = -a; this.root.add(s);
+    }
+    // head with three-expression face (canvas switched)
+    this.faceCanvas = document.createElement('canvas'); this.faceCanvas.width = 128; this.faceCanvas.height = 128;
+    this.faceTex = new THREE.CanvasTexture(this.faceCanvas);
+    this.faceMat = new THREE.MeshStandardMaterial({ map: this.faceTex, roughness: 0.9, emissive: 0x111111 });
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.22, 16, 16), this.faceMat);
+    head.position.y = 2.6; this.root.add(head); this.head = head;
+    this.setFace(0);
+    // claw fingers
+    const clawMat = new THREE.MeshStandardMaterial({ color: 0x3a2f2a, roughness: 0.6 });
+    this.claws = [];
+    for (let i = 0; i < 2; i++) {
+      const arm = new THREE.Group(); arm.position.set(i ? 0.25 : -0.25, 2.0, 0); this.root.add(arm);
+      const f = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.5, 5), clawMat);
+      f.position.y = -0.7; f.rotation.z = i ? -0.2 : 0.2; arm.add(f);
+      this.claws.push(arm);
+    }
+    // glowing eyes
+    const eyeMat = new THREE.MeshBasicMaterial({ color: 0xff2020 });
+    for (const x of [-0.07, 0.07]) {
+      const e = new THREE.Mesh(new THREE.SphereGeometry(0.025, 8, 8), eyeMat);
+      e.position.set(x, 2.63, 0.2); this.root.add(e); this.eyes.push(e);
+    }
+    this.glowLight = new THREE.PointLight(0xff2a2a, 0, 4, 2); this.glowLight.position.set(0, 2.6, 0.3); this.root.add(this.glowLight);
+    // black vapor: sprites
+    this.vapor = new THREE.Group();
+    const vmat = new THREE.SpriteMaterial({ color: 0x000000, transparent: true, opacity: 0.35 });
+    for (let i = 0; i < 6; i++) { const s = new THREE.Sprite(vmat); s.scale.set(0.9, 0.9, 1); s.position.set((Math.random() - 0.5) * 0.6, 1.0 + Math.random() * 1.6, (Math.random() - 0.5) * 0.6); this.vapor.add(s); }
+    this.root.add(this.vapor);
+    this.root.visible = false;
+  },
+  setFace(kind) {
+    const g = this.faceCanvas.getContext('2d');
+    g.fillStyle = '#b5ab98'; g.fillRect(0, 0, 128, 128);
+    g.fillStyle = '#000';
+    if (kind === 0) { g.beginPath(); g.ellipse(48, 56, 8, 4, 0, 0, 7); g.fill(); g.beginPath(); g.ellipse(80, 56, 8, 4, 0, 0, 7); g.fill(); g.fillRect(50, 88, 28, 4); }
+    else if (kind === 1) { g.beginPath(); g.ellipse(48, 54, 6, 10, 0, 0, 7); g.fill(); g.beginPath(); g.ellipse(80, 54, 6, 10, 0, 0, 7); g.fill(); g.beginPath(); g.ellipse(64, 92, 12, 9, 0, 0, 7); g.fill(); }
+    else { g.beginPath(); g.moveTo(36, 50); g.lineTo(60, 56); g.lineTo(36, 62); g.fill(); g.beginPath(); g.moveTo(92, 50); g.lineTo(68, 56); g.lineTo(92, 62); g.fill(); g.beginPath(); g.ellipse(64, 96, 22, 12, 0, 0, 7); g.fill(); }
+    this.faceTex.needsUpdate = true;
+    this.faceKind = kind;
+  },
+  placeInDoorway(doorX, doorZ) {
+    this.pos.set(doorX, 0, doorZ);
+    this.root.position.copy(this.pos);
+  },
+  show(on) { this.root.visible = on; },
+  update(dt, t, playerPos) {
+    const flick = (Math.random() < 0.02 && this.state !== 'hidden') || (this.state === 'chase' && Math.random() < 0.05);
+    this.root.visible = this.state !== 'hidden' && (!flick || Math.random() < 0.6);
+    this.vapor.children.forEach((s, i) => { s.position.y += Math.sin(t * 2 + i) * 0.002; s.material.opacity = 0.25 + 0.15 * Math.sin(t * 3 + i); });
+    this.eyes.forEach((e) => e.visible = this.state !== 'hidden');
+    this.glowLight.intensity = this.state === 'hidden' ? 0 : 0.6 + 0.3 * Math.sin(t * 6);
+    this.claws.forEach((c, i) => c.rotation.x = Math.sin(t * 4 + i) * 0.4);
+    if (this.state === 'apparition' || this.state === 'stalk' || this.state === 'chase') {
+      if (Math.random() < 0.01) this.setFace((this.faceKind + 1) % 3);
+    }
+    if (this.state === 'hidden' || this.state === 'apparition') return;
+    const dx = playerPos.x - this.pos.x, dz = playerPos.z - this.pos.z;
+    const d = Math.hypot(dx, dz) || 1;
+    const sp = this.state === 'chase' ? this.speed * 1.6 : this.speed * 0.5;
+    if (this.state === 'chase' && this.banishedTimer <= 0) {
+      this.pos.x += (dx / d) * sp * dt;
+      this.pos.z += (dz / d) * sp * dt; // glides through walls
+    } else if (this.state === 'stalk' && this.banishedTimer <= 0) {
+      if (d > 3) { this.pos.x += (dx / d) * sp * dt; this.pos.z += (dz / d) * sp * dt; }
+    }
+    this.pos.x += Math.sin(t * 0.9) * 0.002;
+    this.root.position.set(this.pos.x, 0, this.pos.z);
+    this.root.lookAt(playerPos.x, 0, playerPos.z);
+    if (this.banishedTimer > 0) {
+      this.banishedTimer -= dt;
+      this.root.visible = this.banishedTimer < 0.4;
+      this.glowLight.intensity = 0;
+      if (this.banishedTimer <= 0) { this.state === 'chase' ? this.reformInChase() : this.hide(); }
+    }
+  },
+  reformInChase() { this.banishedTimer = 0; this.root.visible = true; },
+  hide() { this.state = 'hidden'; this.root.visible = false; },
+  tryBurn(dt, Player) {
+    if (this.state === 'hidden' || this.banishedTimer > 0) return false;
+    const target = this.root.position.clone().add(new THREE.Vector3(0, 1.6, 0));
+    const hit = Player.beamHits(target, 9, 0.28) && Player.torchOn && Player.battery > 0;
+    if (hit) {
+      this.burn = Math.min(1, this.burn + dt * 0.35);
+      if (this.burn >= 1) this.banish();
+      return true;
+    }
+    this.burn = Math.max(0, this.burn - dt * 0.4);
+    return false;
+  },
+  banish() {
+    this.burn = 0; this.banishCount++;
+    HUD.shake(0.6); HUD.flash('white', 0.3); AudioEngine.stinger(0.5);
+    if (this.state === 'chase') {
+      this.banishedTimer = 8;
+    } else {
+      this.banishedTimer = 1.2;
+      setTimeout(() => this.hide(), 1200);
+    }
+  },
+};
+
+// ---------- ScareDirector (triggers, ambient, lightning) ----------
+const ScareDirector = {
+  triggers: [], lightningT: 6, flashT: 0,
+  init() {
+    this.triggers = [
+      { id: 'livingThump', x: -7, z: 5, r: 2.5, fired: false, fn: () => { AudioEngine.thump(-0.4, 0.5); AudioEngine.whisper(0.2); } },
+      { id: 'hallSlam', x: 0, z: 0.5, r: 2.0, fired: false, fn: () => { HUD.flicker(1.5); AudioEngine.stinger(0.6); HUD.shake(0.3); } },
+      { id: 'kitchenBang', x: 7, z: -6, r: 2.2, fired: false, fn: () => { AudioEngine.stinger(0.7); HUD.shake(0.4); Game.chairSlide(); } },
+      { id: 'studyGhost', x: -7, z: -6, r: 1.8, fired: false, fn: () => { Game.doorwayGhost('study'); } },
+      { id: 'bedroomSlam', x: 0, z: -6, r: 1.6, fired: false, fn: () => { Game.slamBedroom(); } },
+    ];
+  },
+  check(pos) {
+    for (const tr of this.triggers) {
+      if (tr.fired) continue;
+      if (Math.hypot(pos.x - tr.x, pos.z - tr.z) < tr.r) { tr.fired = true; tr.fn(); }
+    }
+  },
+  update(dt, t) {
+    this.lightningT -= dt;
+    if (this.lightningT <= 0) {
+      this.lightningT = 8 + Math.random() * 10;
+      HUD.flash('white', 0.18);
+      setTimeout(() => AudioEngine.thump(Math.random() * 2 - 1, 0.5), 900 + Math.random() * 1500);
+      Game.lightning();
+    }
+    if (this.flashT > 0) this.flashT -= dt;
+  },
+};
+
+// ---------- HUD (objective, battery, burn meter, flashes, shake) ----------
+const HUD = {
+  shakeAmt: 0, flashEl: null,
+  init() { this.flashEl = document.getElementById('flash'); },
+  setObjective(t) { document.getElementById('objective').textContent = t; },
+  setKeys(n) { document.getElementById('keys').textContent = `Keys ${n}/3`; },
+  setBattery(p) {
+    const fill = document.querySelector('#battery .fill');
+    fill.style.width = (p * 100).toFixed(1) + '%';
+    fill.classList.toggle('low', p < 0.2);
+  },
+  setBurn(p, visible) {
+    const b = document.getElementById('burn');
+    b.classList.toggle('on', visible);
+    b.querySelector('.fill').style.width = (p * 100).toFixed(1) + '%';
+  },
+  flash(color, dur) {
+    this.flashEl.className = color === 'red' ? 'red' : '';
+    this.flashEl.style.transition = 'none'; this.flashEl.style.opacity = 0.9;
+    requestAnimationFrame(() => { this.flashEl.style.transition = `opacity ${dur}s linear`; this.flashEl.style.opacity = 0; });
+  },
+  shake(a) { this.shakeAmt = Math.max(this.shakeAmt, a); },
+  flicker(sec) {
+    const orig = Game.lights();
+    let on = true, n = 0;
+    const id = setInterval(() => { for (const l of orig) l.intensity = on ? l.userData.base : 0; on = !on; if (++n > 8) { clearInterval(id); for (const l of orig) l.intensity = l.userData.base; } }, 90);
+  },
+  applyShake(camera, dt) {
+    if (this.shakeAmt <= 0) return;
+    camera.position.x += (Math.random() - 0.5) * this.shakeAmt * 0.08;
+    camera.position.y += (Math.random() - 0.5) * this.shakeAmt * 0.08;
+    this.shakeAmt = Math.max(0, this.shakeAmt - dt * 1.5);
+  },
+};
+
+// ---------- Game (state machine, loop, interaction, burn mechanic) ----------
+const Game = {
+  state: 'TITLE', renderer: null, scene: null, camera: null, composer: null,
+  stage: 0, keysFound: 0, startTime: 0, banishes: 0, stuck: false, burning: false,
+  noteOpen: null, chaseActive: false, frontOpen: false, clock: new THREE.Clock(),
+  lightList: [],
+  init() {
+    this.renderer = new THREE.WebGLRenderer({ antialias: true });
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.renderer.shadowMap.enabled = true; this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping; this.renderer.toneMappingExposure = 1.1;
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    document.body.prepend(this.renderer.domElement);
+    this.renderer.domElement.style.position = 'fixed';
+    this.renderer.domElement.style.inset = '0';
+
+    this.scene = new THREE.Scene();
+    this.scene.background = new THREE.Color(0x000000);
+    this.scene.fog = new THREE.FogExp2(0x000000, 0.075);
+    this.scene.add(new THREE.AmbientLight(0x101018, 0.05));
+
+    this.camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.05, 60);
+    this.camera.position.copy(Player.pos);
+
+    House.build(this.scene);
+    Player.init(this.camera, this.scene);
+    Ghost.build(this.scene);
+    ScareDirector.init();
+    HUD.init();
+
+    this.composer = new EffectComposer(this.renderer);
+    this.composer.addPass(new RenderPass(this.scene, this.camera));
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.45, 0.6, 0.85);
+    this.composer.addPass(this.bloom);
+    this.composer.addPass(new OutputPass());
+
+    // record base intensities for flicker
+    this.scene.traverse((o) => { if (o.isLight) o.userData.base = o.intensity; });
+    for (const o of [...House.candleLights.map((c) => c.light), House.foyerFlicker]) o.userData.base = o.intensity;
+
+    this.bindInput();
+    this.loadRerun();
+    window.addEventListener('resize', () => this.onResize());
+    this.animate();
+  },
+  lights() { const arr = []; this.scene.traverse((o) => { if (o.isLight && o !== Player.spot && o.userData.base !== undefined) arr.push(o); }); return arr; },
+  onResize() {
+    this.camera.aspect = window.innerWidth / window.innerHeight; this.camera.updateProjectionMatrix();
+    this.renderer.setSize(window.innerWidth, window.innerHeight); this.composer.setSize(window.innerWidth, window.innerHeight);
+  },
+  loadRerun() {
+    this.resetRun();
+  },
+  resetRun() {
+    this.stage = 0; this.keysFound = 0; this.banishes = 0; this.startTime = 0;
+    this.stuck = false; this.burning = false; this.chaseActive = false; this.frontOpen = false;
+    Player.pos.set(0, 1.6, 6.5); Player.yaw = 0; Player.pitch = 0;
+    Player.battery = 1.0; Player.torchOn = true; Player.spareCount = 0;
+    Ghost.hide(); Ghost.burn = 0; Ghost.banishedTimer = 0; Ghost.banishCount = 0; Ghost.state = 'hidden';
+    for (const k of House.keys) { k.taken = false; k.mesh.visible = true; k.glint.intensity = 0.4; }
+    for (const b of House.batteries) { b.taken = false; b.mesh.visible = true; }
+    for (const n of House.notes) { n.taken = false; n.mesh.visible = true; }
+    for (const tr of ScareDirector.triggers) tr.fired = false;
+    for (const d of House.doors) { d.targetAngle = 0; d.angle = 0; d.open = false; }
+    if (AudioEngine.chaseOsc) { try { AudioEngine.chaseOsc.stop(); } catch (e) {} AudioEngine.chaseOsc = null; }
+    AudioEngine.stopHeartbeat();
+    HUD.setKeys(0); HUD.setObjective('Objective: find the brass keys'); HUD.setBattery(1);
+    HUD.setBurn(0, false);
+    document.getElementById('vignette').classList.remove('on');
+    document.getElementById('grain').classList.remove('on');
+    this.scene.fog.density = 0.075;
+  },
+  bindInput() {
+    document.addEventListener('keydown', (e) => {
+      Player.keys[e.code] = true;
+      if (this.state !== 'PLAYING') return;
+      if (e.code === 'KeyF') Player.toggleTorch();
+      if (e.code === 'KeyE') this.interact();
+    });
+    document.addEventListener('keyup', (e) => { Player.keys[e.code] = false; });
+    document.addEventListener('mousemove', (e) => { if (this.state === 'PLAYING' && document.pointerLockElement) Player.updateLook(e.movementX, e.movementY); });
+    document.addEventListener('mousedown', () => { if (this.state === 'PLAYING') this.burning = true; });
+    document.addEventListener('mouseup', () => { this.burning = false; });
+    document.addEventListener('pointerlockchange', () => { Player.locked = !!document.pointerLockElement; });
+    document.getElementById('title').addEventListener('click', () => this.start());
+    document.getElementById('restartBtn').addEventListener('click', () => this.start());
+    document.getElementById('winRestart').addEventListener('click', () => this.start());
+    document.getElementById('note').addEventListener('click', () => this.closeNote());
+  },
+  show(id, on) { document.getElementById(id).classList.toggle('on', on); },
+  start() {
+    AudioEngine.init();
+    if (AudioEngine.ctx && AudioEngine.ctx.state === 'suspended') AudioEngine.ctx.resume();
+    this.resetRun();
+    this.show('title', false); this.show('death', false); this.show('win', false);
+    this.show('hud', true); this.show('grain', true); this.show('vignette', true);
+    this.state = 'PLAYING';
+    this.startTime = performance.now();
+    this.renderer.domElement.requestPointerLock && this.renderer.domElement.requestPointerLock();
+    HUD.setObjective('Objective: find the 3 brass keys');
+    HUD.setKeys(0);
+    AudioEngine.setDrone(0.2);
+    setTimeout(() => this.ambientIntro(), 1200);
+  },
+  ambientIntro() { if (this.state === 'PLAYING') AudioEngine.thump(0, 0.3); },
+  interact() {
+    if (this.noteOpen) { this.closeNote(); return; }
+    const p = Player.pos;
+    const key = House.nearest(House.keys, p.x, p.z, 1.6);
+    if (key) return this.takeKey(key);
+    const bat = House.nearest(House.batteries, p.x, p.z, 1.4);
+    if (bat) { bat.taken = true; bat.mesh.visible = false; Player.battery = Math.min(1, Player.battery + 0.5); HUD.setBattery(Player.battery); return; }
+    const note = House.nearest(House.notes, p.x, p.z, 1.6);
+    if (note) { note.taken = true; note.mesh.visible = false; this.openNote(note.text); return; }
+    for (const d of House.doors) {
+      if (Math.hypot(p.x - (d.hinge.x + 0.6), p.z - d.hinge.z) < 2.0) {
+        if (d.name === 'front') { if (this.keysFound >= 3) { this.escape(); } else { this.openNote('The front door is locked. Three brass keys are needed.'); } return; }
+        d.targetAngle = d.targetAngle > 0 ? 0 : Math.PI / 2; AudioEngine.creak(0); return;
+      }
+    }
+  },
+  takeKey(k) {
+    k.taken = true; k.mesh.visible = false; k.glint.intensity = 0;
+    this.keysFound++; HUD.setKeys(this.keysFound);
+    HUD.setObjective(this.keysFound < 3 ? `Objective: ${3 - this.keysFound} key(s) remaining` : 'Objective: unlock the front door');
+    if (this.keysFound === 1) { AudioEngine.thump(0, 0.3); }
+    if (this.keysFound === 2) { this.enterStalk(); }
+    if (this.keysFound === 3) { this.enterFinale(); }
+  },
+  openNote(text) {
+    this.noteOpen = text; document.getElementById('noteText').textContent = text; this.show('note', true);
+  },
+  closeNote() { this.noteOpen = null; this.show('note', false); },
+  doorwayGhost(room) {
+    Ghost.placeInDoorway(-7, -4.5); Ghost.setFace(2); Ghost.state = 'apparition'; Ghost.show(true); Ghost.root.visible = true;
+    AudioEngine.stinger(0.7); HUD.flash('red', 0.5);
+    setTimeout(() => { Ghost.hide(); }, 1200);
+  },
+  slamBedroom() {
+    const d = House.doors.find((x) => x.name === 'bedroom'); if (d) d.targetAngle = 0;
+    AudioEngine.stinger(0.8); HUD.shake(0.5);
+  },
+  chairSlide() { AudioEngine.creak(0.6); },
+  lightning() { this.bloom.strength = 1.2; setTimeout(() => { this.bloom.strength = 0.45; }, 120); },
+  enterStalk() {
+    this.stage = 2; AudioEngine.setDrone(0.6); AudioEngine.stinger(0.5);
+    HUD.setObjective('Objective: the entity is stalking you');
+    Ghost.state = 'apparition';
+    this.stalkTimer = setInterval(() => {
+      if (this.state !== 'PLAYING' || this.stage !== 2) return;
+      if (Math.random() < 0.6) { Ghost.placeInDoorway(-5 + Math.random() * 10, -7); Ghost.setFace(Math.floor(Math.random() * 3)); Ghost.state = 'apparition'; Ghost.show(true); setTimeout(() => { if (Ghost.state === 'apparition') Ghost.hide(); }, 2200); }
+    }, 7000);
+  },
+  enterFinale() {
+    this.stage = 3; clearInterval(this.stalkTimer);
+    // blackout beat
+    this.blackout = 1.2;
+    AudioEngine.stinger(1.0); HUD.flash('red', 0.8); HUD.shake(1.0);
+    setTimeout(() => {
+      if (this.state !== 'PLAYING') return;
+      Ghost.state = 'chase'; Ghost.placeInDoorway(0, -7); Ghost.setFace(2); Ghost.show(true);
+      this.chaseActive = true; AudioEngine.chase(true);
+      AudioEngine.startHeartbeat(120); AudioEngine.setDrone(1);
+      HUD.setObjective('Objective: reach the front door — hold the beam on him to buy time');
+      for (const d of House.doors) if (d.name === 'front') d.locked = false;
+    }, 1400);
+  },
+  escape() {
+    if (this.state !== 'PLAYING') return;
+    this.state = 'WIN';
+    if (document.exitPointerLock) document.exitPointerLock();
+    AudioEngine.stopHeartbeat();
+    const secs = Math.round((performance.now() - this.startTime) / 1000);
+    document.getElementById('winStats').textContent = `Survival time: ${secs}s   ·   Banishes: ${this.banishes}`;
+    this.show('hud', false); this.show('win', true); this.show('grain', false); this.show('vignette', false);
+    clearInterval(this.stalkTimer);
+  },
+  caught() {
+    if (this.state !== 'PLAYING') return;
+    this.state = 'CAUGHT';
+    if (document.exitPointerLock) document.exitPointerLock();
+    AudioEngine.stopHeartbeat();
+    clearInterval(this.stalkTimer);
+    this.show('hud', false); this.show('grain', false); this.show('vignette', false);
+    this.show('jumpscare', true); HUD.flash('red', 0.4); AudioEngine.stinger(1.0); HUD.shake(1.2);
+    setTimeout(() => { this.show('jumpscare', false); this.show('death', true); }, 1400);
+  },
+  // Player bumped into the entity during the finale chase
+  checkCaught() {
+    if (!this.chaseActive || Ghost.banishedTimer > 0 || Ghost.state !== 'chase') return;
+    const dx = Ghost.pos.x - Player.pos.x, dz = Ghost.pos.z - Player.pos.z;
+    if (dx * dx + dz * dz < 0.5) this.caught();
+  },
+  updateBurn(dt) {
+    const hitting = this.burning && this.state === 'PLAYING' && Ghost.state !== 'hidden';
+    const wasHitting = Ghost.tryBurn(hitting ? dt : 0, Player);
+    this.burning = this.burning;
+    HUD.setBurn(Ghost.burn, wasHitting && hitting || Ghost.burn > 0.01);
+    if (wasHitting) this.burnBuzz = true;
+  },
+  tickStates(dt, t) {
+    // Stalking: entity drifts toward player only while visible (no pursuit mechanics)
+    if (this.stage === 2 && Ghost.state === 'stalk') { /* drift handled in Ghost.update */ }
+  },
+  animate() {
+    requestAnimationFrame(() => this.animate());
+    const dt = Math.min(this.clock.getDelta(), 0.05);
+    const t = this.clock.elapsedTime;
+
+    House.flicker(t);
+    House.updateDoors(dt);
+    ScareDirector.update(dt, t);
+
+    if (this.state === 'PLAYING') {
+      Player.update(dt, t);
+      Player.spot.intensity = 22 * (Player.battery < 0.2 && Player.battery > 0 ? (0.4 + 0.6 * Math.random()) : 1);
+      Player.spot.visible = Player.torchOn && Player.battery > 0;
+      ScareDirector.check(Player.pos);
+      if (this.stage === 2 && Ghost.state === 'apparition' && Math.random() < 0.001) Ghost.state = 'stalk';
+      Ghost.update(dt, t, Player.pos);
+      this.updateBurn(dt);
+      this.checkCaught();
+      if (this.chaseActive && Ghost.banishedTimer <= 0 && Ghost.state === 'chase') {
+        const d = Math.hypot(Ghost.pos.x - Player.pos.x, Ghost.pos.z - Player.pos.z);
+        if (d < 6) AudioEngine.setBreath(1 - d / 6); else AudioEngine.setBreath(0);
+      }
+      this.checkEscapeDoor();
+      HUD.setBattery(Player.battery);
+      if (this.blackout > 0) { this.blackout -= dt; this.scene.fog.density = 0.4; } else if (this.scene.fog.density !== 0.075) this.scene.fog.density = 0.075;
+    } else {
+      this.camera.position.copy(Player.pos);
+    }
+    HUD.applyShake(this.camera, dt);
+    this.composer.render();
+  },
+  checkEscapeDoor() {
+    // winning requires reaching the front door (south wall) with all 3 keys
+    if (this.keysFound >= 3 && Player.pos.z > 6.8 && Math.abs(Player.pos.x + 1.5) < 1.4) {
+      const d = House.doors.find((x) => x.name === 'front');
+      if (d && d.targetAngle === 0) { /* door must be opened with E */ }
+    }
+  },
+};
+
+// ---------- boot ----------
+Game.init();
+</script>
+</body>
+</html>
