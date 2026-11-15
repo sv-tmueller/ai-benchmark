@@ -186,8 +186,8 @@ for example `generated (high, max), review pending`.
 | `game-lava-lamp` | HTML | `results/lava-lamp/lava-lamp_claude_fable_5_2_<effort>.html` | generated (medium), review pending |
 | `game-minecraft` | HTML | `results/minecraft/minecraft_claude_fable_5_2_<effort>.html` | generated (medium), review pending |
 | `scene-meridian-launch` | HTML | `results/meridian-launch/meridian-launch_claude_fable_5_2_<effort>.html` | generated (medium), review pending |
-| `scene-sunset-ocean` | HTML | `results/sunset-ocean/sunset-ocean_claude_fable_5_2_<effort>.html` | not run |
-| `game-horror-house` | HTML | `results/horror-house/horror-house_claude_fable_5_2_<effort>.html` | not run |
+| `scene-sunset-ocean` | HTML | `results/sunset-ocean/sunset-ocean_claude_fable_5_2_<effort>.html` | generated (medium), review pending |
+| `game-horror-house` | HTML | `results/horror-house/horror-house_claude_fable_5_2_<effort>.html` | generated (medium), review pending |
 | `game-last-flight` | HTML | `results/last-flight/last-flight_claude_fable_5_2_<effort>.html` | not run |
 | `game-cities-skylines` | HTML | `results/cities-skylines/cities-skylines_claude_fable_5_2_<effort>.html` | not run |
 | `game-mario-kart` | HTML | `results/mario-kart/mario-kart_claude_fable_5_2_<effort>.html` | not run |
