@@ -182,8 +182,8 @@ for example `generated (high, max), review pending`.
 
 | Prompt | Deliverable | Target path | Status |
 |---|---|---|---|
-| `game-melon-jelly` | HTML | `results/melon-jelly/melon-jelly_claude_fable_5_2_<effort>.html` | not run |
-| `game-lava-lamp` | HTML | `results/lava-lamp/lava-lamp_claude_fable_5_2_<effort>.html` | not run |
+| `game-melon-jelly` | HTML | `results/melon-jelly/melon-jelly_claude_fable_5_2_<effort>.html` | generated (medium), review pending |
+| `game-lava-lamp` | HTML | `results/lava-lamp/lava-lamp_claude_fable_5_2_<effort>.html` | generated (medium), review pending |
 | `game-minecraft` | HTML | `results/minecraft/minecraft_claude_fable_5_2_<effort>.html` | not run |
 | `scene-meridian-launch` | HTML | `results/meridian-launch/meridian-launch_claude_fable_5_2_<effort>.html` | not run |
 | `scene-sunset-ocean` | HTML | `results/sunset-ocean/sunset-ocean_claude_fable_5_2_<effort>.html` | not run |
