@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lava Lamp</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+html,body{margin:0;height:100%;background:#0c0a09;overflow:hidden}
+canvas{display:block;position:fixed;inset:0;width:100vw;height:100vh}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script type="application/json" id="bridgebench-manifest">
+{"id":"lava-lamp","title":"Photoreal ray-marched lava lamp studio shot","version":1,"controls":[],"state":["heat","paletteIndex"],"api":["getState","reset","destroy"]}
+</script>
+<script id="vs" type="x-shader/x-vertex">#version 300 es
+void main(){
+  vec2 v=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2));
+  gl_Position=vec4(v*2.0-1.0,0.0,1.0);
+}
+</script>
+<script id="fs" type="x-shader/x-fragment">#version 300 es
+precision highp float;
+uniform vec2 uRes;
+uniform float uVisH;
+uniform float uT;
+uniform float uHeat;
+uniform vec4 uB[11];
+uniform float uS[11];
+out vec4 oc;
+
+float hash11(float x){return fract(sin(x*127.1)*43758.5453);}
+float hash12(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
+float smin(float a,float b,float k){float h=max(k-abs(a-b),0.0)/k;return min(a,b)-h*h*k*0.25;}
+
+/* ---------- geometry (lamp spans y -1 .. +1, axis x=z=0) ---------- */
+float botR(float y){
+  float t=clamp((y+0.45)/1.07,0.0,1.0);
+  return 0.085+0.115*pow(1.0-t,1.3);
+}
+float roundedRev(float d,float dy,float rr){
+  vec2 q=vec2(d,dy);
+  return min(max(q.x,q.y),0.0)+length(max(q,0.0))-rr;
+}
+float sdBottle(vec3 p){
+  float rr=0.012;
+  float d=(length(p.xz)-(botR(p.y)-rr))*0.96;
+  float dy=abs(p.y-0.085)-(0.535-rr);
+  return roundedRev(d,dy,rr);
+}
+float baseR(float y){
+  float t=clamp((y+1.0)/0.55,0.0,1.0);
+  float g=(t-0.58)/0.035;
+  return 0.20+0.22*pow(1.0-t,1.6)-0.012*exp(-g*g);
+}
+float sdBase(vec3 p){
+  float rr=0.02;
+  float d=(length(p.xz)-(baseR(p.y)-rr))*0.8;
+  float dy=abs(p.y+0.725)-(0.275-rr);
+  return roundedRev(d,dy,rr);
+}
+float capR(float y){
+  float t=clamp((y-0.62)/0.38,0.0,1.0);
+  return 0.1*sqrt(max(1.0-pow(t,2.4),0.0));
+}
+float sdCap(vec3 p){
+  float rr=0.006;
+  float d=(length(p.xz)-(capR(p.y)-rr))*0.6;
+  float dy=abs(p.y-0.81)-(0.19-rr);
+  return roundedRev(d,dy,rr);
+}
+float sdMetal(vec3 p){return min(sdBase(p),sdCap(p));}
+
+float sdWax(vec3 p){
+  float d=p.y+0.34+0.010*sin(13.0*p.x+0.35*uT)+0.008*sin(11.0*p.z-0.3*uT);
+  for(int i=0;i<11;i++){
+    vec3 q=p-uB[i].xyz;
+    q.y/=uS[i];
+    float b=(length(q)-uB[i].w)*0.9;
+    d=smin(d,b,0.09);
+  }
+  float inner=max(length(p.xz)-(botR(p.y)-0.016),max(-0.438-p.y,p.y-0.595));
+  return max(d,inner);
+}
+
+vec3 nBottle(vec3 p){
+  vec2 e=vec2(0.0015,-0.0015);
+  return normalize(e.xyy*sdBottle(p+e.xyy)+e.yyx*sdBottle(p+e.yyx)+e.yxy*sdBottle(p+e.yxy)+e.xxx*sdBottle(p+e.xxx));
+}
+vec3 nMetal(vec3 p){
+  vec2 e=vec2(0.0015,-0.0015);
+  return normalize(e.xyy*sdMetal(p+e.xyy)+e.yyx*sdMetal(p+e.yyx)+e.yxy*sdMetal(p+e.yxy)+e.xxx*sdMetal(p+e.xxx));
+}
+vec3 nWax(vec3 p){
+  vec2 e=vec2(0.002,-0.002);
+  return normalize(e.xyy*sdWax(p+e.xyy)+e.yyx*sdWax(p+e.yyx)+e.yxy*sdWax(p+e.yxy)+e.xxx*sdWax(p+e.xxx));
+}
+
+/* ---------- studio light ---------- */
+vec3 envMap(vec3 d,float blur){
+  float az=atan(d.x,d.z);
+  float el=d.y;
+  vec3 c=vec3(0.035,0.03,0.027);
+  c+=vec3(0.05,0.04,0.035)*smoothstep(-0.2,0.6,el);
+  float elm=1.0-smoothstep(0.55,1.0,abs(el-0.05));
+  float w1=0.03+blur;
+  float w2=0.022+blur;
+  float a1=(abs(az)-0.85)/w1;
+  float a2=(abs(az)-1.6)/w2;
+  float a3=(abs(az)-2.75)/w2;
+  float s=exp(-a1*a1)+0.7*exp(-a2*a2)+0.55*exp(-a3*a3);
+  c+=vec3(0.82,0.9,1.0)*4.5*s*elm;
+  float top=smoothstep(0.72,0.92,el);
+  c+=vec3(0.9,0.94,1.0)*1.6*top*(1.0-smoothstep(1.6,3.0,abs(az)));
+  float w=clamp(-el,0.0,1.0);
+  c+=vec3(1.0,0.45,0.15)*1.3*w*w*(0.6+0.4*uHeat/0.65);
+  return c;
+}
+
+vec3 shadeMetal(vec3 p,vec3 n,vec3 rd){
+  vec3 nn=n;
+  nn.y+=0.05*(hash11(floor(p.y*520.0))-0.5);
+  nn=normalize(nn);
+  vec3 r=reflect(rd,nn);
+  float fres=pow(1.0-max(dot(-rd,nn),0.0),5.0);
+  vec3 F0=vec3(0.82,0.83,0.85);
+  vec3 F=F0+(1.0-F0)*fres;
+  vec3 c=F*envMap(r,0.06);
+  float hv=exp(-(p.y+0.45)*3.2);
+  float hk=uHeat/0.65;
+  c+=vec3(1.0,0.48,0.18)*0.30*hv*(0.5+0.5*nn.y)*hk;
+  if(p.y>0.6) c+=vec3(1.0,0.5,0.2)*0.22*max(0.2-n.y*0.8,0.0)*hk;
+  return c;
+}
+
+/* ---------- liquid + wax seen through the bottle ---------- */
+vec3 seeBack(vec3 dir,vec3 xe){
+  vec3 wall=vec3(0.085,0.07,0.06)+envMap(dir,0.03)*0.35;
+  wall*=vec3(1.0,0.84,0.66);
+  float hk=uHeat/0.65;
+  wall+=vec3(1.0,0.5,0.18)*0.55*exp(-(xe.y+0.42)*3.0)*hk;
+  wall+=vec3(1.0,0.5,0.2)*0.05*hk;
+  return wall;
+}
+
+vec3 throughBottle(vec3 p,vec3 n,vec3 rd){
+  vec3 r1=refract(rd,n,1.0/1.33);
+  vec3 q=p+r1*0.004;
+  float t=0.0;
+  bool hit=false;
+  vec3 x=q;
+  for(int i=0;i<72;i++){
+    x=q+r1*t;
+    float d=sdWax(x);
+    if(d<0.0015){hit=true;break;}
+    t+=d*0.8;
+    if(t>1.2) break;
+  }
+  float hk=uHeat/0.65;
+  if(hit){
+    vec3 wn=nWax(x);
+    float s=0.012;
+    for(int i=0;i<26;i++){
+      float d=sdWax(x+r1*s);
+      if(d>0.001) break;
+      s+=max(-d,0.01);
+    }
+    float poolK=1.0-smoothstep(-0.38,-0.18,x.y);
+    vec3 sigma=mix(vec3(1.7,6.5,15.0),vec3(1.0,3.2,9.5),poolK);
+    vec3 T=exp(-sigma*s);
+    float hg=exp(-(x.y+0.42)*2.6);
+    vec3 Lheat=vec3(1.0,0.55,0.2)*(0.35+2.4*hg)*(0.6+0.8*uHeat)*(0.85+0.15*hk);
+    vec3 Lback=vec3(1.0,0.58,0.28)*0.35;
+    vec3 col=(Lheat+Lback)*T;
+    float nl=0.5+0.5*dot(wn,normalize(vec3(-0.3,-0.6,0.5)));
+    vec3 base=mix(vec3(0.55,0.09,0.02),vec3(0.9,0.32,0.05),poolK);
+    col+=base*(0.12+0.9*hg)*nl*(1.0-exp(-s*12.0))*0.8;
+    float rim=pow(1.0-abs(dot(r1,wn)),3.0);
+    col+=0.12*envMap(reflect(rd,wn),0.06)*rim;
+    return col;
+  }
+  float s=0.02;
+  vec3 xe=q;
+  for(int i=0;i<48;i++){
+    xe=q+r1*s;
+    float d=-sdBottle(xe);
+    if(d<0.0015) break;
+    s+=max(d*0.9,0.003);
+    if(s>1.5) break;
+  }
+  vec3 ne=nBottle(xe);
+  vec3 r2=refract(r1,-ne,1.33);
+  vec3 back;
+  if(dot(r2,r2)<0.01){
+    back=vec3(0.03,0.02,0.015);
+  } else {
+    back=seeBack(normalize(r2),xe);
+  }
+  float ci=max(dot(r1,-ne),0.0);
+  float Fi=0.04+0.96*pow(1.0-ci,5.0);
+  back*=(1.0-Fi);
+  back+=Fi*0.6*envMap(reflect(r1,-ne),0.03);
+  return back;
+}
+
+/* ---------- lamp ---------- */
+vec4 lamp(vec2 p){
+  if(abs(p.x)>0.46||p.y>1.03||p.y<-1.03) return vec4(0.0);
+  vec3 ro=vec3(p,3.0);
+  vec3 rd=vec3(0.0,0.0,-1.0);
+  float t=2.4;
+  bool hit=false;
+  bool isGlass=false;
+  vec3 pos=ro;
+  for(int i=0;i<90;i++){
+    pos=ro+rd*t;
+    float dm=sdMetal(pos);
+    float db=sdBottle(pos);
+    float d=min(dm,db);
+    if(d<0.0008){hit=true;isGlass=(db<dm);break;}
+    t+=d;
+    if(t>3.8) break;
+  }
+  if(!hit) return vec4(0.0);
+  vec3 col;
+  if(isGlass){
+    vec3 n=nBottle(pos);
+    float ci=max(dot(-rd,n),0.0);
+    float F=0.04+0.96*pow(1.0-ci,5.0);
+    vec3 refl=envMap(reflect(rd,n),0.0)*F;
+    vec3 inner=throughBottle(pos,n,rd);
+    float edge=pow(1.0-ci,2.5);
+    inner*=(1.0-F)*(1.0-0.55*edge);
+    col=inner+refl+vec3(0.02,0.03,0.03)*edge;
+  } else {
+    vec3 n=nMetal(pos);
+    col=shadeMetal(pos,n,rd);
+  }
+  return vec4(col,1.0);
+}
+
+vec3 bg(vec2 p,vec2 uv){
+  float hor=-0.78;
+  vec2 c=p-vec2(0.0,0.1);
+  float r2=dot(c,c);
+  vec3 wall=vec3(0.15,0.12,0.10)*exp(-r2*0.55)+vec3(0.03,0.025,0.022);
+  vec2 g=p*vec2(1.5,0.6);
+  wall+=vec3(0.25,0.10,0.04)*0.22*exp(-dot(g,g));
+  vec3 table=vec3(0.04,0.033,0.028)*(0.6+0.4*smoothstep(-1.7,hor,p.y))*(0.6+0.8*exp(-p.x*p.x*0.5));
+  float yy=p.y+1.0;
+  float spill=exp(-p.x*p.x/0.22)*exp(-yy*yy/0.05);
+  table+=vec3(0.9,0.4,0.14)*0.33*spill*(uHeat/0.65);
+  vec3 col=mix(table,wall,smoothstep(hor-0.03,hor+0.03,p.y));
+  col*=1.0-0.45*dot(uv,uv);
+  return col;
+}
+
+vec3 aces(vec3 x){
+  return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0);
+}
+
+void main(){
+  vec2 uv=(gl_FragCoord.xy-0.5*uRes)/uRes.y;
+  vec2 p=uv*uVisH;
+  vec4 L=lamp(p);
+  vec3 col=bg(p,uv);
+  if(L.a>0.0){
+    col=L.rgb;
+  } else if(p.y<-1.0&&p.y>-1.9){
+    vec4 M=lamp(vec2(p.x,-2.0-p.y));
+    float f=exp(-(-1.0-p.y)*5.0);
+    if(M.a>0.0) col=mix(col,M.rgb*0.45,f);
+  }
+  col=aces(col*1.0);
+  col=pow(col,vec3(1.0/2.2));
+  col+=(hash12(gl_FragCoord.xy)-0.5)/255.0;
+  oc=vec4(col,1.0);
+}
+</script>
+<script>
+(function(){
+  'use strict';
+  var HEAT=0.65, PAL=0, N=11;
+  var manifest=JSON.parse(document.getElementById('bridgebench-manifest').textContent);
+  var cv=document.getElementById('c');
+  var gl=cv.getContext('webgl2',{antialias:false,alpha:false,powerPreference:'high-performance',preserveDrawingBuffer:true});
+  var destroyed=false, raf=0;
+  var prog=null, vs=null, fsh=null, vao=null, loc={};
+  var seed=1, jit=[], epoch=performance.now(), offsetMs=0;
+  var BL=[[0.08,1,34,0.075],[0.42,1,41,0.07],[0.52,0,37,0.06],[0.66,1,46,0.05],[0.88,0,29,0.045],[0.30,0,52,0.055],[0.74,0,33,0.038],[0.15,0,26,0.04],[0.58,1,57,0.035],[0.93,1,31,0.03],[0.36,1,23,0.028]];
+  var bArr=new Float32Array(N*4), sArr=new Float32Array(N);
+
+  function rng(s){
+    var a=s>>>0;
+    return function(){
+      a=(a+0x6D2B79F5)>>>0;
+      var t=a;
+      t=Math.imul(t^(t>>>15),t|1);
+      t^=t+Math.imul(t^(t>>>7),t|61);
+      return ((t^(t>>>14))>>>0)/4294967296;
+    };
+  }
+  function setSeed(s){
+    var n=Number(s);
+    seed=isFinite(n)?(Math.floor(n)|0):1;
+    var r=rng(seed*2654435761+12345);
+    jit=[];
+    for(var i=0;i<N;i++){ jit.push({dth:(r()-0.5)*0.3,a0:r()*Math.PI*2}); }
+  }
+  function botR(y){
+    var t=Math.min(Math.max((y+0.45)/1.07,0),1);
+    return 0.085+0.115*Math.pow(1-t,1.3);
+  }
+  function elapsedSec(){
+    return (performance.now()-epoch+offsetMs)/1000*(HEAT/0.65);
+  }
+  function updateBlobs(T){
+    for(var i=0;i<N;i++){
+      var b=BL[i], y0=b[0], rise=b[1], P=b[2], r=b[3];
+      var th0=rise?Math.acos(1-2*y0):2*Math.PI-Math.acos(1-2*y0);
+      var th=th0+jit[i].dth+2*Math.PI*T/P;
+      var yn=0.5-0.5*Math.cos(th);
+      var v=Math.sin(th);
+      var y=-0.30+0.82*yn;
+      var R=botR(y);
+      var re=Math.min(r,0.58*R);
+      var ang=jit[i].a0+0.6*T/P*6.2831853*0.25;
+      var off=(i%3===0?0.05:0.28)*R;
+      var st=v>0?1+0.9*v:1+0.3*Math.abs(v);
+      bArr[i*4]=off*Math.cos(ang);
+      bArr[i*4+1]=y;
+      bArr[i*4+2]=off*Math.sin(ang);
+      bArr[i*4+3]=re;
+      sArr[i]=st;
+    }
+  }
+  function sh(type,src){
+    var s=gl.createShader(type);
+    gl.shaderSource(s,src);
+    gl.compileShader(s);
+    return s;
+  }
+  function init(){
+    if(!gl) return;
+    vs=sh(gl.VERTEX_SHADER,document.getElementById('vs').textContent.replace(/^\s+/,''));
+    fsh=sh(gl.FRAGMENT_SHADER,document.getElementById('fs').textContent.replace(/^\s+/,''));
+    prog=gl.createProgram();
+    gl.attachShader(prog,vs);
+    gl.attachShader(prog,fsh);
+    gl.linkProgram(prog);
+    vao=gl.createVertexArray();
+    ['uRes','uVisH','uT','uHeat','uB','uS'].forEach(function(n){loc[n]=gl.getUniformLocation(prog,n);});
+  }
+  function resize(){
+    if(destroyed||!gl) return;
+    var dpr=Math.min(window.devicePixelRatio||1,1.5);
+    var w=Math.max(1,Math.floor(window.innerWidth*dpr));
+    var h=Math.max(1,Math.floor(window.innerHeight*dpr));
+    var maxPix=2300000;
+    if(w*h>maxPix){var k=Math.sqrt(maxPix/(w*h));w=Math.max(1,Math.floor(w*k));h=Math.max(1,Math.floor(h*k));}
+    if(cv.width!==w||cv.height!==h){cv.width=w;cv.height=h;}
+    gl.viewport(0,0,w,h);
+  }
+  function render(){
+    if(destroyed||!gl||!prog) return;
+    var w=cv.width,h=cv.height,aspect=w/h;
+    var visH=Math.max(2.0/0.70,0.86/(0.70*aspect));
+    updateBlobs(elapsedSec());
+    gl.useProgram(prog);
+    gl.bindVertexArray(vao);
+    gl.uniform2f(loc.uRes,w,h);
+    gl.uniform1f(loc.uVisH,visH);
+    gl.uniform1f(loc.uT,elapsedSec());
+    gl.uniform1f(loc.uHeat,HEAT);
+    gl.uniform4fv(loc.uB,bArr);
+    gl.uniform1fv(loc.uS,sArr);
+    gl.drawArrays(gl.TRIANGLES,0,3);
+  }
+  function loop(){
+    if(destroyed) return;
+    render();
+    raf=requestAnimationFrame(loop);
+  }
+  function onResize(){resize();render();}
+
+  var api={
+    manifest:manifest,
+    getState:function(){return {heat:HEAT,paletteIndex:PAL};},
+    reset:function(s){
+      if(destroyed) return;
+      setSeed(s===undefined?1:s);
+      epoch=performance.now();
+      offsetMs=0;
+      render();
+    },
+    advance:function(ms){offsetMs+=Number(ms)||0;render();},
+    setTime:function(ms){epoch=performance.now();offsetMs=Number(ms)||0;render();},
+    render:render,
+    destroy:function(){
+      if(destroyed) return;
+      destroyed=true;
+      cancelAnimationFrame(raf);
+      window.removeEventListener('resize',onResize);
+      if(gl){
+        if(vao) gl.deleteVertexArray(vao);
+        if(prog){
+          if(vs) gl.detachShader(prog,vs);
+          if(fsh) gl.detachShader(prog,fsh);
+          gl.deleteProgram(prog);
+        }
+        if(vs) gl.deleteShader(vs);
+        if(fsh) gl.deleteShader(fsh);
+        var ext=gl.getExtension('WEBGL_lose_context');
+        if(ext) ext.loseContext();
+      }
+      prog=vs=fsh=vao=null;
+    }
+  };
+  window.__bridgebench=api;
+  window.bridgebench=api;
+  window.benchmark=api;
+
+  setSeed(1);
+  init();
+  resize();
+  window.addEventListener('resize',onResize);
+  loop();
+})();
+</script>
+</body>
+</html>
