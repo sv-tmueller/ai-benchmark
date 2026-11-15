@@ -1001,6 +1001,20 @@ class SymlinkTest(TempRootCase):
         rows, _ = dashboard.collect_rows(self.root)
         self.assertEqual([r.relpath for r in rows], ["results/real/p_m_low.html"])
 
+    def test_a_results_folder_that_is_itself_a_symlink_is_no_results_in_both_readers(self):
+        real = self.root / "elsewhere"
+        _add_result(real, "a", "p_m_low.html", meta={})
+        # results -> a folder that holds a real, readable result.
+        self._link(self.root / "results", real / "results")
+        self.assertTrue((self.root / "results" / "a" / "p_m_low.html").is_file())
+        from_tree = dashboard.collect_rows(self.root)
+        # The same tree as git stores it: `results` itself is one 120000 entry.
+        from_git = dashboard.collect_rows_at(
+            "REV", FakeGit([(b"results", b"elsewhere/results", b"120000")]))
+        self.assertEqual(from_tree, ([], []))
+        self.assertEqual(from_git, ([], []))
+        self.assertEqual(dashboard.render(from_tree[0]), dashboard.render(from_git[0]))
+
     def test_git_symlinks_and_gitlinks_are_not_results(self):
         meta = _meta()
         entries = [
@@ -1118,6 +1132,65 @@ class MainWritesBytesTest(TempRootCase):
         self.assertTrue(data.endswith(b"</html>\n"))
 
 
+class MainSkipsUnchangedWriteTest(TempRootCase):
+    """An up-to-date ``dashboard.html`` is left alone, so git does not re-stat it."""
+
+    def _main(self):
+        out = io.StringIO()
+        code = dashboard.main([], repo_root=self.root, out=out, err=io.StringIO())
+        return code, out.getvalue()
+
+    def test_a_current_file_is_not_rewritten_but_the_path_is_printed(self):
+        _add_result(self.root, "alpha", "alpha_m_low.html", meta={})
+        self._main()
+        target = self.root / "dashboard.html"
+        before = target.read_bytes()
+        os.utime(target, ns=(10**18, 10**18))  # a modification time no write would keep
+
+        real_write_text = type(self.root).write_text
+        writes = []
+
+        def spy(path, *args, **kwargs):
+            writes.append(path)
+            return real_write_text(path, *args, **kwargs)
+
+        with mock.patch.object(type(self.root), "write_text", spy):
+            code, out = self._main()
+
+        self.assertEqual((code, out), (0, "%s\n" % target))
+        self.assertEqual(writes, [])
+        self.assertEqual(target.stat().st_mtime_ns, 10**18)
+        self.assertEqual(target.read_bytes(), before)
+
+    def test_a_stale_file_is_rewritten(self):
+        _add_result(self.root, "alpha", "alpha_m_low.html", meta={})
+        self._main()
+        target = self.root / "dashboard.html"
+        current = target.read_bytes()
+        for stale in (b"", b"PLANTED", current + b"\n", current.replace(b"\n", b"\r\n")):
+            with self.subTest(stale=stale[:12]):
+                target.write_bytes(stale)
+                os.utime(target, ns=(10**18, 10**18))
+                code, _ = self._main()
+                self.assertEqual(code, 0)
+                self.assertEqual(target.read_bytes(), current)
+                self.assertNotEqual(target.stat().st_mtime_ns, 10**18)
+
+    def test_a_missing_file_is_written(self):
+        _add_result(self.root, "alpha", "alpha_m_low.html", meta={})
+        code, _ = self._main()
+        self.assertEqual(code, 0)
+        self.assertTrue((self.root / "dashboard.html").is_file())
+
+    def test_a_target_that_cannot_be_read_is_an_error_not_a_crash(self):
+        # A folder where the file should be: reading it fails, and so would writing it.
+        (self.root / "dashboard.html").mkdir()
+        err = io.StringIO()
+        code = dashboard.main([], repo_root=self.root, out=io.StringIO(), err=err)
+        self.assertEqual(code, 1)
+        self.assertIn("error:", err.getvalue())
+
+
 @unittest.skipUnless(shutil.which("git"), "git is not installed")
 class RealGitReaderTest(unittest.TestCase):
     """``collect_rows_at`` against real git in a throwaway repo (no remote)."""
@@ -1175,6 +1248,74 @@ class RealGitReaderTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(self.git("status", "--porcelain"), "")
         self.assertEqual(self.git("show", "HEAD:dashboard.html", binary=True), from_git)
+
+    def _clone_and_hand_run(self, autocrlf, with_attributes):
+        """Commit a current dashboard in ``repo``, clone it, hand-run in the clone.
+
+        ``autocrlf`` is ``"true"``, ``"input"`` or ``None`` (unset); it is set
+        at clone time and in the clone's config. Returns the clone's
+        ``git status --porcelain`` after the run.
+        """
+        _write_entries(self.repo, [(b"results/.gitkeep", b"")] + _parity_entries()[:3])
+        code = dashboard.main([], repo_root=self.repo, out=io.StringIO(), err=io.StringIO())
+        self.assertEqual(code, 0)
+        if with_attributes:
+            shutil.copyfile(dashboard.REPO_ROOT / ".gitattributes", self.repo / ".gitattributes")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "results and dashboard")
+        clone = Path(self.tmp.name) / "clone"
+        flags = ["-c", "core.autocrlf=%s" % autocrlf] if autocrlf else []
+        done = subprocess.run(["git", *flags, "clone", "-q", str(self.repo), str(clone)],
+                              capture_output=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+        def in_clone(*cmd):
+            done = subprocess.run(["git", *cmd], cwd=clone, capture_output=True)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            return done.stdout.decode("utf-8").strip()
+
+        if autocrlf:
+            in_clone("config", "core.autocrlf", autocrlf)
+        code = dashboard.main([], repo_root=clone, out=io.StringIO(), err=io.StringIO())
+        self.assertEqual(code, 0)
+        return in_clone("status", "--porcelain")
+
+    def test_a_hand_run_on_a_clean_current_clone_leaves_git_status_empty(self):
+        # With core.autocrlf=true and no attribute, git checks the file out
+        # with CRLF line ends, so a hand run (LF) always differs from it. The
+        # repo's .gitattributes pins dashboard.html to LF in every checkout.
+        for autocrlf in ("true", "input", None):
+            with self.subTest(autocrlf=autocrlf):
+                if self.repo.exists():
+                    shutil.rmtree(self.repo)
+                shutil.rmtree(Path(self.tmp.name) / "clone", ignore_errors=True)
+                self.repo.mkdir()
+                self.git("init", "-q", "-b", "main")
+                self.assertEqual(self._clone_and_hand_run(autocrlf, True), "")
+
+    def test_without_the_attribute_autocrlf_true_is_the_case_that_breaks(self):
+        # Documents why .gitattributes is there: it is not a no-op.
+        self.assertEqual(self._clone_and_hand_run("true", False).strip(), "M dashboard.html")
+
+    def test_without_the_attribute_input_and_unset_are_clean(self):
+        for autocrlf in ("input", None):
+            with self.subTest(autocrlf=autocrlf):
+                if self.repo.exists():
+                    shutil.rmtree(self.repo)
+                shutil.rmtree(Path(self.tmp.name) / "clone", ignore_errors=True)
+                self.repo.mkdir()
+                self.git("init", "-q", "-b", "main")
+                self.assertEqual(self._clone_and_hand_run(autocrlf, False), "")
+
+    def test_the_repo_gitattributes_pins_only_dashboard_html_to_lf(self):
+        text = (dashboard.REPO_ROOT / ".gitattributes").read_text(encoding="utf-8")
+        self.assertEqual(text, "dashboard.html text eol=lf\n")
+        _write_entries(self.repo, [(b"dashboard.html", b"<p>\n"), (b"other.txt", b"x\n")])
+        shutil.copyfile(dashboard.REPO_ROOT / ".gitattributes", self.repo / ".gitattributes")
+        out = self.git("check-attr", "text", "eol", "--", "dashboard.html", "other.txt")
+        self.assertEqual(out.splitlines(), [
+            "dashboard.html: text: set", "dashboard.html: eol: lf",
+            "other.txt: text: unspecified", "other.txt: eol: unspecified"])
 
     def test_an_unknown_revision_is_a_git_read_error(self):
         self.git("commit", "-q", "--allow-empty", "-m", "empty")

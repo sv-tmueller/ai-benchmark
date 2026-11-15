@@ -26,11 +26,17 @@ prompt, model or effort, and click a file name to open that result in a new tab.
 The file is committed and kept current by the merge step: the docs PR that
 `harness/merge_results.py` opens after merging results also carries the
 regenerated page, built from the results on `origin/main`. To regenerate it by
-hand run `python3 harness/dashboard.py`; on a clean checkout whose dashboard is
-current this leaves `git status` clean, so it does not block a later batch run.
-Between a result merge and the merge of its docs PR the committed page is out of
-date by design: if you regenerated it by hand then, run `git restore
-dashboard.html` before starting a batch (the batch needs no tracked changes).
+hand run `python3 harness/dashboard.py`. A hand run reflects the working tree,
+not `origin/main`: untracked or git-ignored result files that are present there
+(a stray folder, an editor's `.swp` next to a result) appear in the page it
+writes. The "leaves `git status` clean" statement applies to a clean checkout
+whose committed dashboard is current: there the run writes the same bytes (or
+writes nothing), so it does not block a later batch run. A `.gitattributes`
+entry pins `dashboard.html` to LF line endings in every checkout, whatever
+`core.autocrlf` says. Between a result merge and the merge of its docs PR the
+committed page is out of date by design: if you regenerated it by hand then,
+run `git restore dashboard.html` before starting a batch (the batch needs no
+tracked changes).
 
 ---
 

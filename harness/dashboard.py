@@ -7,8 +7,11 @@ model, effort, generation date, and the duration, output tokens and cost from
 the result's ``<deliverable stem>.run.json`` where it has one. The file is
 committed: ``harness/merge_results.py`` regenerates it from the results on
 ``origin/main`` and carries it in its docs PR. Running the command by hand on
-a checkout whose dashboard is current writes the same bytes and leaves
-``git status`` clean.
+a clean checkout whose dashboard is current writes nothing (the same bytes are
+already there) and leaves ``git status`` clean; a hand run reflects the working
+tree, so untracked or ignored result files present there appear in the page.
+``.gitattributes`` pins ``dashboard.html`` to LF in every checkout, so
+``core.autocrlf`` cannot make that file differ from what this writes.
 
 Usage::
 
@@ -179,11 +182,13 @@ def collect_rows(repo_root):
     """Return ``(rows, warnings)`` for every result under ``repo_root/results``.
 
     Reads the working tree. A symlink (folder, deliverable, sidecar or run
-    file) is not listed, so it is never a result and never read.
+    file) is not listed, so it is never a result and never read. When
+    ``results`` itself is a symlink there are no results, as in a git tree,
+    where it is one 120000 entry and lists nothing.
     """
     repo_root = Path(repo_root)
     results_dir = repo_root / "results"
-    if not results_dir.is_dir():
+    if not results_dir.is_dir() or results_dir.is_symlink():
         return [], []
     files = set()
     for directory in results_dir.iterdir():
@@ -657,8 +662,9 @@ def parse_args(argv):
 def main(argv=None, repo_root=REPO_ROOT, out=None, err=None):
     """CLI entry point; returns the process exit code.
 
-    0 when the file is written (also with no results or with warnings), 1 when
-    writing fails; argparse exits 2 on a usage error.
+    0 when the file is current afterwards (written, or already holding the same
+    bytes; also with no results or with warnings), 1 when writing fails;
+    argparse exits 2 on a usage error.
     """
     out = sys.stdout if out is None else out
     err = sys.stderr if err is None else err
@@ -669,7 +675,12 @@ def main(argv=None, repo_root=REPO_ROOT, out=None, err=None):
         rows, warnings = collect_rows(repo_root)
         for warning in warnings:
             print("warning: %s" % warning, file=err)
-        target.write_text(render(rows), encoding="utf-8", newline="\n")
+        page = render(rows).encode("utf-8")
+        # An up-to-date file is left alone: rewriting identical bytes still
+        # changes its stat data, and with core.autocrlf=true git then reports
+        # the checkout as modified.
+        if not (target.is_file() and target.read_bytes() == page):
+            target.write_text(page.decode("utf-8"), encoding="utf-8", newline="\n")
     except OSError as exc:
         print("error: %s" % _clean(str(exc)), file=err)
         return 1
