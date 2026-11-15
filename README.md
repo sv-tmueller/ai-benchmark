@@ -17,14 +17,20 @@ blueprints for multi-file projects, plus text, math, SQL, vision and probe
 prompts) and every result generated from them were removed; they remain in
 the git history.
 
-**Dashboard.** `python3 harness/dashboard.py` writes `dashboard.html` at the
-repo root with one row per result under `results/`: prompt, model, effort,
-generation date, and the duration, output tokens and cost from the result's
-`.run.json` where it has one (a dash otherwise). Open the file in a browser
-straight from the checkout; it needs no network. Click a column header to sort
-(click again to reverse), group by prompt, model or effort, and click a file
-name to open that result in a new tab. The file is git-ignored; run the command
-again after pulling new results.
+**Dashboard.** [`dashboard.html`](dashboard.html) at the repo root has one row
+per result under `results/`: prompt, model, effort, generation date, and the
+duration, output tokens and cost from the result's `.run.json` where it has one
+(a dash otherwise). Open it in a browser straight from a clone; it needs no
+network. Click a column header to sort (click again to reverse), group by
+prompt, model or effort, and click a file name to open that result in a new tab.
+The file is committed and kept current by the merge step: the docs PR that
+`harness/merge_results.py` opens after merging results also carries the
+regenerated page, built from the results on `origin/main`. To regenerate it by
+hand run `python3 harness/dashboard.py`; on a clean checkout whose dashboard is
+current this leaves `git status` clean, so it does not block a later batch run.
+Between a result merge and the merge of its docs PR the committed page is out of
+date by design: if you regenerated it by hand then, run `git restore
+dashboard.html` before starting a batch (the batch needs no tracked changes).
 
 ---
 
@@ -195,8 +201,14 @@ its `.meta.json` (plus `_grading.json` only for graded prompts, and the
 and the checks are green. A PR that fails the gate, or that GitHub refuses to
 merge, stays open with the reason printed; the command never uses `--admin`
 or `--auto`. Afterwards it opens one docs PR that brings the model's ledger rows up to
-date with the effort levels whose files are now on `main`;
-that PR is left for you to merge unless the opt-in below is used. Exit codes:
+date with the effort levels whose files are now on `main` and regenerates
+`dashboard.html` from the results on `origin/main` (read as git objects at one
+pinned commit, never from your working tree). The PR is one commit that changes
+`README.md`, `dashboard.html` or both, whichever is out of date: if only the
+dashboard is stale it carries just the dashboard, and if both are current no PR
+is opened. `dashboard.html` must already exist on `origin/main`; if it does not,
+the command reports that, exits 1 and does not add it.
+That PR is left for you to merge unless the opt-in below is used. Exit codes:
 0 done, 1 something stayed open, 2 bad model id or failed preflight.
 
 *Status exception (opt-in).* `main` requires the status contexts
@@ -209,9 +221,13 @@ passed the full gate, then merges it. Each status has the description prefix
 Statuses go only on the gated head commit, read once more right before posting;
 a PR that has to be brought up to date first is gated again and only its new
 head gets them. The ledger docs PR gets the same two statuses and is merged
-too, but only after its diff is proven to be exactly the README status cells the
-command rewrote (one commit on top of `origin/main`, only `README.md`, checks
-green); otherwise it stays open and is reported. A failed post leaves the PR
+too, but only after its diff is proven to be exactly what the command computed:
+one commit whose only parent is the pinned `origin/main`, changing exactly the
+expected files (`README.md`, `dashboard.html` or both) and nothing else, each
+`modified` to byte for byte this run's content, with main's README as its base
+and green checks. A docs PR with an extra or a missing file, other content or an
+older base stays open and is reported, and that includes one left by an earlier
+run when the dashboard has since gone stale. A failed post leaves the PR
 open with the reason printed, and nothing is retried; `--admin` and `--auto` are
 never used. Without the flag the command posts no status, never merges the docs
 PR and behaves as before. Branch protection is unchanged.
