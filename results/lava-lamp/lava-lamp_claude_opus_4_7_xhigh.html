@@ -1,0 +1,666 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lava Lamp</title>
+<style>
+html, body { margin: 0; padding: 0; overflow: hidden; background: #030204; width: 100%; height: 100%; }
+#c { display: block; width: 100vw; height: 100vh; background: #030204; }
+#f { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; color: #ccc; font: 14px -apple-system, sans-serif; background: #0a0809; display: none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="f">WebGL2 is required for this scene.</div>
+<script>
+(() => {
+  'use strict';
+
+  const canvas = document.getElementById('c');
+  const gl = canvas.getContext('webgl2', {
+    antialias: false,
+    alpha: false,
+    premultipliedAlpha: false,
+    preserveDrawingBuffer: false,
+    powerPreference: 'high-performance'
+  });
+
+  if (!gl) {
+    document.getElementById('f').style.display = 'flex';
+    window.__bench = window.__benchmark = {
+      manifest: { id: 'lava-lamp', title: 'Photoreal Lava Lamp', kind: 'scene', controls: [], palettes: ['Ember'], defaults: { heat: 0.65, paletteIndex: 0 } },
+      reset(_seed) {},
+      getState() { return { heat: 0.65, paletteIndex: 0 }; },
+      destroy() {}
+    };
+    return;
+  }
+
+  const NUM_BLOBS = 12;
+
+  const VERT_SRC = `#version 300 es
+in vec2 a;
+void main() { gl_Position = vec4(a, 0.0, 1.0); }
+`;
+
+  const FRAG_SRC = `#version 300 es
+precision highp float;
+
+uniform vec2 uRes;
+uniform vec4 uBlobs[${NUM_BLOBS}];
+uniform float uCamDist;
+uniform float uFovY;
+
+out vec4 outColor;
+
+const float BOT_Y_BOT  = -1.14;
+const float BOT_Y_TOP  =  1.34;
+const float BOT_R_BOT  =  0.42;
+const float BOT_R_TOP  =  0.28;
+const float IN_Y_BOT   = -1.12;
+const float IN_Y_TOP   =  1.32;
+const float IN_R_BOT   =  0.40;
+const float IN_R_TOP   =  0.26;
+const float TABLE_Y    = -1.76;
+
+float smin(float a, float b, float k) {
+  float h = max(k - abs(a - b), 0.0) / k;
+  return min(a, b) - h * h * h * k * (1.0 / 6.0);
+}
+
+float sdCone(vec3 p, float yBot, float yTop, float rBot, float rTop) {
+  float h  = (yTop - yBot) * 0.5;
+  float yc = (yTop + yBot) * 0.5;
+  vec2  q  = vec2(length(p.xz), p.y - yc);
+  vec2  k1 = vec2(rTop, h);
+  vec2  k2 = vec2(rTop - rBot, 2.0 * h);
+  vec2  ca = vec2(q.x - min(q.x, (q.y < 0.0) ? rBot : rTop), abs(q.y) - h);
+  vec2  cb = q - k1 + k2 * clamp(dot(k1 - q, k2) / dot(k2, k2), 0.0, 1.0);
+  float s  = (cb.x < 0.0 && ca.y < 0.0) ? -1.0 : 1.0;
+  return s * sqrt(min(dot(ca, ca), dot(cb, cb)));
+}
+
+float waxSDF(vec3 p) {
+  float d = 1e10;
+  const float K = 0.145;
+  for (int i = 0; i < ${NUM_BLOBS}; i++) {
+    vec3  c  = uBlobs[i].xyz;
+    float r  = uBlobs[i].w;
+    float di = length(p - c) - r;
+    d = smin(d, di, K);
+  }
+  // Oblate amber pool at the bottom
+  vec3 pq = p - vec3(0.0, -1.02, 0.0);
+  pq.y *= 2.6;
+  float pool = length(pq) - 0.40;
+  d = smin(d, pool, 0.12);
+  return d;
+}
+
+vec3 waxNormal(vec3 p) {
+  vec2 e = vec2(0.0018, 0.0);
+  return normalize(vec3(
+    waxSDF(p + e.xyy) - waxSDF(p - e.xyy),
+    waxSDF(p + e.yxy) - waxSDF(p - e.yxy),
+    waxSDF(p + e.yyx) - waxSDF(p - e.yyx)
+  ));
+}
+
+struct Mat { int id; float d; };
+
+Mat sceneOuter(vec3 p) {
+  // Glass shell (outer - inner)
+  float gOut  = sdCone(p, BOT_Y_BOT, BOT_Y_TOP, BOT_R_BOT, BOT_R_TOP);
+  float gIn   = sdCone(p, IN_Y_BOT,  IN_Y_TOP,  IN_R_BOT,  IN_R_TOP);
+  float glass = max(gOut, -gIn);
+
+  // Sculpted brushed-silver base (three tapered segments)
+  float base1 = sdCone(p, -1.74, -1.55, 0.52, 0.49);
+  float base2 = sdCone(p, -1.56, -1.30, 0.49, 0.44);
+  float base3 = sdCone(p, -1.31, -1.14, 0.44, 0.40);
+  float baseD = min(base1, min(base2, base3));
+
+  // Matching cap
+  float cap1 = sdCone(p, 1.33, 1.47, 0.30, 0.27);
+  float cap2 = sdCone(p, 1.47, 1.64, 0.27, 0.25);
+  float cap3 = sdCone(p, 1.64, 1.76, 0.25, 0.20);
+  float capD = min(cap1, min(cap2, cap3));
+
+  // Table
+  float tableD = p.y - TABLE_Y;
+
+  Mat h = Mat(1, glass);
+  if (baseD  < h.d) h = Mat(2, baseD);
+  if (capD   < h.d) h = Mat(3, capD);
+  if (tableD < h.d) h = Mat(4, tableD);
+  return h;
+}
+
+vec3 outerNormal(vec3 p) {
+  vec2 e = vec2(0.0025, 0.0);
+  float dx = sceneOuter(p + e.xyy).d - sceneOuter(p - e.xyy).d;
+  float dy = sceneOuter(p + e.yxy).d - sceneOuter(p - e.yxy).d;
+  float dz = sceneOuter(p + e.yyx).d - sceneOuter(p - e.yyx).d;
+  return normalize(vec3(dx, dy, dz));
+}
+
+Mat marchOuter(vec3 ro, vec3 rd, float tMax) {
+  float t = 0.0;
+  for (int i = 0; i < 160; i++) {
+    vec3 p = ro + rd * t;
+    Mat h = sceneOuter(p);
+    if (h.d < 0.0007) return Mat(h.id, t);
+    if (t > tMax) break;
+    t += max(h.d * 0.92, 0.0007);
+  }
+  return Mat(0, -1.0);
+}
+
+Mat marchInterior(vec3 ro, vec3 rd, float tMax) {
+  float t = 0.004;
+  for (int i = 0; i < 110; i++) {
+    vec3  p    = ro + rd * t;
+    float dw   = waxSDF(p);
+    float wall = -sdCone(p, IN_Y_BOT, IN_Y_TOP, IN_R_BOT, IN_R_TOP);
+    if (dw < 0.0008)  return Mat(5, t);
+    if (wall < 0.0008) return Mat(1, t);
+    float step = min(dw, wall) * 0.9;
+    t += max(step, 0.0007);
+    if (t > tMax) break;
+  }
+  return Mat(0, tMax);
+}
+
+vec3 sampleEnv(vec3 dir) {
+  // Dark warm-charcoal studio gradient
+  vec3 bg = mix(vec3(0.012, 0.010, 0.0085), vec3(0.032, 0.026, 0.022),
+                smoothstep(-0.7, 0.7, dir.y));
+
+  // Warm bounce from the studio floor
+  float warm = smoothstep(0.4, -1.0, dir.y);
+  bg += vec3(0.09, 0.040, 0.016) * warm * 0.55;
+
+  // Two vertical softbox strips on viewer's side
+  float az = atan(dir.x, dir.z);
+  float el = dir.y;
+
+  float sbR = smoothstep(0.16, 0.0, abs(az - 0.58));
+  float sbL = smoothstep(0.16, 0.0, abs(az + 0.58));
+  float elMask = smoothstep(-0.55, -0.25, el) * smoothstep(0.75, 0.40, el);
+  vec3  softCol = vec3(0.92, 0.95, 1.02);
+  vec3  soft = softCol * (sbR + sbL) * elMask * 1.35;
+
+  // Faint rear softbox for depth
+  float sbB = smoothstep(0.12, 0.0, abs(abs(az) - 3.14159 * 0.95));
+  soft += vec3(0.60, 0.68, 0.80) * sbB * elMask * 0.35;
+
+  return bg + soft;
+}
+
+vec3 shadeTable(vec3 p, vec3 N, vec3 V) {
+  vec3 base = vec3(0.023, 0.019, 0.017);
+
+  float dist = length(p.xz);
+
+  // Soft specular from env
+  vec3 R   = reflect(V, N);
+  vec3 env = sampleEnv(R);
+
+  // Heater glow (warm radial pool of light)
+  float glow    = exp(-pow(dist * 1.55, 2.0));
+  vec3  heater  = vec3(0.70, 0.24, 0.08) * glow * 0.95;
+
+  // Subtle wider warm bounce
+  float wide    = exp(-pow(dist * 0.55, 2.0)) * 0.35;
+  heater += vec3(0.55, 0.22, 0.09) * wide;
+
+  // Soft shadow directly under the lamp foot
+  float foot    = smoothstep(0.48, 0.28, dist);
+  vec3  shadow  = vec3(0.012, 0.009, 0.008) * foot;
+
+  // Fine surface micro-grain
+  float g = fract(sin(dot(p.xz * 11.3, vec2(12.9898, 78.233))) * 43758.5453);
+  g = g * 0.014;
+
+  // Edge darkening (table fades into shadow at the periphery)
+  float edge = smoothstep(4.5, 1.1, dist);
+
+  vec3 col = base * edge + heater + env * 0.055 + vec3(g);
+  col = mix(col, shadow, foot * 0.55);
+  return col;
+}
+
+vec3 brushedSilver(vec3 p, vec3 N, vec3 V, float heaterInfluence) {
+  // Brushed pattern: tangent along azimuth
+  vec3 axis = vec3(0.0, 1.0, 0.0);
+  vec3 T = cross(axis, N);
+  float tl = length(T);
+  T = tl > 0.001 ? T / tl : vec3(1.0, 0.0, 0.0);
+
+  float az = atan(p.x, p.z);
+  float brush = sin(az * 260.0) * 0.055 + sin(az * 523.0) * 0.022 + sin(az * 97.0) * 0.015;
+  vec3  Np = normalize(N + T * brush);
+
+  // Reflection
+  vec3 R   = reflect(V, Np);
+  vec3 env = sampleEnv(R);
+
+  // Fresnel (schlick, F0 ~ 0.6 for a muted satin silver)
+  float NdotV   = max(0.0, dot(Np, -V));
+  float fresnel = 0.55 + 0.45 * pow(1.0 - NdotV, 5.0);
+
+  // Warm bounce from heater zone (strong on base underside, weak on cap)
+  float bounce = smoothstep(-1.75, -1.10, p.y) * heaterInfluence;
+  vec3  warm   = vec3(0.70, 0.26, 0.07) * bounce * clamp(-Np.y * 0.5 + 0.35, 0.0, 1.0);
+
+  // Directional key for metal shaping
+  vec3  kd = normalize(vec3(0.3, 0.9, 0.55));
+  float k  = max(0.0, dot(Np, kd));
+
+  vec3 metalTone = vec3(0.68, 0.70, 0.74);
+  vec3 col = metalTone * (0.18 + 0.22 * k) + env * fresnel * 0.9 + warm * 0.95;
+
+  // Anisotropic highlight
+  vec3  H    = normalize(-V + kd);
+  float anis = pow(max(0.0, dot(Np, H)), 42.0);
+  col += vec3(0.92, 0.96, 1.05) * anis * 0.45;
+
+  return col;
+}
+
+vec3 shadeWax(vec3 p, vec3 N, vec3 V) {
+  vec3 coreCol = vec3(0.58, 0.065, 0.022);
+  vec3 edgeCol = vec3(1.00, 0.44, 0.12);
+  vec3 glowCol = vec3(1.00, 0.56, 0.22);
+
+  float NdotV   = max(0.0, dot(N, -V));
+  float fresnel = pow(1.0 - NdotV, 2.4);
+
+  vec3 baseCol = mix(coreCol, edgeCol, fresnel * 0.72);
+
+  // Lighting rig
+  vec3 keyDir  = normalize(vec3(0.35,  0.80,  0.55));
+  vec3 fillDir = normalize(vec3(-0.20, -1.00, -0.10));
+  vec3 rimDir  = normalize(vec3(-0.60,  0.30, -0.60));
+
+  float k = max(0.0, dot(N, keyDir));
+  float f = max(0.0, dot(N, fillDir));
+  float r = max(0.0, dot(N, rimDir));
+
+  vec3 lit = baseCol * 0.40
+           + baseCol * k * 0.78
+           + vec3(1.0, 0.34, 0.07) * f * 0.42
+           + vec3(1.0, 0.56, 0.21) * r * 0.22;
+
+  // Specular on key light
+  vec3  H    = normalize(keyDir - V);
+  float spec = pow(max(0.0, dot(N, H)), 44.0);
+  lit += vec3(1.0, 0.78, 0.48) * spec * 0.42;
+
+  // Thin-edge transmission glow (warm light through thin wax)
+  lit += glowCol * fresnel * fresnel * 0.72;
+
+  // Deep warm interior ambient bounce
+  float upwash = smoothstep(-1.2, 0.2, p.y);
+  lit += vec3(0.25, 0.09, 0.03) * (1.0 - upwash) * 0.4;
+
+  return lit;
+}
+
+vec3 backNormalApprox(vec3 wp) {
+  // Slightly cone-slope-corrected outward normal of the inner back wall
+  vec2 radial = wp.xz;
+  float rlen = length(radial);
+  vec3 radN = rlen > 0.0001 ? vec3(radial.x / rlen, 0.0, radial.y / rlen) : vec3(0.0, 0.0, 1.0);
+  // The inner wall narrows with height: dr/dy ~ (IN_R_TOP-IN_R_BOT)/(IN_Y_TOP-IN_Y_BOT)
+  float slope = (IN_R_TOP - IN_R_BOT) / (IN_Y_TOP - IN_Y_BOT);
+  vec3 n = normalize(vec3(radN.x, -slope, radN.z));
+  return n;
+}
+
+void main() {
+  vec2 uv = (gl_FragCoord.xy - 0.5 * uRes) / uRes.y;
+
+  vec3 camPos  = vec3(0.0, 0.07, uCamDist);
+  vec3 lookAt  = vec3(0.0, 0.0, 0.0);
+  vec3 forward = normalize(lookAt - camPos);
+  vec3 right   = normalize(cross(forward, vec3(0.0, 1.0, 0.0)));
+  vec3 upV     = cross(right, forward);
+  float tHalf  = tan(uFovY * 0.5);
+  vec3 rd = normalize(uv.x * right * tHalf * 2.0
+                    + uv.y * upV   * tHalf * 2.0
+                    + forward);
+  vec3 ro = camPos;
+
+  vec3 color = sampleEnv(rd);
+
+  Mat h = marchOuter(ro, rd, 20.0);
+
+  if (h.id > 0) {
+    vec3 p = ro + rd * h.d;
+    vec3 N = outerNormal(p);
+    // Flip normal if facing away from camera
+    if (dot(N, -rd) < 0.0) N = -N;
+
+    if (h.id == 1) {
+      // ------------------------------------------- Glass
+      float NdotV   = max(0.0, dot(N, -rd));
+      float fresnel = 0.04 + (1.0 - 0.04) * pow(1.0 - NdotV, 5.0);
+
+      // Reflection off front glass
+      vec3 reflDir = reflect(rd, N);
+      vec3 reflCol = sampleEnv(reflDir);
+
+      // Refraction into interior
+      vec3 refrDir = refract(rd, N, 1.0 / 1.47);
+      if (dot(refrDir, refrDir) < 0.0001) refrDir = reflDir;
+
+      // Push ray past the shell thickness
+      vec3 insideRo = p + refrDir * 0.055;
+
+      Mat ih = marchInterior(insideRo, refrDir, 10.0);
+      vec3 inCol;
+
+      if (ih.id == 5) {
+        // Wax hit
+        vec3 wp = insideRo + refrDir * ih.d;
+        vec3 wN = waxNormal(wp);
+        if (dot(wN, -refrDir) < 0.0) wN = -wN;
+        inCol = shadeWax(wp, wN, refrDir);
+
+        // Soft warm ambient from the amber pool reaching up through the clear liquid
+        float heightGain = smoothstep(-1.1, 0.4, wp.y);
+        inCol += vec3(0.18, 0.06, 0.02) * (1.0 - heightGain) * 0.5;
+      } else if (ih.id == 1) {
+        // Exit through back wall of the bottle into the studio
+        vec3 wp = insideRo + refrDir * ih.d;
+        vec3 N2 = backNormalApprox(wp);
+        vec3 exitDir = refract(refrDir, -N2, 1.47);
+        if (dot(exitDir, exitDir) < 0.0001) exitDir = reflect(refrDir, -N2);
+        inCol = sampleEnv(exitDir);
+        // Tint by clear amber liquid; the farther the ray travels, the warmer the tint
+        float travel = clamp(ih.d / 0.9, 0.0, 1.0);
+        vec3 amberTint = mix(vec3(0.95, 0.85, 0.72), vec3(0.78, 0.58, 0.34), travel);
+        inCol *= amberTint;
+      } else {
+        inCol = vec3(0.025, 0.018, 0.013);
+      }
+
+      color = mix(inCol, reflCol, clamp(fresnel, 0.04, 0.9));
+
+      // Sharp direct softbox strip highlights on the glass surface
+      vec3 sb1 = normalize(vec3(sin( 0.58), 0.15, cos( 0.58)));
+      vec3 sb2 = normalize(vec3(sin(-0.58), 0.15, cos(-0.58)));
+      float sp1 = pow(max(0.0, dot(reflDir, sb1)), 220.0);
+      float sp2 = pow(max(0.0, dot(reflDir, sb2)), 220.0);
+      float sw1 = pow(max(0.0, dot(reflDir, sb1)), 30.0) * 0.08;
+      float sw2 = pow(max(0.0, dot(reflDir, sb2)), 30.0) * 0.08;
+      color += vec3(0.88, 0.92, 1.00) * (sp1 + sp2 + sw1 + sw2) * 0.9;
+
+    } else if (h.id == 2) {
+      // Base
+      color = brushedSilver(p, N, rd, 1.0);
+    } else if (h.id == 3) {
+      // Cap
+      color = brushedSilver(p, N, rd, 0.15);
+    } else if (h.id == 4) {
+      color = shadeTable(p, N, rd);
+    }
+  }
+
+  // Filmic tonemap
+  vec3 c = color * 1.1;
+  c = (c * (c * 2.51 + 0.03)) / (c * (c * 2.43 + 0.59) + 0.14);
+  c = clamp(c, 0.0, 1.0);
+  // Gamma
+  c = pow(c, vec3(1.0 / 2.2));
+
+  outColor = vec4(c, 1.0);
+}
+`;
+
+  function compile(type, src) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+      console.error('Shader compile error:', gl.getShaderInfoLog(s));
+      return null;
+    }
+    return s;
+  }
+
+  const vs = compile(gl.VERTEX_SHADER, VERT_SRC);
+  const fs = compile(gl.FRAGMENT_SHADER, FRAG_SRC);
+  const prog = gl.createProgram();
+  gl.attachShader(prog, vs);
+  gl.attachShader(prog, fs);
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+    console.error('Program link error:', gl.getProgramInfoLog(prog));
+    return;
+  }
+  gl.deleteShader(vs);
+  gl.deleteShader(fs);
+
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  const vbo = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+    -1, -1,  1, -1, -1,  1,
+    -1,  1,  1, -1,  1,  1
+  ]), gl.STATIC_DRAW);
+  const aLoc = gl.getAttribLocation(prog, 'a');
+  gl.enableVertexAttribArray(aLoc);
+  gl.vertexAttribPointer(aLoc, 2, gl.FLOAT, false, 0, 0);
+
+  const uResLoc     = gl.getUniformLocation(prog, 'uRes');
+  const uBlobsLoc   = gl.getUniformLocation(prog, 'uBlobs');
+  const uCamDistLoc = gl.getUniformLocation(prog, 'uCamDist');
+  const uFovYLoc    = gl.getUniformLocation(prog, 'uFovY');
+
+  // Deterministic PRNG
+  function mulberry32(a) {
+    return function () {
+      a |= 0; a = (a + 0x6D2B79F5) | 0;
+      let t = a ^ (a >>> 15);
+      t = Math.imul(t, t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  const blobs = new Array(NUM_BLOBS).fill(0).map(() => ({ x: 0, y: 0, z: 0, r: 0, vel: 0, temp: 0, phase: 0 }));
+  const blobData = new Float32Array(NUM_BLOBS * 4);
+  let simTime = 0;
+  let epochMs = 0;
+  const DT = 1 / 60;
+  const PREWARM = 3.2;
+
+  function initBlobs(seed) {
+    const rng = mulberry32((seed >>> 0) || 1);
+    for (let i = 0; i < NUM_BLOBS; i++) {
+      const r = 0.13 + rng() * 0.17;
+      const angle = rng() * Math.PI * 2;
+      const rad = rng() * 0.11;
+      const b = blobs[i];
+      b.x = Math.cos(angle) * rad;
+      b.z = Math.sin(angle) * rad;
+      // Spread initial heights across the bottle interior
+      b.y = -1.00 + (i / (NUM_BLOBS - 1)) * 1.70 + (rng() - 0.5) * 0.14;
+      b.r = r;
+      b.vel = (rng() - 0.5) * 0.14;
+      b.temp = 0.25 + rng() * 0.50;
+      b.phase = rng() * Math.PI * 2;
+    }
+    simTime = 0;
+    const prewarmSteps = Math.round(PREWARM / DT);
+    for (let i = 0; i < prewarmSteps; i++) step();
+  }
+
+  function step() {
+    const t = simTime;
+    for (let i = 0; i < NUM_BLOBS; i++) {
+      const b = blobs[i];
+
+      // Heat exchange with environment
+      const targetTemp = b.y < -0.85
+        ? 1.00
+        : (b.y > 0.95 ? 0.00 : (b.y < 0.0 ? 0.55 : 0.32));
+      b.temp += (targetTemp - b.temp) * DT * 0.72;
+
+      // Buoyancy
+      const buoy = (b.temp - 0.50) * 1.45;
+      b.vel += buoy * DT;
+      b.vel *= Math.pow(0.48, DT); // damping
+
+      b.y += b.vel * DT;
+
+      // Clamp vertically (interior rounded by pool)
+      if (b.y < -1.06) { b.y = -1.06; if (b.vel < 0) b.vel = 0; }
+      if (b.y >  1.14) { b.y =  1.14; if (b.vel > 0) b.vel = 0; }
+
+      // Horizontal vortex drift (small)
+      const vortex = 0.10;
+      b.x += Math.sin(t * 0.21 + b.phase + b.y * 0.8) * vortex * DT;
+      b.z += Math.cos(t * 0.19 + b.phase * 1.3 + b.y * 0.5) * vortex * DT;
+
+      // Clamp horizontally by bottle inner radius at this height
+      const yT = Math.max(0, Math.min(1, (b.y - (-1.12)) / (1.32 - (-1.12))));
+      const innerR = 0.40 * (1 - yT) + 0.26 * yT;
+      const maxR = Math.max(0.03, innerR - b.r * 0.58);
+      const d = Math.hypot(b.x, b.z);
+      if (d > maxR) {
+        b.x *= maxR / d;
+        b.z *= maxR / d;
+      }
+    }
+    simTime += DT;
+  }
+
+  function advanceTo(target) {
+    // Cap steps per frame to protect against long background suspensions.
+    const MAX = 600;
+    let n = 0;
+    while (simTime < target && n < MAX) {
+      step();
+      n++;
+    }
+    if (simTime < target) simTime = target;
+  }
+
+  function packBlobs() {
+    for (let i = 0; i < NUM_BLOBS; i++) {
+      const b = blobs[i];
+      blobData[i * 4 + 0] = b.x;
+      blobData[i * 4 + 1] = b.y;
+      blobData[i * 4 + 2] = b.z;
+      blobData[i * 4 + 3] = b.r;
+    }
+  }
+
+  // Lamp fit into central 80% of viewport
+  const LAMP_HEIGHT = 3.7;
+  const LAMP_WIDTH  = 1.08;
+  const FOV_Y = 0.46;
+
+  function computeCamDist() {
+    const w = canvas.width;
+    const h = canvas.height;
+    const aspect = w / h;
+    const tanHalf = Math.tan(FOV_Y * 0.5);
+    const dh = LAMP_HEIGHT / (2 * tanHalf * 0.80);
+    const dw = LAMP_WIDTH  / (2 * tanHalf * aspect * 0.80);
+    return Math.max(dh, dw);
+  }
+
+  let dpr = 1;
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    const w = Math.max(1, Math.floor(window.innerWidth  * dpr));
+    const h = Math.max(1, Math.floor(window.innerHeight * dpr));
+    if (canvas.width  !== w) canvas.width  = w;
+    if (canvas.height !== h) canvas.height = h;
+    gl.viewport(0, 0, w, h);
+  }
+
+  let rafId = 0;
+  let destroyed = false;
+
+  function render(now) {
+    if (destroyed) return;
+    resize();
+
+    const elapsed = (now - epochMs) / 1000;
+    advanceTo(PREWARM + elapsed);
+    packBlobs();
+
+    gl.useProgram(prog);
+    gl.uniform2f(uResLoc, canvas.width, canvas.height);
+    gl.uniform4fv(uBlobsLoc, blobData);
+    gl.uniform1f(uCamDistLoc, computeCamDist());
+    gl.uniform1f(uFovYLoc, FOV_Y);
+
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    rafId = requestAnimationFrame(render);
+  }
+
+  let currentSeed = 1;
+
+  function onResize() {
+    // Resize is handled in the render loop; the listener exists so destroy() has something to remove.
+  }
+  window.addEventListener('resize', onResize, { passive: true });
+
+  function startFresh(seed) {
+    currentSeed = (seed >>> 0) || 1;
+    initBlobs(currentSeed);
+    epochMs = performance.now();
+    if (!rafId && !destroyed) {
+      rafId = requestAnimationFrame(render);
+    }
+  }
+
+  resize();
+  startFresh(1);
+
+  // BridgeBench API
+  const bench = {
+    manifest: {
+      id: 'lava-lamp',
+      title: 'Photoreal Lava Lamp',
+      kind: 'scene',
+      controls: [],
+      palettes: ['Ember'],
+      defaults: { heat: 0.65, paletteIndex: 0 }
+    },
+    reset(seed) {
+      startFresh(seed);
+    },
+    getState() {
+      return { heat: 0.65, paletteIndex: 0 };
+    },
+    destroy() {
+      if (destroyed) return;
+      destroyed = true;
+      if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+      window.removeEventListener('resize', onResize);
+      try {
+        gl.useProgram(null);
+        gl.bindBuffer(gl.ARRAY_BUFFER, null);
+        gl.bindVertexArray(null);
+        if (vbo)  gl.deleteBuffer(vbo);
+        if (vao)  gl.deleteVertexArray(vao);
+        if (prog) gl.deleteProgram(prog);
+        const ext = gl.getExtension('WEBGL_lose_context');
+        if (ext) ext.loseContext();
+      } catch (e) { /* ignore */ }
+    }
+  };
+  window.__bench = bench;
+  window.__benchmark = bench;
+})();
+</script>
+</body>
+</html>
