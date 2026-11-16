@@ -1,0 +1,908 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Melon Jelly</title>
+<style>
+html, body {
+  margin: 0; padding: 0; height: 100%; overflow: hidden;
+  background: linear-gradient(180deg, #2c3e50 0%, #4a6584 60%, #3a5063 100%);
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  color: #eee;
+  user-select: none; -webkit-user-select: none;
+  touch-action: none;
+}
+canvas { display: block; position: fixed; inset: 0; width: 100vw; height: 100vh; }
+#toolbar {
+  position: fixed; top: 12px; left: 12px; z-index: 10;
+  display: flex; gap: 6px;
+  background: rgba(20,20,30,0.55); padding: 6px; border-radius: 10px;
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  box-shadow: 0 4px 14px rgba(0,0,0,0.3);
+}
+button {
+  background: rgba(60,60,72,0.85); color: #eee;
+  border: 1px solid rgba(110,110,130,0.5);
+  padding: 7px 12px; border-radius: 6px; cursor: pointer;
+  font-size: 13px; font-family: inherit;
+  transition: background .15s, border-color .15s, transform .08s;
+}
+button:hover { background: rgba(90,90,110,0.9); }
+button:active { transform: translateY(1px); }
+button.active { background: #c5465d; border-color: #ef7191; color: #fff; }
+button.active:hover { background: #d35072; }
+#fps {
+  position: fixed; top: 12px; right: 12px; z-index: 10;
+  background: rgba(20,20,30,0.55); padding: 6px 10px; border-radius: 8px;
+  font-size: 12px; font-variant-numeric: tabular-nums;
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+}
+#panel {
+  position: fixed; top: 60px; left: 12px; z-index: 10;
+  background: rgba(20,20,30,0.55); padding: 8px 12px; border-radius: 10px;
+  max-width: 240px; font-size: 12px;
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  box-shadow: 0 4px 14px rgba(0,0,0,0.3);
+}
+#panel[open] { padding-bottom: 12px; }
+#panel summary {
+  cursor: pointer; font-weight: 600; margin: 2px 0 6px; list-style: none;
+}
+#panel summary::-webkit-details-marker { display: none; }
+#panel summary::before { content: '\2699  '; }
+#panel label {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 10px; margin: 5px 0;
+}
+#panel input[type=range] { width: 120px; accent-color: #ef7191; }
+#colorPanel {
+  position: fixed; top: 60px; right: 12px; z-index: 10;
+  background: rgba(20,20,30,0.55); padding: 10px 12px; border-radius: 10px;
+  font-size: 12px; display: none;
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  box-shadow: 0 4px 14px rgba(0,0,0,0.3);
+}
+#colorPanel.show { display: block; }
+#colorPanel label {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 10px; margin-bottom: 10px;
+}
+#colorPanel input[type=color] {
+  width: 38px; height: 26px; border: 0; background: transparent; cursor: pointer; padding: 0;
+}
+#swatches { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; }
+.sw {
+  width: 30px; height: 30px; border-radius: 50%; cursor: pointer;
+  border: 2px solid rgba(255,255,255,0.3);
+  transition: transform .1s, border-color .15s;
+  box-shadow: inset 0 -4px 6px rgba(0,0,0,0.25), 0 2px 4px rgba(0,0,0,0.3);
+}
+.sw:hover { transform: scale(1.12); }
+.sw.active { border-color: #fff; }
+#hint {
+  position: fixed; bottom: 12px; left: 12px; z-index: 10;
+  font-size: 11px; background: rgba(20,20,30,0.45);
+  padding: 7px 10px; border-radius: 8px;
+  backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+  opacity: .85;
+}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="toolbar">
+  <button id="btnGrab" class="active" title="Drag to pull; Shift or right-click to pinch">Grab</button>
+  <button id="btnKnife" title="Drag across the melon to cut">Knife</button>
+  <button id="btnColor" title="Change flesh color">Color</button>
+  <button id="btnReset" title="Restore the initial melon">Reset</button>
+</div>
+<div id="fps">60 FPS</div>
+<details id="panel" open>
+  <summary>Tuning</summary>
+  <label>Flesh stiff <input type="range" id="tStiff" min="0" max="1" step="0.01" value="0.30"></label>
+  <label>Rind stiff <input type="range" id="tRindStiff" min="0.2" max="1" step="0.01" value="0.75"></label>
+  <label>Damping <input type="range" id="tDamp" min="0.985" max="1.0" step="0.001" value="0.998"></label>
+  <label>Gravity <input type="range" id="tGrav" min="0" max="2500" step="10" value="1100"></label>
+  <label>Wobble <input type="range" id="tArea" min="0" max="1" step="0.01" value="0.75"></label>
+  <label>Show FPS <input type="checkbox" id="tFps" checked></label>
+</details>
+<div id="colorPanel">
+  <label>Flesh color <input type="color" id="colorInput" value="#e94e5f"></label>
+  <div id="swatches"></div>
+</div>
+<div id="hint">Drag to grab &middot; Shift or right-click to pinch &middot; Knife to cut &middot; Reset to restore</div>
+<script>
+'use strict';
+(() => {
+  /* ============================================================ */
+  /* CONSTANTS                                                     */
+  /* ============================================================ */
+  const MELON_R    = 220;
+  const GRID_H     = 14;
+  const SUBSTEPS   = 10;
+  const FRAME_DT   = 1 / 60;
+  const RIND_THICK = 24;
+  const PITH_THICK = 14;
+  const SEED_COUNT = 28;
+  const FLOOR_FRAC = 0.88;
+  const PRESETS = [
+    '#e94e5f', '#ff6b9d', '#d13856', '#ff9a56',
+    '#ffd166', '#06d6a0', '#118ab2', '#9b72e4'
+  ];
+
+  /* ============================================================ */
+  /* CANVAS                                                        */
+  /* ============================================================ */
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  let W = 0, H = 0, DPR = 1;
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width  = Math.round(W * DPR);
+    canvas.height = Math.round(H * DPR);
+    canvas.style.width  = W + 'px';
+    canvas.style.height = H + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  /* ============================================================ */
+  /* STATE                                                         */
+  /* ============================================================ */
+  const state = {
+    particles: [],
+    dists: [],          // distance constraints
+    tris: [],           // triangles (area constraints + render)
+    seeds: [],
+    pieces: [],
+    piecesDirty: true,
+    edgeAlive: new Map(),   // edgeKey -> dist index
+    pointers: new Map(),    // pointerId -> pointer state
+    grabs: [],              // soft-spring anchors applied per substep
+    knifeTrail: [],
+    mode: 'grab',
+    flesh: '#e94e5f',
+    showFps: true,
+    fps: 60, _fpsAcc: 0, _fpsFrames: 0, _fpsLast: performance.now(),
+    params: {
+      fleshK:   0.15,
+      rindK:    0.75,
+      damping:  0.998,
+      gravity:  1100,
+      areaAlpha: 1e-5
+    }
+  };
+
+  const edgeKey = (a, b) => (a < b ? a * 200000 + b : b * 200000 + a);
+  function signedArea(x0, y0, x1, y1, x2, y2) {
+    return 0.5 * ((x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0));
+  }
+
+  /* ============================================================ */
+  /* MESH BUILD                                                    */
+  /* ============================================================ */
+  function mulberry32(seed) {
+    let t = seed;
+    return function () {
+      t |= 0; t = (t + 0x6D2B79F5) | 0;
+      let r = Math.imul(t ^ (t >>> 15), 1 | t);
+      r = (r + Math.imul(r ^ (r >>> 7), 61 | r)) ^ r;
+      return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  function buildMelon() {
+    state.particles = [];
+    state.dists = [];
+    state.tris = [];
+    state.seeds = [];
+    state.pieces = [];
+    state.edgeAlive = new Map();
+    state.grabs = [];
+    state.pointers.clear();
+    state.knifeTrail.length = 0;
+    state.piecesDirty = true;
+
+    const cx = W / 2;
+    const cy = H * FLOOR_FRAC - MELON_R;
+    const dy = GRID_H * Math.sqrt(3) / 2;
+    const grid = new Map();
+    const gkey = (r, c) => r * 20000 + c + 10000;
+
+    // Place particles on a hex grid clipped to the half-disc (flat edge on top).
+    let rows = 0;
+    while (rows * dy <= MELON_R + 1) {
+      const y = rows * dy;
+      const xOff = (rows & 1) ? GRID_H / 2 : 0;
+      const cMax = Math.ceil(MELON_R / GRID_H) + 1;
+      for (let c = -cMax; c <= cMax; c++) {
+        const x = c * GRID_H + xOff;
+        if (x * x + y * y <= MELON_R * MELON_R + 1) {
+          const r = Math.sqrt(x * x + y * y);
+          const rimDist = MELON_R - r;
+          grid.set(gkey(rows, c), state.particles.length);
+          state.particles.push({
+            x: cx + x, y: cy + y,
+            px: cx + x, py: cy + y,
+            ox: cx + x, oy: cy + y,
+            vx: 0, vy: 0,
+            invMass: 1,
+            rimDist,
+            isRind: rimDist < RIND_THICK
+          });
+        }
+      }
+      rows++;
+    }
+
+    // Snap near-rim particles exactly onto the arc for a cleaner rind
+    for (const p of state.particles) {
+      if (p.rimDist < 3) {
+        const lx = p.x - cx, ly = p.y - cy;
+        const r = Math.sqrt(lx * lx + ly * ly) || 1;
+        p.x = cx + lx * MELON_R / r;
+        p.y = cy + ly * MELON_R / r;
+        p.ox = p.x; p.oy = p.y;
+        p.px = p.x; p.py = p.y;
+        p.rimDist = 0; p.isRind = true;
+      }
+    }
+
+    function addEdge(a, b) {
+      const k = edgeKey(a, b);
+      if (state.edgeAlive.has(k)) return;
+      const pa = state.particles[a], pb = state.particles[b];
+      const dx = pa.x - pb.x, dyy = pa.y - pb.y;
+      const rest = Math.sqrt(dx * dx + dyy * dyy);
+      const isRind = pa.isRind && pb.isRind;
+      const idx = state.dists.length;
+      state.dists.push({ i: a, j: b, rest, isRind, alive: true });
+      state.edgeAlive.set(k, idx);
+    }
+
+    function addTri(i0, j0, k0) {
+      const pa = state.particles[i0], pb = state.particles[j0], pc = state.particles[k0];
+      let i = i0, j = j0, k = k0;
+      if (signedArea(pa.x, pa.y, pb.x, pb.y, pc.x, pc.y) < 0) { j = k0; k = j0; }
+      const qa = state.particles[i], qb = state.particles[j], qc = state.particles[k];
+      const restArea = signedArea(qa.x, qa.y, qb.x, qb.y, qc.x, qc.y);
+      addEdge(i, j); addEdge(j, k); addEdge(i, k);
+      const d = (qa.rimDist + qb.rimDist + qc.rimDist) / 3;
+      let layer = 'flesh';
+      if (d < RIND_THICK * 0.55) layer = 'rind';
+      else if (d < RIND_THICK + PITH_THICK * 0.35) layer = 'pith';
+      state.tris.push({ i, j, k, restArea, lambda: 0, alive: true, layer });
+    }
+
+    for (const [key, idx] of grid) {
+      const r0 = Math.floor(key / 20000);
+      const c0 = key - r0 * 20000 - 10000;
+      const nR = grid.get(gkey(r0, c0 + 1));
+      let nUR, nUL;
+      if ((r0 & 1) === 0) {
+        nUR = grid.get(gkey(r0 + 1, c0));
+        nUL = grid.get(gkey(r0 + 1, c0 - 1));
+      } else {
+        nUR = grid.get(gkey(r0 + 1, c0 + 1));
+        nUL = grid.get(gkey(r0 + 1, c0));
+      }
+      if (nR  !== undefined && nUR !== undefined) addTri(idx, nR,  nUR);
+      if (nUR !== undefined && nUL !== undefined) addTri(idx, nUR, nUL);
+    }
+
+    // Seeds scattered through flesh triangles
+    const fleshTris = [];
+    const rLim = MELON_R - RIND_THICK - PITH_THICK + 4;
+    for (let ti = 0; ti < state.tris.length; ti++) {
+      const t = state.tris[ti];
+      if (t.layer !== 'flesh') continue;
+      const pa = state.particles[t.i], pb = state.particles[t.j], pc = state.particles[t.k];
+      const ccx = (pa.x + pb.x + pc.x) / 3 - cx;
+      const ccy = (pa.y + pb.y + pc.y) / 3 - cy;
+      if (ccx * ccx + ccy * ccy < rLim * rLim) fleshTris.push(ti);
+    }
+    const rng = mulberry32(42);
+    for (let s = 0; s < SEED_COUNT && fleshTris.length; s++) {
+      const ti = fleshTris[Math.floor(rng() * fleshTris.length)];
+      let u = rng(), v = rng();
+      if (u + v > 1) { u = 1 - u; v = 1 - v; }
+      state.seeds.push({
+        triIdx: ti, u, v, w: 1 - u - v,
+        rot: rng() * Math.PI, alive: true
+      });
+    }
+  }
+
+  /* ============================================================ */
+  /* XPBD + PBD SIMULATION                                         */
+  /* ============================================================ */
+  function simulate() {
+    const p = state.params;
+    const h = FRAME_DT / SUBSTEPS;
+    const particles = state.particles;
+    const dists = state.dists;
+    const tris  = state.tris;
+    const floorY = H * FLOOR_FRAC;
+    const leftW  = 20;
+    const rightW = W - 20;
+    const areaAlphaTilde = p.areaAlpha / (h * h);
+
+    for (let step = 0; step < SUBSTEPS; step++) {
+      // Predict positions with gravity
+      for (let i = 0; i < particles.length; i++) {
+        const pt = particles[i];
+        pt.vy += p.gravity * h;
+        pt.px = pt.x; pt.py = pt.y;
+        pt.x  += pt.vx * h;
+        pt.y  += pt.vy * h;
+      }
+
+      // Soft grabs (positional pull each substep; neighbour constraints resist)
+      for (let gi = 0; gi < state.grabs.length; gi++) {
+        const g = state.grabs[gi];
+        const pt = particles[g.pid];
+        pt.x += (g.tx - pt.x) * g.k;
+        pt.y += (g.ty - pt.y) * g.k;
+      }
+
+      // Reset XPBD multipliers
+      for (let i = 0; i < tris.length; i++) tris[i].lambda = 0;
+
+      // Distance constraints (standard PBD with per-iteration stiffness)
+      const fK = p.fleshK, rK = p.rindK;
+      for (let ci = 0; ci < dists.length; ci++) {
+        const c = dists[ci];
+        if (!c.alive) continue;
+        const a = particles[c.i], b = particles[c.j];
+        const dx = a.x - b.x, dy = a.y - b.y;
+        const len = Math.sqrt(dx * dx + dy * dy);
+        if (len < 1e-6) continue;
+        const diff = len - c.rest;
+        const k = c.isRind ? rK : fK;
+        const w = a.invMass + b.invMass;
+        if (w < 1e-8) continue;
+        const f = k * diff / (w * len);
+        const cx = f * dx, cy = f * dy;
+        a.x -= a.invMass * cx; a.y -= a.invMass * cy;
+        b.x += b.invMass * cx; b.y += b.invMass * cy;
+      }
+
+      // Area preservation (XPBD; gives jelly bulge when squashed)
+      for (let ti = 0; ti < tris.length; ti++) {
+        const t = tris[ti];
+        if (!t.alive) continue;
+        const a = particles[t.i], b = particles[t.j], cp = particles[t.k];
+        const cur = signedArea(a.x, a.y, b.x, b.y, cp.x, cp.y);
+        const C = cur - t.restArea;
+        const gax = 0.5 * (b.y - cp.y), gay = 0.5 * (cp.x - b.x);
+        const gbx = 0.5 * (cp.y - a.y), gby = 0.5 * (a.x  - cp.x);
+        const gcx = 0.5 * (a.y - b.y),  gcy = 0.5 * (b.x  - a.x);
+        const wSum =
+          a.invMass * (gax * gax + gay * gay) +
+          b.invMass * (gbx * gbx + gby * gby) +
+          cp.invMass * (gcx * gcx + gcy * gcy);
+        if (wSum < 1e-10) continue;
+        const dL = -(C + areaAlphaTilde * t.lambda) / (wSum + areaAlphaTilde);
+        t.lambda += dL;
+        a.x  += a.invMass  * dL * gax; a.y  += a.invMass  * dL * gay;
+        b.x  += b.invMass  * dL * gbx; b.y  += b.invMass  * dL * gby;
+        cp.x += cp.invMass * dL * gcx; cp.y += cp.invMass * dL * gcy;
+      }
+
+      // Walls, floor
+      for (let i = 0; i < particles.length; i++) {
+        const pt = particles[i];
+        if (pt.y > floorY) pt.y = floorY;
+        if (pt.x < leftW)  pt.x = leftW;
+        if (pt.x > rightW) pt.x = rightW;
+      }
+
+      // Velocity update + damping + NaN guard
+      const damp = p.damping;
+      const MAXV = 3500;
+      for (let i = 0; i < particles.length; i++) {
+        const pt = particles[i];
+        if (!isFinite(pt.x) || !isFinite(pt.y)) {
+          pt.x = pt.ox; pt.y = pt.oy; pt.vx = 0; pt.vy = 0;
+          continue;
+        }
+        pt.vx = (pt.x - pt.px) / h;
+        pt.vy = (pt.y - pt.py) / h;
+        if (pt.y >= floorY - 0.1) pt.vx *= 0.85; // floor friction
+        pt.vx *= damp; pt.vy *= damp;
+        if (pt.vx >  MAXV) pt.vx =  MAXV; else if (pt.vx < -MAXV) pt.vx = -MAXV;
+        if (pt.vy >  MAXV) pt.vy =  MAXV; else if (pt.vy < -MAXV) pt.vy = -MAXV;
+      }
+    }
+  }
+
+  /* ============================================================ */
+  /* CUTTING                                                       */
+  /* ============================================================ */
+  function segIntersect(ax, ay, bx, by, cx, cy, dx, dy) {
+    const d1x = bx - ax, d1y = by - ay;
+    const d2x = dx - cx, d2y = dy - cy;
+    const denom = d1x * d2y - d1y * d2x;
+    if (Math.abs(denom) < 1e-10) return false;
+    const sx = cx - ax, sy = cy - ay;
+    const t = (sx * d2y - sy * d2x) / denom;
+    const u = (sx * d1y - sy * d1x) / denom;
+    return t >= 0 && t <= 1 && u >= 0 && u <= 1;
+  }
+
+  function performCut(ax, ay, bx, by) {
+    const ps = state.particles;
+    const dists = state.dists;
+    let cut = false;
+    for (let ci = 0; ci < dists.length; ci++) {
+      const c = dists[ci];
+      if (!c.alive) continue;
+      const pa = ps[c.i], pb = ps[c.j];
+      if (segIntersect(ax, ay, bx, by, pa.x, pa.y, pb.x, pb.y)) {
+        c.alive = false;
+        state.edgeAlive.delete(edgeKey(c.i, c.j));
+        cut = true;
+      }
+    }
+    if (!cut) return;
+    const tris = state.tris;
+    for (let ti = 0; ti < tris.length; ti++) {
+      const t = tris[ti];
+      if (!t.alive) continue;
+      if (!state.edgeAlive.has(edgeKey(t.i, t.j)) ||
+          !state.edgeAlive.has(edgeKey(t.j, t.k)) ||
+          !state.edgeAlive.has(edgeKey(t.i, t.k))) {
+        t.alive = false;
+      }
+    }
+    for (const s of state.seeds) {
+      if (!tris[s.triIdx].alive) s.alive = false;
+    }
+    state.piecesDirty = true;
+  }
+
+  /* ============================================================ */
+  /* PIECES (connected components)                                 */
+  /* ============================================================ */
+  function recomputePieces() {
+    const tris = state.tris;
+    const n = tris.length;
+    const parent = new Int32Array(n);
+    for (let i = 0; i < n; i++) parent[i] = i;
+    function find(i) {
+      while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; }
+      return i;
+    }
+    const edgeToTri = new Map();
+    for (let ti = 0; ti < n; ti++) {
+      const t = tris[ti];
+      if (!t.alive) continue;
+      const es = [[t.i, t.j], [t.j, t.k], [t.i, t.k]];
+      for (const [a, b] of es) {
+        const k = edgeKey(a, b);
+        if (!state.edgeAlive.has(k)) continue;
+        if (edgeToTri.has(k)) {
+          const ra = find(ti), rb = find(edgeToTri.get(k));
+          if (ra !== rb) parent[ra] = rb;
+        } else {
+          edgeToTri.set(k, ti);
+        }
+      }
+    }
+    const map = new Map();
+    for (let ti = 0; ti < n; ti++) {
+      const t = tris[ti];
+      if (!t.alive) continue;
+      const rid = find(ti);
+      let piece = map.get(rid);
+      if (!piece) { piece = { tris: [], particles: new Set() }; map.set(rid, piece); }
+      piece.tris.push(ti);
+      piece.particles.add(t.i);
+      piece.particles.add(t.j);
+      piece.particles.add(t.k);
+    }
+    state.pieces = Array.from(map.values());
+    state.piecesDirty = false;
+  }
+
+  /* ============================================================ */
+  /* INPUT                                                         */
+  /* ============================================================ */
+  function nearestParticle(x, y, maxD2) {
+    let best = -1, bestD = maxD2;
+    const ps = state.particles;
+    for (let i = 0; i < ps.length; i++) {
+      const dx = ps[i].x - x, dy = ps[i].y - y;
+      const d = dx * dx + dy * dy;
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    return best;
+  }
+  function withinRadius(x, y, r) {
+    const out = [];
+    const r2 = r * r;
+    const ps = state.particles;
+    for (let i = 0; i < ps.length; i++) {
+      const dx = ps[i].x - x, dy = ps[i].y - y;
+      if (dx * dx + dy * dy < r2) out.push(i);
+    }
+    return out;
+  }
+
+  function rebuildGrabs() {
+    const grabs = [];
+    for (const pp of state.pointers.values()) {
+      if (pp.kind !== 'drag') continue;
+      for (const g of pp.grabs) {
+        let tx, ty, k;
+        if (pp.pinch) { tx = pp.x; ty = pp.y; k = 0.11; }
+        else { tx = pp.x + g.ox; ty = pp.y + g.oy; k = 0.22; }
+        grabs.push({ pid: g.pid, tx, ty, k });
+      }
+    }
+    state.grabs = grabs;
+  }
+
+  function onDown(e) {
+    e.preventDefault();
+    canvas.setPointerCapture(e.pointerId);
+    const x = e.clientX, y = e.clientY;
+    if (state.mode === 'knife') {
+      state.pointers.set(e.pointerId, { kind: 'knife', lastX: x, lastY: y });
+      state.knifeTrail.push({ x, y, t: performance.now() });
+      return;
+    }
+    const pinch = e.shiftKey || e.button === 2;
+    const near = nearestParticle(x, y, 60 * 60);
+    const grabs = [];
+    if (near >= 0) {
+      const p0 = state.particles[near];
+      const ids = pinch ? withinRadius(p0.x, p0.y, 55) : withinRadius(p0.x, p0.y, 18);
+      for (const pid of ids) {
+        const p = state.particles[pid];
+        grabs.push({ pid, ox: p.x - x, oy: p.y - y });
+      }
+      if (!grabs.length) grabs.push({ pid: near, ox: p0.x - x, oy: p0.y - y });
+    }
+    state.pointers.set(e.pointerId, { kind: 'drag', x, y, grabs, pinch });
+    rebuildGrabs();
+  }
+
+  function onMove(e) {
+    if (!state.pointers.has(e.pointerId)) return;
+    const x = e.clientX, y = e.clientY;
+    const pp = state.pointers.get(e.pointerId);
+    if (pp.kind === 'knife') {
+      performCut(pp.lastX, pp.lastY, x, y);
+      state.knifeTrail.push({ x, y, t: performance.now() });
+      if (state.knifeTrail.length > 80) state.knifeTrail.splice(0, state.knifeTrail.length - 80);
+      pp.lastX = x; pp.lastY = y;
+    } else {
+      pp.x = x; pp.y = y;
+      rebuildGrabs();
+    }
+  }
+
+  function onUp(e) {
+    if (!state.pointers.has(e.pointerId)) return;
+    state.pointers.delete(e.pointerId);
+    rebuildGrabs();
+    try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
+  }
+
+  canvas.addEventListener('pointerdown', onDown);
+  canvas.addEventListener('pointermove', onMove);
+  canvas.addEventListener('pointerup', onUp);
+  canvas.addEventListener('pointercancel', onUp);
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  /* ============================================================ */
+  /* RENDERING                                                     */
+  /* ============================================================ */
+  function parseHex(hex) {
+    const h = hex.replace('#', '');
+    return [
+      parseInt(h.slice(0, 2), 16),
+      parseInt(h.slice(2, 4), 16),
+      parseInt(h.slice(4, 6), 16)
+    ];
+  }
+  function shade(rgb, f) {
+    let r, g, b;
+    if (f > 0) {
+      r = rgb[0] + (255 - rgb[0]) * f;
+      g = rgb[1] + (255 - rgb[1]) * f;
+      b = rgb[2] + (255 - rgb[2]) * f;
+    } else {
+      r = rgb[0] * (1 + f);
+      g = rgb[1] * (1 + f);
+      b = rgb[2] * (1 + f);
+    }
+    r = r < 0 ? 0 : r > 255 ? 255 : r;
+    g = g < 0 ? 0 : g > 255 ? 255 : g;
+    b = b < 0 ? 0 : b > 255 ? 255 : b;
+    return 'rgb(' + (r | 0) + ',' + (g | 0) + ',' + (b | 0) + ')';
+  }
+
+  function render() {
+    const particles = state.particles;
+    const tris = state.tris;
+    if (state.piecesDirty) recomputePieces();
+
+    // Sky
+    const sky = ctx.createLinearGradient(0, 0, 0, H);
+    sky.addColorStop(0,    '#2e445a');
+    sky.addColorStop(0.65, '#4a6782');
+    sky.addColorStop(1,    '#2d3f52');
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, W, H);
+
+    // Floor
+    const floorY = H * FLOOR_FRAC;
+    const floorGrad = ctx.createLinearGradient(0, floorY, 0, H);
+    floorGrad.addColorStop(0, '#5a7085');
+    floorGrad.addColorStop(1, '#1b2735');
+    ctx.fillStyle = floorGrad;
+    ctx.fillRect(0, floorY, W, H - floorY);
+    ctx.strokeStyle = 'rgba(0,0,0,0.4)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, floorY + 0.5);
+    ctx.lineTo(W, floorY + 0.5);
+    ctx.stroke();
+
+    // Piece bounds
+    for (const piece of state.pieces) {
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const pid of piece.particles) {
+        const p = particles[pid];
+        if (p.x < x0) x0 = p.x;
+        if (p.x > x1) x1 = p.x;
+        if (p.y < y0) y0 = p.y;
+        if (p.y > y1) y1 = p.y;
+      }
+      piece.bounds = { x0, y0, x1, y1, w: x1 - x0, h: y1 - y0, cx: (x0 + x1) * 0.5, cy: (y0 + y1) * 0.5 };
+    }
+
+    // Soft drop shadows
+    ctx.save();
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.28)';
+    for (const piece of state.pieces) {
+      const b = piece.bounds;
+      const sx = b.cx;
+      const sr = Math.max(14, b.w * 0.5);
+      ctx.beginPath();
+      ctx.ellipse(sx, floorY + 5, sr, 7, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+
+    // Colors
+    const fleshRgb    = parseHex(state.flesh);
+    const pithRgb     = [240, 232, 212];
+    const rindRgb     = [38, 95,  45];
+    const rindLightRgb= [86, 148, 70];
+
+    // Triangle fills with per-piece top-light gradient
+    for (const piece of state.pieces) {
+      const b = piece.bounds;
+      const height = Math.max(1, b.h);
+      for (const ti of piece.tris) {
+        const t = tris[ti];
+        const pa = particles[t.i], pb = particles[t.j], pc = particles[t.k];
+        // Skip degenerate triangles
+        const ax = pa.x, ay = pa.y, bx = pb.x, by = pb.y, cx = pc.x, cy = pc.y;
+        const area = Math.abs(signedArea(ax, ay, bx, by, cx, cy));
+        if (area < 0.4) continue;
+        const ccx = (ax + bx + cx) / 3;
+        const ccy = (ay + by + cy) / 3;
+        const tn = (ccy - b.y0) / height;
+        let rgb, scale;
+        if (t.layer === 'flesh') {
+          rgb = fleshRgb;
+          scale = 0.22 - tn * 0.42;
+        } else if (t.layer === 'pith') {
+          rgb = pithRgb;
+          scale = 0.08 - tn * 0.28;
+        } else {
+          // Rind with soft radial stripes anchored to piece centroid
+          const ang = Math.atan2(ccy - b.cy, ccx - b.cx);
+          rgb = (Math.sin(ang * 7 + 0.3) > 0.25) ? rindLightRgb : rindRgb;
+          scale = -0.02 - tn * 0.22;
+        }
+        ctx.fillStyle = shade(rgb, scale);
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(bx, by);
+        ctx.lineTo(cx, cy);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+
+    // Seeds (follow their triangle's barycentric position and local orientation)
+    for (const s of state.seeds) {
+      if (s.alive === false) continue;
+      const t = tris[s.triIdx];
+      if (!t.alive) continue;
+      const pa = particles[t.i], pb = particles[t.j], pc = particles[t.k];
+      const sx = pa.x * s.u + pb.x * s.v + pc.x * s.w;
+      const sy = pa.y * s.u + pb.y * s.v + pc.y * s.w;
+      const ang = Math.atan2(pb.y - pa.y, pb.x - pa.x) + s.rot;
+      ctx.save();
+      ctx.translate(sx, sy);
+      ctx.rotate(ang);
+      ctx.fillStyle = '#1a1510';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 5, 2.4, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.35)';
+      ctx.beginPath();
+      ctx.ellipse(-1.2, -0.7, 1.4, 0.7, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // Gloss overlay stays within existing flesh pixels via source-atop
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-atop';
+    for (const piece of state.pieces) {
+      const b = piece.bounds;
+      if (b.w < 10 || b.h < 10) continue;
+      const hx = b.x0 + b.w * 0.33;
+      const hy = b.y0 + b.h * 0.18;
+      const hr = Math.max(b.w, b.h) * 0.48;
+      const g1 = ctx.createRadialGradient(hx, hy, 0, hx, hy, hr);
+      g1.addColorStop(0,    'rgba(255,255,255,0.35)');
+      g1.addColorStop(0.45, 'rgba(255,255,255,0.08)');
+      g1.addColorStop(1,    'rgba(255,255,255,0)');
+      ctx.fillStyle = g1;
+      ctx.fillRect(b.x0 - 8, b.y0 - 8, b.w + 16, b.h + 16);
+      const g2 = ctx.createLinearGradient(0, b.y0, 0, b.y0 + 32);
+      g2.addColorStop(0, 'rgba(255,255,255,0.22)');
+      g2.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = g2;
+      ctx.fillRect(b.x0 - 5, b.y0 - 2, b.w + 10, 34);
+      // Bottom translucency (hint of jelly)
+      const g3 = ctx.createLinearGradient(0, b.y1 - 24, 0, b.y1 + 4);
+      g3.addColorStop(0, 'rgba(0,0,0,0)');
+      g3.addColorStop(1, 'rgba(0,0,0,0.18)');
+      ctx.fillStyle = g3;
+      ctx.fillRect(b.x0 - 4, b.y1 - 24, b.w + 8, 28);
+    }
+    ctx.restore();
+
+    // Knife trail (fades over ~500 ms)
+    const now = performance.now();
+    const trail = state.knifeTrail;
+    while (trail.length && now - trail[0].t > 600) trail.shift();
+    if (trail.length >= 2) {
+      ctx.save();
+      ctx.lineCap = 'round';
+      for (let i = 1; i < trail.length; i++) {
+        const a = trail[i - 1], b = trail[i];
+        const age = (now - b.t) / 600;
+        const alpha = Math.max(0, 1 - age);
+        ctx.strokeStyle = 'rgba(255,245,220,' + (alpha * 0.9) + ')';
+        ctx.lineWidth = 2.5 * alpha + 0.6;
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+  }
+
+  /* ============================================================ */
+  /* MAIN LOOP                                                     */
+  /* ============================================================ */
+  const fpsEl = document.getElementById('fps');
+  function frame() {
+    const now = performance.now();
+    simulate();
+    render();
+    state._fpsFrames++;
+    state._fpsAcc += (now - state._fpsLast);
+    state._fpsLast = now;
+    if (state._fpsAcc > 500) {
+      state.fps = Math.round(1000 * state._fpsFrames / state._fpsAcc);
+      state._fpsFrames = 0; state._fpsAcc = 0;
+      if (state.showFps) fpsEl.textContent = state.fps + ' FPS';
+    }
+    requestAnimationFrame(frame);
+  }
+
+  /* ============================================================ */
+  /* UI WIRING                                                     */
+  /* ============================================================ */
+  const btnGrab   = document.getElementById('btnGrab');
+  const btnKnife  = document.getElementById('btnKnife');
+  const btnColor  = document.getElementById('btnColor');
+  const btnReset  = document.getElementById('btnReset');
+  const colorPanel = document.getElementById('colorPanel');
+  const colorInput = document.getElementById('colorInput');
+  const swatchesEl = document.getElementById('swatches');
+
+  function setMode(m) {
+    state.mode = m;
+    btnGrab.classList.toggle('active',  m === 'grab');
+    btnKnife.classList.toggle('active', m === 'knife');
+    canvas.style.cursor = (m === 'knife') ? 'crosshair' : 'grab';
+  }
+  btnGrab.addEventListener('click',  () => setMode('grab'));
+  btnKnife.addEventListener('click', () => setMode('knife'));
+  btnColor.addEventListener('click', () => {
+    const open = !colorPanel.classList.contains('show');
+    colorPanel.classList.toggle('show', open);
+    btnColor.classList.toggle('active', open);
+  });
+  btnReset.addEventListener('click', () => { buildMelon(); });
+
+  function markActiveSwatch() {
+    for (const s of swatchesEl.children) {
+      s.classList.toggle('active', s.dataset.color === state.flesh);
+    }
+  }
+  PRESETS.forEach((c) => {
+    const d = document.createElement('div');
+    d.className = 'sw';
+    d.style.background = c;
+    d.dataset.color = c;
+    d.addEventListener('click', () => {
+      state.flesh = c;
+      colorInput.value = c;
+      markActiveSwatch();
+    });
+    swatchesEl.appendChild(d);
+  });
+  markActiveSwatch();
+  colorInput.addEventListener('input', () => {
+    state.flesh = colorInput.value;
+    markActiveSwatch();
+  });
+
+  document.getElementById('tStiff').addEventListener('input', (e) => {
+    const v = parseFloat(e.target.value);
+    state.params.fleshK = 0.03 + v * 0.40;
+  });
+  document.getElementById('tRindStiff').addEventListener('input', (e) => {
+    state.params.rindK = parseFloat(e.target.value);
+  });
+  document.getElementById('tDamp').addEventListener('input', (e) => {
+    state.params.damping = parseFloat(e.target.value);
+  });
+  document.getElementById('tGrav').addEventListener('input', (e) => {
+    state.params.gravity = parseFloat(e.target.value);
+  });
+  document.getElementById('tArea').addEventListener('input', (e) => {
+    const v = parseFloat(e.target.value);
+    state.params.areaAlpha = Math.pow(10, -2 - v * 4);
+  });
+  const fpsToggle = document.getElementById('tFps');
+  fpsToggle.addEventListener('change', (e) => {
+    state.showFps = e.target.checked;
+    fpsEl.style.display = state.showFps ? '' : 'none';
+  });
+
+  // Apply slider-derived defaults
+  state.params.fleshK    = 0.03 + 0.30 * 0.40;
+  state.params.rindK     = 0.75;
+  state.params.damping   = 0.998;
+  state.params.gravity   = 1100;
+  state.params.areaAlpha = Math.pow(10, -2 - 0.75 * 4);
+
+  setMode('grab');
+  buildMelon();
+  requestAnimationFrame(frame);
+
+  document.addEventListener('gesturestart', (e) => e.preventDefault());
+  document.addEventListener('dragstart',    (e) => e.preventDefault());
+})();
+</script>
+</body>
+</html>
