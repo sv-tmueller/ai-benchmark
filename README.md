@@ -190,12 +190,12 @@ for example `generated (high, max), review pending`.
 | `game-horror-house` | HTML | `results/horror-house/horror-house_claude_fable_5_2_<effort>.html` | generated (medium), review pending |
 | `game-last-flight` | HTML | `results/last-flight/last-flight_claude_fable_5_2_<effort>.html` | generated (medium), review pending |
 | `game-cities-skylines` | HTML | `results/cities-skylines/cities-skylines_claude_fable_5_2_<effort>.html` | generated (medium), review pending |
-| `game-mario-kart` | HTML | `results/mario-kart/mario-kart_claude_fable_5_2_<effort>.html` | not run |
-| `game-weichensteller` | HTML | `results/weichensteller/weichensteller_claude_fable_5_2_<effort>.html` | not run |
-| `game-rubiks-cube` | HTML | `results/rubiks-cube/rubiks-cube_claude_fable_5_2_<effort>.html` | not run |
-| `creative-water-bottle` | HTML | `results/creative-water-bottle/creative-water-bottle_claude_fable_5_2_<effort>.html` | not run |
+| `game-mario-kart` | HTML | `results/mario-kart/mario-kart_claude_fable_5_2_<effort>.html` | generated (medium), review pending |
+| `game-weichensteller` | HTML | `results/weichensteller/weichensteller_claude_fable_5_2_<effort>.html` | generated (medium), review pending |
+| `game-rubiks-cube` | HTML | `results/rubiks-cube/rubiks-cube_claude_fable_5_2_<effort>.html` | generated (medium), review pending |
+| `creative-water-bottle` | HTML | `results/creative-water-bottle/creative-water-bottle_claude_fable_5_2_<effort>.html` | generated (medium), review pending |
 | `reasoning-seating-puzzle` | HTML | `results/reasoning-seating-puzzle/reasoning-seating-puzzle_claude_fable_5_2_<effort>.html` | not run |
-| `servicenow-loaner-request` | XML | `results/servicenow-loaner-request/servicenow-loaner-request_claude_fable_5_2_<effort>.xml` | not run |
+| `servicenow-loaner-request` | XML | `results/servicenow-loaner-request/servicenow-loaner-request_claude_fable_5_2_<effort>.xml` | generated (medium), review pending |
 
 **Merging results.** `python3 harness/merge_results.py --model <model-id>`
 (add `--dry-run` to only read and report) squash-merges the open

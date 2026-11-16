@@ -1,0 +1,1075 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Rubik's Cube</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body {
+    background: radial-gradient(ellipse at 50% 38%, #f4f5f7 0%, #dcdfe4 48%, #b4b9c2 100%);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: #2a2d33;
+    -webkit-user-select: none; user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior: none;
+  }
+  #scene, #confetti { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  #scene { touch-action: none; cursor: grab; outline: none; }
+  #scene.dragging { cursor: grabbing; }
+  #confetti { pointer-events: none; }
+
+  #hud {
+    position: fixed; top: 0; left: 0; right: 0;
+    display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start;
+    gap: 6px 12px;
+    padding: max(10px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) 0 max(12px, env(safe-area-inset-left));
+    pointer-events: none;
+  }
+  #timer { font-size: clamp(28px, 5.2vw, 42px); font-weight: 300; line-height: 1; font-variant-numeric: tabular-nums; letter-spacing: 0.5px; }
+  #sub { margin-top: 5px; font-size: 13px; color: #555a63; font-variant-numeric: tabular-nums; }
+  #sub span + span { margin-left: 12px; }
+  #actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+
+  button {
+    pointer-events: auto;
+    font: inherit; font-size: 14px; color: #2a2d33;
+    border: 1px solid rgba(40, 44, 52, 0.14);
+    background: rgba(255, 255, 255, 0.62);
+    -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+    border-radius: 10px; padding: 8px 12px; min-height: 38px; min-width: 38px;
+    cursor: pointer; touch-action: manipulation;
+    transition: background 0.12s, transform 0.08s, opacity 0.12s;
+  }
+  button:hover { background: rgba(255, 255, 255, 0.88); }
+  button:active { transform: scale(0.95); }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button.primary { background: rgba(42, 45, 51, 0.88); color: #fff; border-color: transparent; }
+  button.primary:hover { background: rgba(42, 45, 51, 1); }
+
+  #pad {
+    position: fixed; left: 50%; transform: translateX(-50%);
+    bottom: max(10px, env(safe-area-inset-bottom));
+    display: grid; grid-template-columns: repeat(12, 44px); gap: 6px;
+    pointer-events: none;
+  }
+  #pad button { padding: 0; height: 40px; min-width: 0; font-weight: 600; font-size: 15px; }
+  @media (max-width: 640px) {
+    #pad { grid-template-columns: repeat(6, minmax(0, 50px)); width: calc(100vw - 20px); justify-content: center; }
+    #pad button { height: 42px; }
+    button { padding: 8px 10px; }
+  }
+
+  #banner {
+    position: fixed; left: 50%; top: 22%; transform: translate(-50%, -50%) scale(0.9);
+    text-align: center; pointer-events: none; opacity: 0;
+    padding: 12px 22px; border-radius: 16px;
+    background: rgba(255, 255, 255, 0.78);
+    -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+    box-shadow: 0 8px 30px rgba(30, 34, 42, 0.16);
+    transition: opacity 0.35s, transform 0.35s;
+    white-space: nowrap;
+  }
+  #banner.show { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  #banner .big { font-size: 24px; font-weight: 600; }
+  #banner .res { font-size: 16px; margin-top: 3px; font-variant-numeric: tabular-nums; }
+  #banner .rec { font-size: 13px; margin-top: 3px; color: #0a7d4b; font-weight: 600; }
+
+  #help {
+    position: fixed; right: max(12px, env(safe-area-inset-right)); top: 62px;
+    width: min(330px, calc(100vw - 24px)); max-height: calc(100vh - 190px); overflow: auto;
+    box-sizing: border-box; padding: 12px 16px; border-radius: 14px;
+    background: rgba(255, 255, 255, 0.9);
+    -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+    box-shadow: 0 8px 30px rgba(30, 34, 42, 0.18);
+    font-size: 13px; line-height: 1.45;
+  }
+  #help[hidden] { display: none; }
+  #help h2 { margin: 0 0 6px; font-size: 15px; }
+  #help ul { margin: 0; padding-left: 18px; }
+  #help li { margin: 3px 0; }
+  #help kbd {
+    font: inherit; font-weight: 600; padding: 0 4px; border-radius: 4px;
+    background: rgba(40, 44, 52, 0.09); border: 1px solid rgba(40, 44, 52, 0.12);
+  }
+  @media (max-width: 640px) { #help { top: 108px; } }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<canvas id="scene" tabindex="-1"></canvas>
+<canvas id="confetti"></canvas>
+
+<div id="hud">
+  <div id="stats">
+    <div id="timer">0:00.00</div>
+    <div id="sub"><span id="moves">0 moves</span><span id="best">Best –</span></div>
+  </div>
+  <div id="actions">
+    <button id="btnScramble" class="primary">Scramble</button>
+    <button id="btnUndo" title="Undo (Ctrl+Z)">Undo</button>
+    <button id="btnRedo" title="Redo (Ctrl+Y)">Redo</button>
+    <button id="btnReset">Reset</button>
+    <button id="btnMute" title="Sound on/off" aria-label="Sound on/off">🔊</button>
+    <button id="btnHelp" title="Controls" aria-label="Controls" aria-expanded="false">?</button>
+  </div>
+</div>
+
+<div id="banner" role="status" aria-live="polite"></div>
+
+<div id="help" hidden>
+  <h2>Controls</h2>
+  <ul>
+    <li><b>Drag the background</b> – turn the whole cube around.</li>
+    <li><b>Drag a sticker</b> – twist a layer; release to snap.</li>
+    <li><b>Wheel / pinch</b> – zoom.</li>
+    <li><kbd>U</kbd> <kbd>D</kbd> <kbd>L</kbd> <kbd>R</kbd> <kbd>F</kbd> <kbd>B</kbd> – face clockwise, with <kbd>Shift</kbd> counter-clockwise. Keys follow the current view: F is the face towards you.</li>
+    <li><kbd>M</kbd> <kbd>E</kbd> <kbd>S</kbd> – middle slices.</li>
+    <li><kbd>X</kbd> <kbd>Y</kbd> <kbd>Z</kbd> – rotate the whole cube (not a move).</li>
+    <li><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd> – undo / redo.</li>
+    <li><b>Scramble</b> starts a game: timer and move counter start with your first turn and stop when the cube is solved.</li>
+  </ul>
+</div>
+
+<div id="pad">
+  <button data-face="U">U</button><button data-face="U" data-prime="1">U′</button>
+  <button data-face="D">D</button><button data-face="D" data-prime="1">D′</button>
+  <button data-face="L">L</button><button data-face="L" data-prime="1">L′</button>
+  <button data-face="R">R</button><button data-face="R" data-prime="1">R′</button>
+  <button data-face="F">F</button><button data-face="F" data-prime="1">F′</button>
+  <button data-face="B">B</button><button data-face="B" data-prime="1">B′</button>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+const $ = (id) => document.getElementById(id);
+const HALF_PI = Math.PI / 2;
+const TURN_MS = 200;
+const SCRAMBLE_MS = 75;
+const SCRAMBLE_LEN = 25;
+const STATE_KEY = 'rubik3d.state.v1';
+const BEST_KEY = 'rubik3d.best.v1';
+const MUTE_KEY = 'rubik3d.mute';
+
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const easeInOut = (k) => (k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2);
+const easeOut = (k) => 1 - Math.pow(1 - k, 3);
+// Levi-Civita symbol for axis indices 0..2: sign of (e_i x e_j) . e_k
+const eps = (i, j, k) => ((i - j) * (j - k) * (k - i)) / 2;
+
+function lsGet(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
+function lsSet(key, val) { try { localStorage.setItem(key, val); } catch (e) { /* storage unavailable */ } }
+
+/* =====================================================================
+   CUBE STATE
+   Each cubie has an integer position and an integer 3x3 rotation matrix
+   (row-major). Only quarter turns change them, so the state is always a
+   legal permutation and never drifts.
+   ===================================================================== */
+const IDENT = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+const cubies = [];
+for (let x = -1; x <= 1; x++) for (let y = -1; y <= 1; y++) for (let z = -1; z <= 1; z++) {
+  if (x || y || z) cubies.push({ home: [x, y, z], pos: [x, y, z], rot: IDENT.slice(), obj: null, q: new THREE.Quaternion() });
+}
+
+// dir = +1 is a +90 degree right-handed rotation about the positive axis
+function rotMat(axis, dir) {
+  const s = dir;
+  if (axis === 0) return [1, 0, 0, 0, 0, -s, 0, s, 0];
+  if (axis === 1) return [0, 0, s, 0, 1, 0, -s, 0, 0];
+  return [0, -s, 0, s, 0, 0, 0, 0, 1];
+}
+function mulMat(a, b) {
+  const r = new Array(9);
+  for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) {
+    r[i * 3 + j] = a[i * 3] * b[j] + a[i * 3 + 1] * b[3 + j] + a[i * 3 + 2] * b[6 + j] || 0;
+  }
+  return r;
+}
+function mulVec(m, v) {
+  return [
+    m[0] * v[0] + m[1] * v[1] + m[2] * v[2] || 0,
+    m[3] * v[0] + m[4] * v[1] + m[5] * v[2] || 0,
+    m[6] * v[0] + m[7] * v[1] + m[8] * v[2] || 0
+  ];
+}
+function applyTurn(axis, layer, dir) {
+  const R = rotMat(axis, dir);
+  for (const c of cubies) {
+    if (c.pos[axis] === layer) { c.pos = mulVec(R, c.pos); c.rot = mulMat(R, c.rot); }
+  }
+}
+function resetCubeState() {
+  for (const c of cubies) { c.pos = c.home.slice(); c.rot = IDENT.slice(); }
+}
+// Solved in any orientation: every outward direction shows a single color.
+function isSolved() {
+  const seen = [-1, -1, -1, -1, -1, -1];
+  for (const c of cubies) {
+    for (let i = 0; i < 3; i++) {
+      if (!c.home[i]) continue;
+      const color = i * 2 + (c.home[i] > 0 ? 0 : 1);
+      const n = [0, 0, 0]; n[i] = c.home[i];
+      const cur = mulVec(c.rot, n);
+      let key = 0;
+      for (let k = 0; k < 3; k++) if (cur[k] !== 0) key = k * 2 + (cur[k] > 0 ? 0 : 1);
+      if (seen[key] === -1) seen[key] = color;
+      else if (seen[key] !== color) return false;
+    }
+  }
+  return true;
+}
+
+/* =====================================================================
+   RENDERING
+   ===================================================================== */
+const canvas = $('scene');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+renderer.setClearColor(0x000000, 0);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(32, 1, 1, 100);
+const CAM_DIR = new THREE.Vector3(0, 0.5, 1).normalize();
+const ZOOM_MIN = 1.0, ZOOM_MAX = 2.3;
+let zoom = 1.28;
+
+{
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const room = new RoomEnvironment(renderer);
+  scene.environment = pmrem.fromScene(room, 0.04).texture;
+  if (room.dispose) room.dispose();
+  pmrem.dispose();
+}
+
+const keyLight = new THREE.DirectionalLight(0xffffff, 1.7);
+keyLight.position.set(4, 8, 6);
+const fillLight = new THREE.DirectionalLight(0xdfe7ff, 0.45);
+fillLight.position.set(-6, 2, 4);
+scene.add(keyLight, fillLight, new THREE.HemisphereLight(0xffffff, 0x9a9ca4, 0.5));
+
+// Contact shadow: a soft radial blob on an invisible floor under the cube
+{
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const g = c.getContext('2d');
+  const grad = g.createRadialGradient(128, 128, 0, 128, 128, 128);
+  grad.addColorStop(0, 'rgba(20,22,28,0.50)');
+  grad.addColorStop(0.35, 'rgba(20,22,28,0.30)');
+  grad.addColorStop(0.7, 'rgba(20,22,28,0.08)');
+  grad.addColorStop(1, 'rgba(20,22,28,0)');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 256, 256);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const floor = new THREE.Mesh(
+    new THREE.PlaneGeometry(9.5, 9.5),
+    new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false })
+  );
+  floor.rotation.x = -HALF_PI;
+  floor.position.y = -2.75;
+  scene.add(floor);
+}
+
+const AX = [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1)];
+const cubeGroup = new THREE.Group();
+const HOME_QUAT = new THREE.Quaternion().setFromAxisAngle(AX[1], -0.55);
+cubeGroup.quaternion.copy(HOME_QUAT);
+scene.add(cubeGroup);
+
+// color index = axis*2 + (negative side ? 1 : 0): +x red, -x orange, +y white, -y yellow, +z green, -z blue
+const COLORS = [0xd3222c, 0xff7a1a, 0xf3f3f1, 0xffd21f, 0x12a05a, 0x1557c8];
+const CSS_COLORS = ['#d3222c', '#ff7a1a', '#ffffff', '#ffd21f', '#12a05a', '#1557c8'];
+
+{
+  const bodyGeo = new RoundedBoxGeometry(0.97, 0.97, 0.97, 4, 0.1);
+  const bodyMat = new THREE.MeshStandardMaterial({ color: 0x0f1012, roughness: 0.5, metalness: 0, envMapIntensity: 0.7 });
+  const s = 0.39, r = 0.09;
+  const shape = new THREE.Shape();
+  shape.moveTo(-s + r, -s);
+  shape.lineTo(s - r, -s); shape.quadraticCurveTo(s, -s, s, -s + r);
+  shape.lineTo(s, s - r); shape.quadraticCurveTo(s, s, s - r, s);
+  shape.lineTo(-s + r, s); shape.quadraticCurveTo(-s, s, -s, s - r);
+  shape.lineTo(-s, -s + r); shape.quadraticCurveTo(-s, -s, -s + r, -s);
+  const stickerGeo = new THREE.ShapeGeometry(shape, 6);
+  const stickerMats = COLORS.map((col) => new THREE.MeshStandardMaterial({
+    color: col, roughness: 0.22, metalness: 0, envMapIntensity: 0.5,
+    polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1
+  }));
+  const zAxis = new THREE.Vector3(0, 0, 1);
+  for (const c of cubies) {
+    const g = new THREE.Group();
+    g.add(new THREE.Mesh(bodyGeo, bodyMat));
+    for (let i = 0; i < 3; i++) {
+      if (!c.home[i]) continue;
+      const n = new THREE.Vector3().setComponent(i, c.home[i]);
+      const st = new THREE.Mesh(stickerGeo, stickerMats[i * 2 + (c.home[i] > 0 ? 0 : 1)]);
+      st.position.copy(n).multiplyScalar(0.4885);
+      st.quaternion.setFromUnitVectors(zAxis, n);
+      g.add(st);
+    }
+    c.obj = g;
+    cubeGroup.add(g);
+  }
+}
+
+const _m4 = new THREE.Matrix4();
+const _q = new THREE.Quaternion();
+// Snap a cubie's mesh exactly onto its integer state
+function syncCubie(c) {
+  const r = c.rot;
+  _m4.set(r[0], r[1], r[2], 0, r[3], r[4], r[5], 0, r[6], r[7], r[8], 0, 0, 0, 0, 1);
+  c.q.setFromRotationMatrix(_m4);
+  c.obj.quaternion.copy(c.q);
+  c.obj.position.set(c.pos[0], c.pos[1], c.pos[2]);
+}
+function syncAll() { cubies.forEach(syncCubie); }
+// Visual-only partial turn of a layer, always derived from the exact state
+function setLayerAngle(list, axis, angle) {
+  const a = AX[axis];
+  _q.setFromAxisAngle(a, angle);
+  for (const c of list) {
+    c.obj.position.set(c.pos[0], c.pos[1], c.pos[2]).applyAxisAngle(a, angle);
+    c.obj.quaternion.copy(_q).multiply(c.q);
+  }
+}
+
+function placeCamera() {
+  const vHalf = THREE.MathUtils.degToRad(camera.fov) / 2;
+  const hHalf = Math.atan(Math.tan(vHalf) * camera.aspect);
+  // 2.9 > bounding-sphere radius of the cube, so it fits at every orientation
+  const dist = (2.9 / Math.sin(Math.min(vHalf, hHalf))) * zoom;
+  camera.position.copy(CAM_DIR).multiplyScalar(dist);
+  camera.lookAt(0, 0, 0);
+  camera.updateProjectionMatrix();
+  camera.updateMatrixWorld();
+}
+function setZoom(z) { zoom = clamp(z, ZOOM_MIN, ZOOM_MAX); placeCamera(); }
+
+const confettiCanvas = $('confetti');
+const confettiCtx = confettiCanvas.getContext('2d');
+let viewW = 1, viewH = 1;
+function resize() {
+  viewW = Math.max(1, window.innerWidth);
+  viewH = Math.max(1, window.innerHeight);
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  renderer.setPixelRatio(dpr);
+  renderer.setSize(viewW, viewH, false);
+  camera.aspect = viewW / viewH;
+  placeCamera();
+  confettiCanvas.width = Math.round(viewW * dpr);
+  confettiCanvas.height = Math.round(viewH * dpr);
+  confettiCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener('resize', resize);
+
+/* =====================================================================
+   TURN ANIMATION + QUEUE
+   One animation at a time. Everything else waits in the queue, so a turn
+   is never applied to a half-turned layer and never dropped.
+   ===================================================================== */
+const queue = [];
+let anim = null;   // { t0, dur, ease, step(k), done() }
+let drag = null;   // pointer interaction, see INPUT
+
+function twistInProgress() { return !!drag && (drag.mode === 'pending' || drag.mode === 'twist'); }
+
+function pump() {
+  if (anim || twistInProgress()) return;
+  while (queue.length) {
+    const it = queue.shift();
+    if (it.type === 'fn') { it.fn(); continue; }
+    if (it.type === 'face') { startTurn(resolveFace(it.name, it.prime), 'user', TURN_MS); return; }
+    if (it.type === 'turn') { startTurn(it.move, it.kind, it.dur); return; }
+    if (it.type === 'view') { startView(it.name, it.prime); return; }
+  }
+}
+
+function startTurn(move, kind, dur) {
+  if (kind === 'user' || kind === 'redo') startTimerIfReady();
+  const list = cubies.filter((c) => c.pos[move.axis] === move.layer);
+  const total = move.dir * HALF_PI;
+  anim = {
+    t0: performance.now(), dur, ease: easeInOut,
+    step: (k) => setLayerAngle(list, move.axis, total * k),
+    done: () => {
+      applyTurn(move.axis, move.layer, move.dir);
+      list.forEach(syncCubie);
+      onTurnDone(move, kind);
+    }
+  };
+}
+
+// Whole-cube rotation: turns the cube group about one of its own axes.
+// Applied as increments so it composes with orbiting during the animation.
+function startView(name, prime) {
+  const v = viewAxes();
+  const ax = name === 'x' ? v.r : name === 'y' ? v.u : v.f;
+  const total = -ax.sign * (prime ? -1 : 1) * HALF_PI;
+  let prev = 0;
+  anim = {
+    t0: performance.now(), dur: TURN_MS * 1.2, ease: easeInOut,
+    step: (k) => {
+      cubeGroup.quaternion.multiply(_q.setFromAxisAngle(AX[ax.axis], (k - prev) * total));
+      prev = k;
+    },
+    done: () => { cubeGroup.quaternion.normalize(); save(); }
+  };
+}
+
+function finishAnimNow() {
+  if (!anim) return;
+  const a = anim;
+  anim = null;
+  a.step(1);
+  a.done();
+}
+
+/* =====================================================================
+   VIEW-RELATIVE MOVES
+   ===================================================================== */
+function snapAxis(v, skip) {
+  let best = -1, bv = -1;
+  for (let i = 0; i < 3; i++) {
+    if (i === skip) continue;
+    const a = Math.abs(v.getComponent(i));
+    if (a > bv) { bv = a; best = i; }
+  }
+  return { axis: best, sign: v.getComponent(best) >= 0 ? 1 : -1 };
+}
+// Which cube axes currently point towards the viewer (f), up (u) and right (r)
+function viewAxes() {
+  camera.updateMatrixWorld();
+  const inv = new THREE.Quaternion().copy(cubeGroup.quaternion).invert();
+  const e = camera.matrixWorld.elements;
+  const towards = new THREE.Vector3(e[8], e[9], e[10]).applyQuaternion(inv);
+  const up = new THREE.Vector3(e[4], e[5], e[6]).applyQuaternion(inv);
+  const f = snapAxis(towards, -1);
+  const u = snapAxis(up, f.axis);
+  const ra = 3 - f.axis - u.axis;
+  const r = { axis: ra, sign: u.sign * f.sign * eps(u.axis, f.axis, ra) }; // right = up x front
+  return { f, u, r };
+}
+// A face on side `sign` of an axis turns clockwise (seen from outside) with dir = -sign
+function resolveFace(name, prime) {
+  const v = viewAxes();
+  let m;
+  switch (name) {
+    case 'U': m = { axis: v.u.axis, layer: v.u.sign, dir: -v.u.sign }; break;
+    case 'D': m = { axis: v.u.axis, layer: -v.u.sign, dir: v.u.sign }; break;
+    case 'R': m = { axis: v.r.axis, layer: v.r.sign, dir: -v.r.sign }; break;
+    case 'L': m = { axis: v.r.axis, layer: -v.r.sign, dir: v.r.sign }; break;
+    case 'F': m = { axis: v.f.axis, layer: v.f.sign, dir: -v.f.sign }; break;
+    case 'B': m = { axis: v.f.axis, layer: -v.f.sign, dir: v.f.sign }; break;
+    case 'M': m = { axis: v.r.axis, layer: 0, dir: v.r.sign }; break;   // follows L
+    case 'E': m = { axis: v.u.axis, layer: 0, dir: v.u.sign }; break;   // follows D
+    default:  m = { axis: v.f.axis, layer: 0, dir: -v.f.sign }; break;  // S follows F
+  }
+  if (prime) m.dir = -m.dir;
+  return m;
+}
+
+/* =====================================================================
+   GAME LOGIC
+   phase: idle (free play) | scrambling | ready (scrambled, waiting for the
+   first turn) | running | solved
+   ===================================================================== */
+let phase = 'idle';
+let past = [];      // user turns since the scramble: [axis, layer, dir]
+let future = [];    // undone turns available for redo
+let finalMoves = 0, finalTime = 0;
+let scramblePending = false;
+const timer = { elapsed: 0, running: false, last: 0 };
+let best = { time: null, moves: null };
+try {
+  const b = JSON.parse(lsGet(BEST_KEY));
+  if (b && typeof b === 'object') {
+    if (Number.isFinite(b.time)) best.time = b.time;
+    if (Number.isFinite(b.moves)) best.moves = b.moves;
+  }
+} catch (e) { /* no stored best */ }
+
+function startTimerIfReady() {
+  if (phase !== 'ready') return;
+  phase = 'running';
+  timer.elapsed = 0;
+  timer.running = true;
+  timer.last = performance.now();
+}
+
+function onTurnDone(move, kind) {
+  clickSound(kind === 'scramble' ? 0.12 : 0.3);
+  if (kind === 'scramble') return;
+  const rec = [move.axis, move.layer, move.dir];
+  if (kind === 'user') { past.push(rec); future.length = 0; afterForwardTurn(); }
+  else if (kind === 'redo') { future.pop(); past.push(rec); afterForwardTurn(); }
+  else if (kind === 'undo') {
+    future.push(past.pop());
+    // Taking back the solving turn resumes the game where it stopped
+    if (phase === 'solved' && past.length < finalMoves) {
+      phase = 'running';
+      timer.elapsed = finalTime;
+      timer.running = true;
+      timer.last = performance.now();
+      hideBanner();
+      stopCelebration();
+    }
+  }
+  updateHUD();
+  save();
+}
+
+function afterForwardTurn() {
+  startTimerIfReady();
+  if (phase === 'running' && isSolved()) {
+    phase = 'solved';
+    timer.running = false;
+    finalTime = timer.elapsed;
+    finalMoves = past.length;
+    let newTime = false, newMoves = false;
+    if (best.time == null || finalTime < best.time) { best.time = Math.round(finalTime); newTime = true; }
+    if (best.moves == null || finalMoves < best.moves) { best.moves = finalMoves; newMoves = true; }
+    lsSet(BEST_KEY, JSON.stringify(best));
+    celebrate(newTime, newMoves);
+  }
+}
+
+function requestFace(name, prime) { queue.push({ type: 'face', name, prime: !!prime }); pump(); }
+function requestView(name, prime) { queue.push({ type: 'view', name, prime: !!prime }); pump(); }
+
+// Undo/redo are resolved when their turn in the queue comes, so they always
+// act on the history as it is at that moment.
+function requestUndo() {
+  queue.push({ type: 'fn', fn: () => {
+    if (!past.length) return;
+    const m = past[past.length - 1];
+    queue.unshift({ type: 'turn', move: { axis: m[0], layer: m[1], dir: -m[2] }, kind: 'undo', dur: TURN_MS * 0.8 });
+  } });
+  pump();
+}
+function requestRedo() {
+  queue.push({ type: 'fn', fn: () => {
+    if (!future.length) return;
+    const m = future[future.length - 1];
+    queue.unshift({ type: 'turn', move: { axis: m[0], layer: m[1], dir: m[2] }, kind: 'redo', dur: TURN_MS * 0.8 });
+  } });
+  pump();
+}
+
+function requestScramble() {
+  if (scramblePending) return;
+  scramblePending = true;
+  queue.push({ type: 'fn', fn: () => {
+    phase = 'scrambling';
+    past = []; future = [];
+    timer.running = false; timer.elapsed = 0;
+    hideBanner(); stopCelebration();
+    updateHUD();
+  } });
+  let last = -1;
+  for (let i = 0; i < SCRAMBLE_LEN; i++) {
+    // a different face than the previous turn: never undoes or repeats it
+    let f;
+    do { f = Math.floor(Math.random() * 6); } while (f === last);
+    last = f;
+    queue.push({
+      type: 'turn', kind: 'scramble', dur: SCRAMBLE_MS,
+      move: { axis: f >> 1, layer: (f & 1) ? -1 : 1, dir: Math.random() < 0.5 ? 1 : -1 }
+    });
+  }
+  queue.push({ type: 'fn', fn: () => {
+    phase = 'ready';
+    scramblePending = false;
+    updateHUD();
+    save();
+  } });
+  pump();
+}
+
+function resetGame() {
+  queue.length = 0;
+  anim = null;
+  scramblePending = false;
+  if (drag) drag = { mode: 'none', id: -1 };
+  resetCubeState();
+  syncAll();
+  past = []; future = [];
+  phase = 'idle';
+  timer.running = false; timer.elapsed = 0;
+  finalMoves = 0; finalTime = 0;
+  hideBanner(); stopCelebration();
+  updateHUD();
+  save();
+}
+
+/* ---- persistence ---- */
+function save() {
+  if (phase === 'scrambling') return; // only complete, consistent states are stored
+  lsSet(STATE_KEY, JSON.stringify({
+    v: 1,
+    c: cubies.map((c) => c.pos.concat(c.rot)),
+    phase, elapsed: Math.round(timer.elapsed),
+    past, future, finalMoves, finalTime: Math.round(finalTime),
+    q: cubeGroup.quaternion.toArray(), zoom
+  }));
+}
+function validMoveList(a) {
+  return Array.isArray(a) && a.every((m) => Array.isArray(m) && m.length === 3 &&
+    [0, 1, 2].includes(m[0]) && [-1, 0, 1].includes(m[1]) && (m[2] === 1 || m[2] === -1));
+}
+function load() {
+  let s;
+  try { s = JSON.parse(lsGet(STATE_KEY)); } catch (e) { return false; }
+  if (!s || s.v !== 1 || !Array.isArray(s.c) || s.c.length !== cubies.length) return false;
+  const used = new Set();
+  for (let i = 0; i < cubies.length; i++) {
+    const a = s.c[i];
+    if (!Array.isArray(a) || a.length !== 12 || !a.every((n) => n === 0 || n === 1 || n === -1)) return false;
+    const kindSaved = Math.abs(a[0]) + Math.abs(a[1]) + Math.abs(a[2]);
+    const h = cubies[i].home;
+    if (kindSaved !== Math.abs(h[0]) + Math.abs(h[1]) + Math.abs(h[2])) return false;
+    used.add(a[0] + ',' + a[1] + ',' + a[2]);
+  }
+  if (used.size !== cubies.length) return false;
+  if (!validMoveList(s.past) || !validMoveList(s.future)) return false;
+  for (let i = 0; i < cubies.length; i++) {
+    cubies[i].pos = s.c[i].slice(0, 3);
+    cubies[i].rot = s.c[i].slice(3);
+  }
+  past = s.past; future = s.future;
+  phase = ['idle', 'ready', 'running', 'solved'].includes(s.phase) ? s.phase : 'idle';
+  timer.elapsed = Number.isFinite(s.elapsed) ? Math.max(0, s.elapsed) : 0;
+  finalMoves = Number.isFinite(s.finalMoves) ? s.finalMoves : 0;
+  finalTime = Number.isFinite(s.finalTime) ? s.finalTime : 0;
+  if (phase === 'running') { timer.running = true; timer.last = performance.now(); }
+  if (Array.isArray(s.q) && s.q.length === 4 && s.q.every(Number.isFinite)) {
+    const q = new THREE.Quaternion().fromArray(s.q);
+    if (q.lengthSq() > 0.5) cubeGroup.quaternion.copy(q.normalize());
+  }
+  if (Number.isFinite(s.zoom)) zoom = clamp(s.zoom, ZOOM_MIN, ZOOM_MAX);
+  return true;
+}
+
+/* =====================================================================
+   INPUT (Pointer Events, wheel, keyboard)
+   ===================================================================== */
+const pointers = new Map();
+const raycaster = new THREE.Raycaster();
+const PICK_BOX = new THREE.Box3(new THREE.Vector3(-1.5, -1.5, -1.5), new THREE.Vector3(1.5, 1.5, 1.5));
+const _inv = new THREE.Matrix4();
+const _ndc = new THREE.Vector2();
+const ORBIT_SPEED = 0.008;
+const DRAG_THRESHOLD = 8;
+const TWIST_RADIUS = 1.25; // drag distance (cube units) per radian of twist
+
+// Ray vs. the cube's bounding box in cube-local space: hit point + face
+function pick(x, y) {
+  _ndc.set((x / viewW) * 2 - 1, -(y / viewH) * 2 + 1);
+  camera.updateMatrixWorld();
+  cubeGroup.updateMatrixWorld();
+  raycaster.setFromCamera(_ndc, camera);
+  _inv.copy(cubeGroup.matrixWorld).invert();
+  const ray = raycaster.ray.clone().applyMatrix4(_inv);
+  const p = ray.intersectBox(PICK_BOX, new THREE.Vector3());
+  if (!p) return null;
+  let n = 0;
+  for (let i = 1; i < 3; i++) if (Math.abs(p.getComponent(i)) > Math.abs(p.getComponent(n))) n = i;
+  return { p, n, sn: p.getComponent(n) >= 0 ? 1 : -1 };
+}
+function toScreen(local) {
+  const v = local.clone().applyMatrix4(cubeGroup.matrixWorld).project(camera);
+  return { x: (v.x + 1) / 2 * viewW, y: (1 - v.y) / 2 * viewH };
+}
+
+function orbitBy(dx, dy) {
+  const e = camera.matrixWorld.elements;
+  const right = new THREE.Vector3(e[0], e[1], e[2]);
+  const up = new THREE.Vector3(e[4], e[5], e[6]);
+  cubeGroup.quaternion
+    .premultiply(_q.setFromAxisAngle(up, dx * ORBIT_SPEED))
+    .premultiply(_q.setFromAxisAngle(right, dy * ORBIT_SPEED))
+    .normalize();
+}
+
+// Decide which layer a sticker drag turns: the drag follows one of the two
+// in-face axes (t); the layer then rotates about the remaining axis (a).
+function beginTwist(mx, my) {
+  const h = drag.hit;
+  const p0 = toScreen(h.p);
+  let bestT = null;
+  for (let t = 0; t < 3; t++) {
+    if (t === h.n) continue;
+    const q = h.p.clone();
+    q.setComponent(t, q.getComponent(t) + 1);
+    const s = toScreen(q);
+    const sx = s.x - p0.x, sy = s.y - p0.y;
+    const len = Math.hypot(sx, sy);
+    if (len < 1e-3) continue;
+    const score = Math.abs(mx * sx + my * sy) / len;
+    if (!bestT || score > bestT.score) bestT = { t, sx, sy, len, score };
+  }
+  if (!bestT) { drag.mode = 'none'; return; }
+  const a = 3 - h.n - bestT.t;
+  const layer = clamp(Math.round(h.p.getComponent(a)), -1, 1) || 0;
+  drag.mode = 'twist';
+  drag.axis = a;
+  drag.layer = layer;
+  drag.sx = bestT.sx; drag.sy = bestT.sy; drag.len2 = bestT.len * bestT.len;
+  // sign that makes the surface under the pointer move with the pointer
+  drag.sigma = h.sn * eps(a, h.n, bestT.t);
+  drag.angle = 0;
+  drag.list = cubies.filter((c) => c.pos[a] === layer);
+}
+function updateTwist(mx, my) {
+  const disp = (mx * drag.sx + my * drag.sy) / drag.len2;
+  drag.angle = clamp(disp * drag.sigma / TWIST_RADIUS, -HALF_PI, HALF_PI);
+  setLayerAngle(drag.list, drag.axis, drag.angle);
+}
+function endTwist(cancel) {
+  const d = drag;
+  const n = cancel ? 0 : Math.round(d.angle / HALF_PI) || 0;
+  const from = d.angle, to = n * HALF_PI;
+  if (n) startTimerIfReady();
+  anim = {
+    t0: performance.now(),
+    dur: Math.max(40, 50 + 150 * Math.abs(to - from) / HALF_PI),
+    ease: easeOut,
+    step: (k) => setLayerAngle(d.list, d.axis, from + (to - from) * k),
+    done: () => {
+      if (n) applyTurn(d.axis, d.layer, n);
+      d.list.forEach(syncCubie);
+      if (n) onTurnDone({ axis: d.axis, layer: d.layer, dir: n }, 'user');
+    }
+  };
+}
+
+function twoPointerDistance() {
+  const pts = Array.from(pointers.values());
+  return Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1;
+}
+
+function onPointerDown(e) {
+  if (e.pointerType === 'mouse' && e.button !== 0) return;
+  audioInit();
+  try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* pointer already gone */ }
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  canvas.classList.add('dragging');
+
+  if (pointers.size === 2) {
+    if (drag && drag.mode === 'twist') endTwist(true);
+    drag = { mode: 'pinch', id: -1, d0: twoPointerDistance(), z0: zoom };
+    return;
+  }
+  if (pointers.size > 2) return;
+
+  let hit = pick(e.clientX, e.clientY);
+  if (hit && anim && !queue.length) {
+    // grabbing the cube during the last running turn: complete it right away
+    finishAnimNow();
+    hit = pick(e.clientX, e.clientY);
+  }
+  if (hit) {
+    if (anim || queue.length) { drag = { mode: 'none', id: e.pointerId }; return; }
+    stopCelebration();
+    drag = { mode: 'pending', id: e.pointerId, x0: e.clientX, y0: e.clientY, hit };
+  } else {
+    drag = { mode: 'orbit', id: e.pointerId };
+  }
+}
+
+function onPointerMove(e) {
+  const p = pointers.get(e.pointerId);
+  if (!p) return;
+  const dx = e.clientX - p.x, dy = e.clientY - p.y;
+  p.x = e.clientX; p.y = e.clientY;
+  if (!drag) return;
+  if (drag.mode === 'pinch') {
+    if (pointers.size >= 2) setZoom(drag.z0 * drag.d0 / twoPointerDistance());
+    return;
+  }
+  if (e.pointerId !== drag.id) return;
+  if (drag.mode === 'orbit') { orbitBy(dx, dy); return; }
+  const mx = e.clientX - drag.x0, my = e.clientY - drag.y0;
+  if (drag.mode === 'pending' && Math.hypot(mx, my) >= DRAG_THRESHOLD) beginTwist(mx, my);
+  if (drag.mode === 'twist') updateTwist(mx, my);
+}
+
+function onPointerUp(e) {
+  if (!pointers.has(e.pointerId)) return;
+  pointers.delete(e.pointerId);
+  try { canvas.releasePointerCapture(e.pointerId); } catch (err) { /* not captured */ }
+  if (drag) {
+    if (drag.mode === 'pinch') {
+      if (pointers.size < 2) drag = { mode: 'none', id: -1 };
+    } else if (e.pointerId === drag.id) {
+      if (drag.mode === 'twist') endTwist(false);
+      drag = { mode: 'none', id: -1 };
+    }
+  }
+  if (pointers.size === 0) {
+    drag = null;
+    canvas.classList.remove('dragging');
+    scheduleSave();
+  }
+  pump();
+}
+
+canvas.addEventListener('pointerdown', onPointerDown);
+canvas.addEventListener('pointermove', onPointerMove);
+canvas.addEventListener('pointerup', onPointerUp);
+canvas.addEventListener('pointercancel', onPointerUp);
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const unit = e.deltaMode === 1 ? 33 : 1;
+  setZoom(zoom * Math.exp(clamp(e.deltaY * unit, -300, 300) * 0.0012));
+  scheduleSave();
+}, { passive: false });
+
+let saveTimeout = 0;
+function scheduleSave() {
+  clearTimeout(saveTimeout);
+  saveTimeout = setTimeout(save, 300);
+}
+
+window.addEventListener('keydown', (e) => {
+  const key = (e.key || '').toLowerCase();
+  if (e.ctrlKey || e.metaKey) {
+    if (key === 'z') { e.preventDefault(); if (e.shiftKey) requestRedo(); else requestUndo(); }
+    else if (key === 'y') { e.preventDefault(); requestRedo(); }
+    return;
+  }
+  if (e.altKey || e.repeat) return;
+  if (key === 'escape') { setHelp(false); return; }
+  if (key.length !== 1) return;
+  if ('udlrfbmes'.includes(key)) {
+    audioInit();
+    stopCelebration();
+    requestFace(key.toUpperCase(), e.shiftKey);
+    e.preventDefault();
+  } else if ('xyz'.includes(key)) {
+    audioInit();
+    requestView(key, e.shiftKey);
+    e.preventDefault();
+  }
+});
+
+/* =====================================================================
+   SOUND (Web Audio, created on the first user gesture)
+   ===================================================================== */
+let actx = null, noiseBuf = null;
+let muted = lsGet(MUTE_KEY) === '1';
+function audioInit() {
+  if (actx) {
+    if (actx.state === 'suspended') actx.resume().catch(() => {});
+    return;
+  }
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  try {
+    actx = new AC();
+    const n = Math.floor(actx.sampleRate * 0.045);
+    noiseBuf = actx.createBuffer(1, n, actx.sampleRate);
+    const d = noiseBuf.getChannelData(0);
+    for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / n, 2.5);
+  } catch (err) { actx = null; }
+}
+function clickSound(vol) {
+  if (muted || !actx || actx.state !== 'running') return;
+  const t = actx.currentTime;
+  // plastic "tick": filtered noise burst plus a short low thump
+  const src = actx.createBufferSource();
+  src.buffer = noiseBuf;
+  src.playbackRate.value = 0.85 + Math.random() * 0.3;
+  const bp = actx.createBiquadFilter();
+  bp.type = 'bandpass'; bp.frequency.value = 1700 + Math.random() * 500; bp.Q.value = 1.1;
+  const g = actx.createGain();
+  g.gain.value = vol;
+  src.connect(bp); bp.connect(g); g.connect(actx.destination);
+  src.start(t);
+  const o = actx.createOscillator();
+  const og = actx.createGain();
+  o.type = 'sine';
+  o.frequency.setValueAtTime(170, t);
+  o.frequency.exponentialRampToValueAtTime(80, t + 0.05);
+  og.gain.setValueAtTime(vol * 0.5, t);
+  og.gain.exponentialRampToValueAtTime(0.0001, t + 0.06);
+  o.connect(og); og.connect(actx.destination);
+  o.start(t); o.stop(t + 0.07);
+}
+
+/* =====================================================================
+   UI
+   ===================================================================== */
+const timerEl = $('timer'), movesEl = $('moves'), bestEl = $('best');
+const banner = $('banner'), helpEl = $('help');
+const btnUndo = $('btnUndo'), btnRedo = $('btnRedo'), btnMute = $('btnMute'), btnHelp = $('btnHelp');
+
+function fmt(ms) {
+  const cs = Math.floor(Math.max(0, ms) / 10);
+  const m = Math.floor(cs / 6000);
+  const s = Math.floor(cs / 100) % 60;
+  const c = cs % 100;
+  return m + ':' + String(s).padStart(2, '0') + '.' + String(c).padStart(2, '0');
+}
+function shownTime() { return phase === 'solved' ? finalTime : phase === 'running' ? timer.elapsed : 0; }
+let lastTimerText = '';
+function updateTimerText() {
+  const txt = fmt(shownTime());
+  if (txt !== lastTimerText) { timerEl.textContent = txt; lastTimerText = txt; }
+}
+function updateHUD() {
+  const mv = phase === 'solved' ? finalMoves : phase === 'running' ? past.length : 0;
+  movesEl.textContent = mv + (mv === 1 ? ' move' : ' moves');
+  bestEl.textContent = 'Best ' + (best.time != null ? fmt(best.time) : '–') +
+    ' · ' + (best.moves != null ? best.moves + ' moves' : '–');
+  btnUndo.disabled = !past.length;
+  btnRedo.disabled = !future.length;
+  btnMute.textContent = muted ? '🔇' : '🔊';
+  updateTimerText();
+}
+
+function showBanner(newTime, newMoves) {
+  banner.textContent = '';
+  const big = document.createElement('div');
+  big.className = 'big'; big.textContent = 'Solved!';
+  const res = document.createElement('div');
+  res.className = 'res';
+  res.textContent = fmt(finalTime) + ' · ' + finalMoves + (finalMoves === 1 ? ' move' : ' moves');
+  banner.append(big, res);
+  if (newTime || newMoves) {
+    const rec = document.createElement('div');
+    rec.className = 'rec';
+    rec.textContent = newTime && newMoves ? 'New best time and fewest moves' : newTime ? 'New best time' : 'New fewest moves';
+    banner.append(rec);
+  }
+  banner.classList.add('show');
+}
+function hideBanner() { banner.classList.remove('show'); }
+
+function setHelp(open) {
+  helpEl.hidden = !open;
+  btnHelp.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+function bindButton(el, fn) {
+  el.addEventListener('click', () => { audioInit(); fn(); el.blur(); });
+}
+bindButton($('btnScramble'), requestScramble);
+bindButton(btnUndo, requestUndo);
+bindButton(btnRedo, requestRedo);
+bindButton($('btnReset'), resetGame);
+bindButton(btnMute, () => { muted = !muted; lsSet(MUTE_KEY, muted ? '1' : '0'); updateHUD(); });
+bindButton(btnHelp, () => setHelp(helpEl.hidden));
+document.querySelectorAll('#pad button').forEach((b) => {
+  bindButton(b, () => { stopCelebration(); requestFace(b.dataset.face, b.dataset.prime === '1'); });
+});
+
+/* ---- celebration: one full spin of the cube plus confetti ---- */
+let spin = null;
+const confetti = [];
+const WORLD_Y = new THREE.Vector3(0, 1, 0);
+function celebrate(newTime, newMoves) {
+  showBanner(newTime, newMoves);
+  spin = { t0: performance.now(), dur: 1800, prev: 0 };
+  for (let i = 0; i < 160; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const sp = 3 + Math.random() * 10;
+    confetti.push({
+      x: viewW / 2, y: viewH * 0.45,
+      vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 4,
+      r: Math.random() * 6.28, vr: (Math.random() - 0.5) * 0.4,
+      w: 6 + Math.random() * 6, h: 3 + Math.random() * 4,
+      c: CSS_COLORS[i % 6], life: 1
+    });
+  }
+}
+// Stops the spin where it is (the view is free anyway); confetti just fades out
+function stopCelebration() { spin = null; }
+
+function updateConfetti(dt) {
+  const f = dt / 16.67;
+  confettiCtx.clearRect(0, 0, viewW, viewH);
+  for (let i = confetti.length - 1; i >= 0; i--) {
+    const p = confetti[i];
+    p.vy += 0.22 * f;
+    p.vx *= Math.pow(0.99, f);
+    p.x += p.vx * f; p.y += p.vy * f; p.r += p.vr * f;
+    p.life -= dt / 2800;
+    if (p.life <= 0 || p.y > viewH + 30) { confetti.splice(i, 1); continue; }
+    confettiCtx.save();
+    confettiCtx.globalAlpha = Math.min(1, p.life * 2.5);
+    confettiCtx.translate(p.x, p.y);
+    confettiCtx.rotate(p.r);
+    confettiCtx.fillStyle = p.c;
+    confettiCtx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+    confettiCtx.restore();
+  }
+}
+
+/* =====================================================================
+   MAIN LOOP
+   ===================================================================== */
+let lastFrame = performance.now();
+let confettiDirty = false;
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt = Math.min(50, Math.max(0, now - lastFrame));
+  lastFrame = now;
+
+  if (timer.running) {
+    const t = performance.now();
+    timer.elapsed += Math.max(0, t - timer.last);
+    timer.last = t;
+  }
+
+  if (anim) {
+    const k = clamp((performance.now() - anim.t0) / anim.dur, 0, 1);
+    anim.step(anim.ease(k));
+    if (k >= 1) {
+      const a = anim;
+      anim = null;
+      a.done();
+      pump();
+    }
+  }
+
+  if (spin) {
+    const k = clamp((now - spin.t0) / spin.dur, 0, 1);
+    const e = easeInOut(k);
+    cubeGroup.quaternion.premultiply(_q.setFromAxisAngle(WORLD_Y, (e - spin.prev) * Math.PI * 2)).normalize();
+    spin.prev = e;
+    if (k >= 1) spin = null;
+  }
+
+  updateTimerText();
+  renderer.render(scene, camera);
+
+  if (confetti.length) { updateConfetti(dt); confettiDirty = true; }
+  else if (confettiDirty) { confettiCtx.clearRect(0, 0, viewW, viewH); confettiDirty = false; }
+}
+
+/* ---- start ---- */
+if (!load()) resetCubeState();
+syncAll();
+resize();
+updateHUD();
+if (phase === 'solved') showBanner(false, false);
+
+setInterval(() => { if (timer.running) save(); }, 2000);
+window.addEventListener('pagehide', save);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') save(); });
+
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
