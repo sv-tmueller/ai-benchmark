@@ -1036,7 +1036,7 @@ class SelectModeTest(BatchCase):
     def test_it_needs_neither_the_effort_level_nor_a_usable_binary(self):
         env = {k: v for k, v in self.env.items() if k != "CLAUDE_EFFORT"}
         code, out = self.batch("--select", "2", env=env)
-        self.assertEqual((code, out), (0, "prompts: game-lava-lamp\n"))
+        self.assertEqual((code, out), (0, "prompts: scene-lava-lamp\n"))
         self.assert_read_only()
 
 
@@ -1067,10 +1067,10 @@ class ListModeTest(BatchCase):
                        prs=[(12, "results/minecraft/minecraft_claude_fable_5_2_high.html")])
         _, out = self.batch("--list")
         marks = {pid: mark for _, pid, mark in self.rows(out)}
-        self.assertEqual(marks["game-lava-lamp"], "has result (on origin/main)")
+        self.assertEqual(marks["scene-lava-lamp"], "has result (on origin/main)")
         self.assertEqual(marks["game-minecraft"], "has result (open PR #12)")
         self.assertEqual(marks["game-melon-jelly"], "no result")
-        self.assertIn(" 2. game-lava-lamp  has result (on origin/main)", out)
+        self.assertIn(" 2. scene-lava-lamp  has result (on origin/main)", out)
         self.assertIn(" 3. game-minecraft  has result (open PR #12)", out)
 
     def test_a_result_at_another_effort_or_for_another_model_shows_no_result(self):
@@ -1168,7 +1168,7 @@ class SubsetRunTest(BatchCase):
         st["main_files"] = ["results/lava-lamp/lava-lamp_claude_fable_5_2_high.html"]
         self.git.save(st)
         _, out = self.batch("--prompts", self.CHOSEN)
-        self.assertNotIn("game-lava-lamp", out)
+        self.assertNotIn("scene-lava-lamp", out)
 
     def test_the_merge_step_still_runs_after_a_subset(self):
         (self.repo / "harness").mkdir(exist_ok=True)
@@ -1190,22 +1190,22 @@ class SubsetRunTest(BatchCase):
         self.assertEqual(self.called_ids(), ["game-melon-jelly"])
 
     def test_after_a_halt_only_the_remaining_selected_prompts_are_not_started(self):
-        self.set_children(by_prompt={"game-lava-lamp": {
+        self.set_children(by_prompt={"scene-lava-lamp": {
             "effects": {"write": ["results/lava-lamp/stray.txt"]}}})
-        code, out = self.batch("--prompts", "scene-sunset-ocean,game-melon-jelly,game-lava-lamp,game-minecraft")
-        self.assertEqual(self.called_ids(), ["game-melon-jelly", "game-lava-lamp"])
+        code, out = self.batch("--prompts", "scene-sunset-ocean,game-melon-jelly,scene-lava-lamp,game-minecraft")
+        self.assertEqual(self.called_ids(), ["game-melon-jelly", "scene-lava-lamp"])
         rep = self.report_lines(out)
-        self.assertEqual(list(rep), ["game-melon-jelly", "game-lava-lamp", "game-minecraft", "scene-sunset-ocean"])
-        self.assertEqual(rep["game-minecraft"][0], "not-started: tree dirty after game-lava-lamp")
-        self.assertEqual(rep["scene-sunset-ocean"][0], "not-started: tree dirty after game-lava-lamp")
+        self.assertEqual(list(rep), ["game-melon-jelly", "scene-lava-lamp", "game-minecraft", "scene-sunset-ocean"])
+        self.assertEqual(rep["game-minecraft"][0], "not-started: tree dirty after scene-lava-lamp")
+        self.assertEqual(rep["scene-sunset-ocean"][0], "not-started: tree dirty after scene-lava-lamp")
         self.assertRegex(out, r"(?m)^not-started: 2$")
         self.assertNotEqual(code, 0)
 
     def test_the_dry_run_shows_only_the_selected_prompts_and_creates_nothing(self):
-        code, out = self.batch("--dry-run", "--prompts", "game-lava-lamp")
+        code, out = self.batch("--dry-run", "--prompts", "scene-lava-lamp")
         self.assertEqual(code, 0, out)
         self.assertEqual(re.findall(r"(?m)^prompt .*$", out),
-                         ["prompt game-lava-lamp: run  " + Path(self.targets["game-lava-lamp"]).name])
+                         ["prompt scene-lava-lamp: run  " + Path(self.targets["scene-lava-lamp"]).name])
         self.assertEqual(out.count("child command:"), 1)
         self.assertIn("merge step: would list open PRs", out)
         self.assertEqual(self.calls(), [])
@@ -1215,9 +1215,9 @@ class SubsetRunTest(BatchCase):
         st = self.git.state()
         st["main_files"] = ["results/lava-lamp/lava-lamp_claude_fable_5_2_high.html"]
         self.git.save(st)
-        _, out = self.batch("--dry-run", "--prompts", "game-melon-jelly,game-lava-lamp")
+        _, out = self.batch("--dry-run", "--prompts", "game-melon-jelly,scene-lava-lamp")
         self.assertRegex(out, r"(?m)^prompt game-melon-jelly: run")
-        self.assertRegex(out, r"(?m)^prompt game-lava-lamp: skip \(on origin/main\)")
+        self.assertRegex(out, r"(?m)^prompt scene-lava-lamp: skip \(on origin/main\)")
 
     def test_the_dry_run_with_prompts_all_shows_the_whole_arm(self):
         _, out = self.batch("--dry-run", "--prompts", "all")
@@ -1247,7 +1247,7 @@ class RejectedPromptsTest(BatchCase):
         self.assertEqual(self.calls(), [])
 
     def test_the_resolver_collapses_repeats_and_keeps_arm_order(self):
-        self.assertEqual(bra.resolve_prompts("game-lava-lamp,game-melon-jelly,game-lava-lamp"),
+        self.assertEqual(bra.resolve_prompts("scene-lava-lamp,game-melon-jelly,scene-lava-lamp"),
                          arm(1, 2))
         self.assertEqual(bra.resolve_prompts(None), bra.ARM_PROMPTS)
         self.assertEqual(bra.resolve_prompts("all"), bra.ARM_PROMPTS)
@@ -1394,8 +1394,8 @@ class BatchLoopTest(BatchCase):
         st["next_pr"] = 43
         self.git.save(st)
         _, out = self.batch()
-        self.assertNotIn("game-lava-lamp", self.called_ids())
-        self.assertEqual(self.report_lines(out)["game-lava-lamp"],
+        self.assertNotIn("scene-lava-lamp", self.called_ids())
+        self.assertEqual(self.report_lines(out)["scene-lava-lamp"],
                          ("skipped: open PR #42", "https://example.test/pull/42"))
 
     def test_a_result_for_another_model_does_not_skip(self):
@@ -1417,7 +1417,7 @@ class BatchLoopTest(BatchCase):
     def test_failures_do_not_stop_the_batch(self):
         self.set_children(by_prompt={
             "game-melon-jelly": {"exit": 1, "effects": {}},
-            "game-lava-lamp": {"sleep": 60, "effects": {}},
+            "scene-lava-lamp": {"sleep": 60, "effects": {}},
             "game-minecraft": {"json": result_json("STOP: results/x already exists on disk"), "effects": {}},
             "scene-meridian-launch": {"json": result_json("x\nrun void, re-run in a fresh session"),
                                      "effects": {}},
@@ -1429,7 +1429,7 @@ class BatchLoopTest(BatchCase):
         self.assertEqual(self.called_ids(), list(bra.ARM_PROMPTS))
         rep = self.report_lines(out)
         self.assertEqual(rep["game-melon-jelly"][0], "failed: exit 1")
-        self.assertEqual(rep["game-lava-lamp"][0], "timed-out")
+        self.assertEqual(rep["scene-lava-lamp"][0], "timed-out")
         self.assertTrue(rep["game-minecraft"][0].startswith("ended without PR"))
         self.assertIn("STOP: results/x already exists on disk", rep["game-minecraft"][0])
         self.assertIn("run void", rep["scene-meridian-launch"][0])
@@ -1496,13 +1496,13 @@ class BatchCleanupTest(BatchCase):
         self.assertNotIn(["git", "switch", "main"], self.git.calls)
 
     def test_a_foreign_untracked_file_halts_the_batch_and_skips_the_merge_step(self):
-        self.set_children(by_prompt={"game-lava-lamp": {
+        self.set_children(by_prompt={"scene-lava-lamp": {
             "effects": {"write": ["results/lava-lamp/stray.txt"]}}})
         code, out = self.batch()
-        self.assertEqual(self.called_ids(), ["game-melon-jelly", "game-lava-lamp"])
+        self.assertEqual(self.called_ids(), ["game-melon-jelly", "scene-lava-lamp"])
         rep = self.report_lines(out)
-        self.assertEqual(rep["game-minecraft"][0], "not-started: tree dirty after game-lava-lamp")
-        self.assertEqual(rep["game-weichensteller"][0], "not-started: tree dirty after game-lava-lamp")
+        self.assertEqual(rep["game-minecraft"][0], "not-started: tree dirty after scene-lava-lamp")
+        self.assertEqual(rep["game-weichensteller"][0], "not-started: tree dirty after scene-lava-lamp")
         self.assertTrue((self.wt / "results/lava-lamp/stray.txt").exists())  # never touched
         self.assertIn("merge step: skipped", out)
         self.assertNotEqual(code, 0)
@@ -1565,7 +1565,7 @@ class MainCheckoutUntouchedTest(BatchCase):
         before_tree, before_files = self.git.tree(), self.repo_files()
         self.set_children(by_prompt={
             "game-melon-jelly": {"effects": {"open_pr": True, "branch": "feat/9-x"}},
-            "game-lava-lamp": {"effects": {"write": ["results/lava-lamp/stray.txt"]}}})
+            "scene-lava-lamp": {"effects": {"write": ["results/lava-lamp/stray.txt"]}}})
         self.batch()
         self.assertEqual(self.git.tree(), before_tree)
         self.assertEqual(self.repo_files(), before_files)
@@ -1762,7 +1762,7 @@ class WorktreeFinishTest(BatchCase):
         self.assertTrue(self.wt.exists())
 
     def test_a_halt_keeps_the_worktree_and_prints_its_path(self):
-        self.set_children(by_prompt={"game-lava-lamp": {
+        self.set_children(by_prompt={"scene-lava-lamp": {
             "effects": {"write": ["results/lava-lamp/stray.txt"]}}})
         code, out = self.batch()
         self.assertNotEqual(code, 0)
@@ -1771,7 +1771,7 @@ class WorktreeFinishTest(BatchCase):
         self.assertTrue((self.wt / "results/lava-lamp/stray.txt").exists())
 
     def test_the_run_after_a_halt_stops_on_the_dirty_worktree(self):
-        self.set_children(by_prompt={"game-lava-lamp": {
+        self.set_children(by_prompt={"scene-lava-lamp": {
             "effects": {"write": ["results/lava-lamp/stray.txt"]}}})
         self.batch()
         before = len(self.calls())
@@ -2126,7 +2126,7 @@ class RunMetricsBatchTest(BatchCase):
         self.assertEqual(rep["game-melon-jelly"][0],
                          "pr-opened #1 (run file added, PR description not updated: "
                          "PR description is not valid UTF-8 text)")
-        self.assertRegex(rep["game-lava-lamp"][0], r"^pr-opened #\d+$")
+        self.assertRegex(rep["scene-lava-lamp"][0], r"^pr-opened #\d+$")
         self.assertNotIn("SECRET", out)
         self.assertIn("worktree: removed", out)
 
@@ -2275,17 +2275,17 @@ class RunMetricsBatchTest(BatchCase):
         st = self.git.state()
         st["main_files"] = [Path(self.targets["game-melon-jelly"]).as_posix()]
         st["prs"] = [{"number": 42, "url": "https://example.test/pull/42", "files": [
-            {"path": self.targets["game-lava-lamp"]}]}]
+            {"path": self.targets["scene-lava-lamp"]}]}]
         st["next_pr"] = 43
         self.git.save(st)
-        self.batch("--prompts", "game-melon-jelly,game-lava-lamp")
+        self.batch("--prompts", "game-melon-jelly,scene-lava-lamp")
         self.assertEqual(self.calls(), [])
         self.assertEqual(self.metrics_calls(), [])
 
     def test_failed_and_ended_without_pr_prompts_run_no_metrics_step(self):
         self.set_children(by_prompt={"game-melon-jelly": {"exit": 1, "effects": {}},
-                                     "game-lava-lamp": {"effects": {}}})
-        self.batch("--prompts", "game-melon-jelly,game-lava-lamp")
+                                     "scene-lava-lamp": {"effects": {}}})
+        self.batch("--prompts", "game-melon-jelly,scene-lava-lamp")
         self.assertEqual(self.metrics_calls(), [])
 
     def test_a_timed_out_child_without_a_pr_runs_no_metrics_step(self):
@@ -2462,7 +2462,7 @@ class MetricsNotePrintableTest(BatchCase):
         rep = self.report_lines(out)
         self.assertRegex(rep["game-melon-jelly"][0],
                          r"^pr-opened #1 \(run file not added: branch feat/9-.* is not this result's branch\)$")
-        self.assertRegex(rep["game-lava-lamp"][0], r"^pr-opened #\d+$")
+        self.assertRegex(rep["scene-lava-lamp"][0], r"^pr-opened #\d+$")
         self.assertIn("report: claude-fable-5-2 at effort high", out)
         self.assertIn("worktree: removed", out)
 
@@ -2547,7 +2547,7 @@ class DryRunTest(BatchCase):
         self.git.save(st)
         _, out = self.batch("--dry-run")
         self.assertRegex(out, r"(?m)^prompt game-melon-jelly: skip \(on origin/main\)")
-        self.assertRegex(out, r"(?m)^prompt game-lava-lamp: run")
+        self.assertRegex(out, r"(?m)^prompt scene-lava-lamp: run")
 
     def test_dry_run_shows_the_exact_child_command_once(self):
         _, out = self.batch("--dry-run")
@@ -2764,7 +2764,7 @@ def batch_mode():
 def batch_helper_commands():
     """argv (after the script name) of every helper command in Batch mode, placeholders filled in."""
     import shlex
-    fills = {"<model-id>": "claude-fable-5-2", "<selection>": "game-melon-jelly,game-lava-lamp",
+    fills = {"<model-id>": "claude-fable-5-2", "<selection>": "game-melon-jelly,scene-lava-lamp",
              "<answer>": "1,3-5"}
     found = []
     for span in re.findall(r"`(python3 harness/bench_run_all\.py [^`\n]+)`", batch_mode()):
@@ -2906,7 +2906,7 @@ class SkillStepCommandsTest(unittest.TestCase):
         self.assertEqual(len(runs), 2)
         for argv in runs:
             with self.subTest(argv=argv):
-                args = bra.parse_args(argv + ["--prompts", "game-melon-jelly,game-lava-lamp"])
+                args = bra.parse_args(argv + ["--prompts", "game-melon-jelly,scene-lava-lamp"])
                 self.assertEqual(bra.resolve_prompts(args.prompts), arm(1, 2))
 
     def test_the_select_command_takes_the_answer_in_the_equals_form(self):

@@ -82,7 +82,7 @@ from harness.modes._common import (EFFORT_LEVELS, model_tag, printable, run_tag,
 # prompt files.
 ARM_PROMPTS = (
     "game-melon-jelly",
-    "game-lava-lamp",
+    "scene-lava-lamp",
     "game-minecraft",
     "scene-meridian-launch",
     "scene-sunset-ocean",

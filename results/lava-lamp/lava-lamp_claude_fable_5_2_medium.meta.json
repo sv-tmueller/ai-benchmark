@@ -1,7 +1,7 @@
 {
   "generated_utc": "2026-11-15T13:13:03Z",
-  "toml": "game-lava-lamp.toml",
-  "prompt_id": "game-lava-lamp",
+  "toml": "scene-lava-lamp.toml",
+  "prompt_id": "scene-lava-lamp",
   "title": "Photoreal ray-marched lava lamp studio shot",
   "endpoint": "none (generated in-session by Claude Code via /bench-run, plain one-shot; no orchestrator, no agents, no repair round)",
   "model": "claude-fable-5-2",

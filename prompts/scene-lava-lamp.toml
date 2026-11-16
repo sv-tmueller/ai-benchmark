@@ -3,9 +3,9 @@
 # contract" that are not defined anywhere in this repo. That is deliberate:
 # models must infer a reasonable manifest/state/lifecycle shape on their own
 # rather than being handed one.
-id          = "game-lava-lamp"
+id          = "scene-lava-lamp"
 title       = "Photoreal ray-marched lava lamp studio shot"
-category    = "game-generation"
+category    = "scene-generation"
 difficulty  = "hard"
 save_as     = "html"
 file_prefix = "lava-lamp"
