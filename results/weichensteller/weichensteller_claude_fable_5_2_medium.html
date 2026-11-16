@@ -1,0 +1,1198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Weichensteller</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #bfe3f5; font-family: "Trebuchet MS", "Segoe UI", Helvetica, Arial, sans-serif; }
+  canvas { display: block; touch-action: none; }
+  #hud { position: fixed; top: 14px; left: 14px; padding: 12px 18px; border-radius: 14px; background: rgba(28, 36, 48, 0.78); color: #fff; box-shadow: 0 6px 20px rgba(0,0,0,0.25); user-select: none; pointer-events: none; min-width: 150px; z-index: 5; }
+  #hud .row { display: flex; align-items: center; justify-content: space-between; gap: 16px; font-size: 17px; line-height: 1.6; }
+  #hud .label { opacity: 0.75; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; }
+  #score { font-weight: bold; font-size: 24px; }
+  #lives { font-size: 22px; letter-spacing: 3px; color: #ff5a5a; }
+  #lives .lost { color: rgba(255,255,255,0.22); }
+  #nextDot { display: inline-block; width: 18px; height: 18px; border-radius: 50%; border: 2px solid #fff; background: #888; }
+  #tempo { font-weight: bold; }
+  #hint { position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%); color: rgba(20,30,40,0.75); font-size: 13px; background: rgba(255,255,255,0.6); padding: 5px 14px; border-radius: 12px; pointer-events: none; user-select: none; z-index: 5; white-space: nowrap; }
+  .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(18, 28, 40, 0.55); z-index: 10; }
+  .overlay.hidden { display: none; }
+  .panel { background: linear-gradient(180deg, #fdfaf2, #efe6d2); border-radius: 22px; padding: 30px 44px 34px; max-width: 520px; text-align: center; box-shadow: 0 18px 60px rgba(0,0,0,0.45); border: 4px solid #7a5a36; color: #2c2a26; }
+  .panel h1 { margin: 0 0 4px; font-size: 44px; letter-spacing: 1px; color: #b3261e; text-shadow: 0 2px 0 #fff; }
+  .panel h2 { margin: 0 0 14px; font-size: 16px; font-weight: normal; color: #6b6253; letter-spacing: 2px; text-transform: uppercase; }
+  .panel p { margin: 8px 0; font-size: 16px; line-height: 1.5; }
+  .panel ul { text-align: left; margin: 12px auto; padding-left: 22px; font-size: 15px; line-height: 1.6; }
+  .panel .big { font-size: 54px; font-weight: bold; color: #1e6fd0; margin: 6px 0 2px; }
+  .btn { margin-top: 18px; font-size: 20px; font-weight: bold; padding: 13px 40px; border: none; border-radius: 40px; background: #2e9d48; color: #fff; cursor: pointer; box-shadow: 0 5px 0 #1d6a30; font-family: inherit; }
+  .btn:hover { background: #36b454; }
+  .btn:active { transform: translateY(3px); box-shadow: 0 2px 0 #1d6a30; }
+  .dots span { display: inline-block; width: 16px; height: 16px; border-radius: 50%; margin: 0 4px; border: 2px solid rgba(0,0,0,0.3); }
+  .pop { position: fixed; transform: translate(-50%, -50%); font-size: 30px; font-weight: bold; pointer-events: none; text-shadow: 0 2px 4px rgba(0,0,0,0.6), 0 0 2px #000; animation: floatUp 1.1s ease-out forwards; z-index: 6; white-space: nowrap; }
+  @keyframes floatUp { 0% { opacity: 0; margin-top: 0; } 15% { opacity: 1; } 100% { opacity: 0; margin-top: -70px; } }
+  #flash { position: fixed; inset: 0; background: rgba(255, 30, 30, 0.35); opacity: 0; pointer-events: none; transition: opacity 0.35s; z-index: 4; }
+</style>
+</head>
+<body>
+<div id="hud">
+  <div class="row"><span class="label">Score</span><span id="score">0</span></div>
+  <div class="row"><span class="label">Lives</span><span id="lives"></span></div>
+  <div class="row"><span class="label">Next train</span><span id="nextDot"></span></div>
+  <div class="row"><span class="label">Tempo</span><span id="tempo">x1.0</span></div>
+</div>
+<div id="hint">Click a junction to switch it &nbsp;·&nbsp; Drag: rotate &nbsp;·&nbsp; Wheel: zoom &nbsp;·&nbsp; Right-drag: pan</div>
+<div id="flash"></div>
+
+<div id="startScreen" class="overlay">
+  <div class="panel">
+    <h1>Weichensteller</h1>
+    <h2>The Pointsman</h2>
+    <p>Colored trains leave the mountain tunnel one after another.<br>Guide every train to the station of its own color!</p>
+    <div class="dots"><span style="background:#e53935"></span><span style="background:#1e88e5"></span><span style="background:#fdd835"></span><span style="background:#8e24aa"></span></div>
+    <ul>
+      <li><b>Click a junction</b> (white ring) to switch it. The yellow arrow and the glowing track show where it points.</li>
+      <li>Right station: <b>+1 point</b>. Wrong station: <b>&minus;1 life</b>. You have three lives.</li>
+      <li>If two trains <b>collide</b>, the game is over. Fast trains can catch up with slow ones!</li>
+      <li>Drag to rotate the camera, use the mouse wheel to zoom.</li>
+    </ul>
+    <button id="startBtn" class="btn">Start</button>
+  </div>
+</div>
+
+<div id="overScreen" class="overlay hidden">
+  <div class="panel">
+    <h1>Game Over</h1>
+    <h2 id="overReason">No lives left</h2>
+    <p>Trains delivered correctly</p>
+    <div class="big" id="finalScore">0</div>
+    <p id="bestLine"></p>
+    <button id="restartBtn" class="btn">Play again</button>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  if (typeof THREE === 'undefined') {
+    var msg = document.createElement('div');
+    msg.style.cssText = 'position:fixed;top:40%;left:0;right:0;text-align:center;font-size:20px;color:#222;z-index:99';
+    msg.textContent = 'Three.js could not be loaded. Please check your internet connection and reload.';
+    document.body.appendChild(msg);
+    return;
+  }
+
+  // ------------------------------------------------------------------ basics
+  var COLORS = [0xe53935, 0x1e88e5, 0xfdd835, 0x8e24aa];
+  var COLOR_CSS = ['#e53935', '#1e88e5', '#fdd835', '#8e24aa'];
+  var COLOR_NAMES = ['red', 'blue', 'yellow', 'purple'];
+
+  var renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  document.body.appendChild(renderer.domElement);
+
+  var scene = new THREE.Scene();
+  scene.background = new THREE.Color(0xbfe3f5);
+
+  var camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 800);
+  var camTarget = new THREE.Vector3(-4, 0, 0);
+  var camTheta = 0.0, camPhi = 0.92, camR = 118;
+
+  function updateCamera() {
+    var sp = Math.sin(camPhi), cp = Math.cos(camPhi);
+    camera.position.set(
+      camTarget.x + camR * sp * Math.sin(camTheta),
+      camTarget.y + camR * cp,
+      camTarget.z + camR * sp * Math.cos(camTheta)
+    );
+    camera.lookAt(camTarget);
+  }
+  updateCamera();
+
+  // lights
+  var hemi = new THREE.HemisphereLight(0xffffff, 0x5c7a4a, 0.75);
+  scene.add(hemi);
+  var sun = new THREE.DirectionalLight(0xfff4e0, 0.85);
+  sun.position.set(30, 90, 45);
+  sun.target.position.set(-10, 0, 0);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.camera.left = -105;
+  sun.shadow.camera.right = 105;
+  sun.shadow.camera.top = 75;
+  sun.shadow.camera.bottom = -75;
+  sun.shadow.camera.near = 1;
+  sun.shadow.camera.far = 260;
+  sun.shadow.bias = -0.0006;
+  scene.add(sun);
+  scene.add(sun.target);
+
+  // seeded random for a stable landscape
+  var seed = 1234567;
+  function srand() {
+    seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+    var t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  }
+
+  // ------------------------------------------------------------------ track network
+  var NODES = {
+    T:  { x: -52, z: 0 },
+    J1: { x: -34, z: 0 },
+    J2: { x: -14, z: -13 },
+    J3: { x: -14, z: 13 },
+    J4: { x: 8,   z: -19.5 },
+    J5: { x: 8,   z: 19.5 },
+    M:  { x: 8,   z: 0 },
+    J6: { x: 13,  z: 0 },
+    N2: { x: 33,  z: -6.5 },
+    N3: { x: 33,  z: 6.5 },
+    S1: { x: 51,  z: -19.5, station: 0 },
+    S2: { x: 51,  z: -6.5,  station: 1 },
+    S3: { x: 51,  z: 6.5,   station: 2 },
+    S4: { x: 51,  z: 19.5,  station: 3 }
+  };
+  var EDGE_DEFS = [
+    ['T', 'J1'],
+    ['J1', 'J2'], ['J1', 'J3'],
+    ['J2', 'J4'], ['J2', 'M'],
+    ['J3', 'M'],  ['J3', 'J5'],
+    ['M', 'J6'],
+    ['J4', 'S1'], ['J4', 'N2'],
+    ['J6', 'N2'], ['J6', 'N3'],
+    ['J5', 'N3'], ['J5', 'S4'],
+    ['N2', 'S2'], ['N3', 'S3']
+  ];
+  var ROUTES = [
+    ['T', 'J1', 'J2', 'J4', 'S1'],
+    ['T', 'J1', 'J2', 'M', 'J6', 'N2', 'S2'],
+    ['T', 'J1', 'J3', 'M', 'J6', 'N3', 'S3'],
+    ['T', 'J1', 'J3', 'J5', 'S4']
+  ];
+
+  var nodeName;
+  for (nodeName in NODES) {
+    if (Object.prototype.hasOwnProperty.call(NODES, nodeName)) {
+      NODES[nodeName].name = nodeName;
+      NODES[nodeName].outs = [];
+      NODES[nodeName].state = 0;
+    }
+  }
+
+  var EDGE_N = 64;
+  function bezPoint(e, t, out) {
+    var u = 1 - t;
+    var b0 = u * u * u, b1 = 3 * u * u * t, b2 = 3 * u * t * t, b3 = t * t * t;
+    out.x = b0 * e.x0 + b1 * e.x1 + b2 * e.x2 + b3 * e.x3;
+    out.z = b0 * e.z0 + b1 * e.z1 + b2 * e.z2 + b3 * e.z3;
+    var d0 = 3 * u * u, d1 = 6 * u * t, d2 = 3 * t * t;
+    var tx = d0 * (e.x1 - e.x0) + d1 * (e.x2 - e.x1) + d2 * (e.x3 - e.x2);
+    var tz = d0 * (e.z1 - e.z0) + d1 * (e.z2 - e.z1) + d2 * (e.z3 - e.z2);
+    var l = Math.sqrt(tx * tx + tz * tz) || 1;
+    out.tx = tx / l;
+    out.tz = tz / l;
+    return out;
+  }
+  function makeEdge(a, b) {
+    var dx = b.x - a.x;
+    var e = {
+      a: a, b: b,
+      x0: a.x, z0: a.z,
+      x1: a.x + dx * 0.5, z1: a.z,
+      x2: b.x - dx * 0.5, z2: b.z,
+      x3: b.x, z3: b.z,
+      cum: new Float32Array(EDGE_N + 1),
+      len: 0
+    };
+    var p = { x: 0, z: 0, tx: 1, tz: 0 };
+    var px = a.x, pz = a.z;
+    for (var i = 1; i <= EDGE_N; i++) {
+      bezPoint(e, i / EDGE_N, p);
+      e.cum[i] = e.cum[i - 1] + Math.sqrt((p.x - px) * (p.x - px) + (p.z - pz) * (p.z - pz));
+      px = p.x; pz = p.z;
+    }
+    e.len = e.cum[EDGE_N];
+    return e;
+  }
+  function edgeAt(e, s, out) {
+    if (s <= 0) return bezPoint(e, 0, out);
+    if (s >= e.len) return bezPoint(e, 1, out);
+    var lo = 0, hi = EDGE_N;
+    while (hi - lo > 1) {
+      var mid = (lo + hi) >> 1;
+      if (e.cum[mid] <= s) lo = mid; else hi = mid;
+    }
+    var seg = e.cum[lo + 1] - e.cum[lo];
+    var fr = seg > 0 ? (s - e.cum[lo]) / seg : 0;
+    return bezPoint(e, (lo + fr) / EDGE_N, out);
+  }
+
+  var EDGES = [];
+  var EDGE_MAP = {};
+  EDGE_DEFS.forEach(function (d) {
+    var e = makeEdge(NODES[d[0]], NODES[d[1]]);
+    EDGES.push(e);
+    EDGE_MAP[d[0] + '>' + d[1]] = e;
+    NODES[d[0]].outs.push(e);
+  });
+  var START_EDGE = EDGE_MAP['T>J1'];
+
+  // route lengths and common prefixes (used for fair spawning)
+  var ROUTE_EDGES = ROUTES.map(function (r) {
+    var list = [];
+    for (var i = 0; i < r.length - 1; i++) list.push(EDGE_MAP[r[i] + '>' + r[i + 1]]);
+    return list;
+  });
+  var ROUTE_LEN = ROUTE_EDGES.map(function (l) {
+    var s = 0; l.forEach(function (e) { s += e.len; }); return s;
+  });
+  var COMMON = [];
+  (function () {
+    for (var a = 0; a < 4; a++) {
+      COMMON.push([]);
+      for (var b = 0; b < 4; b++) {
+        var s = 0;
+        var n = Math.min(ROUTE_EDGES[a].length, ROUTE_EDGES[b].length);
+        for (var i = 0; i < n; i++) {
+          if (ROUTE_EDGES[a][i] !== ROUTE_EDGES[b][i]) break;
+          s += ROUTE_EDGES[a][i].len;
+        }
+        COMMON[a].push(s);
+      }
+    }
+  })();
+
+  // all track sample points (for scenery placement)
+  var TRACK_PTS = [];
+  (function () {
+    var p = { x: 0, z: 0, tx: 1, tz: 0 };
+    EDGES.forEach(function (e) {
+      for (var s = 0; s <= e.len; s += 1.5) {
+        edgeAt(e, s, p);
+        TRACK_PTS.push(p.x, p.z);
+      }
+    });
+  })();
+  function trackDist(x, z) {
+    var best = 1e9;
+    for (var i = 0; i < TRACK_PTS.length; i += 2) {
+      var dx = TRACK_PTS[i] - x, dz = TRACK_PTS[i + 1] - z;
+      var d = dx * dx + dz * dz;
+      if (d < best) best = d;
+    }
+    return Math.sqrt(best);
+  }
+
+  // ------------------------------------------------------------------ track meshes
+  function buildStrip(edge, s0, s1, off, halfW, y0, y1, topOnly) {
+    var step = 0.5;
+    var n = Math.max(2, Math.ceil((s1 - s0) / step) + 1);
+    var pos = [];
+    var idx = [];
+    var p = { x: 0, z: 0, tx: 1, tz: 0 };
+    var i;
+    for (i = 0; i < n; i++) {
+      var s = s0 + (s1 - s0) * (i / (n - 1));
+      edgeAt(edge, s, p);
+      var nx = -p.tz, nz = p.tx;
+      var lx = p.x + nx * (off - halfW), lz = p.z + nz * (off - halfW);
+      var rx = p.x + nx * (off + halfW), rz = p.z + nz * (off + halfW);
+      // top: L, R
+      pos.push(lx, y1, lz, rx, y1, rz);
+      if (!topOnly) {
+        // left side: top, bottom ; right side: top, bottom
+        pos.push(lx, y1, lz, lx, y0, lz, rx, y1, rz, rx, y0, rz);
+      }
+    }
+    var stride = topOnly ? 2 : 6;
+    for (i = 0; i < n - 1; i++) {
+      var a = i * stride, b = (i + 1) * stride;
+      idx.push(a, a + 1, b, a + 1, b + 1, b);
+      if (!topOnly) {
+        idx.push(a + 2, b + 2, a + 3, a + 3, b + 2, b + 3);
+        idx.push(a + 4, a + 5, b + 4, a + 5, b + 5, b + 4);
+      }
+    }
+    var g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setIndex(idx);
+    g.computeVertexNormals();
+    return g;
+  }
+
+  var ballastMat = new THREE.MeshLambertMaterial({ color: 0x8f8577, side: THREE.DoubleSide });
+  var railMat = new THREE.MeshPhongMaterial({ color: 0x5a606b, shininess: 80, specular: 0x999999, side: THREE.DoubleSide });
+  var sleeperMat = new THREE.MeshLambertMaterial({ color: 0x5b4532 });
+
+  (function buildTracks() {
+    var sleeperCount = 0;
+    EDGES.forEach(function (e) { sleeperCount += Math.floor(e.len / 1.1) + 1; });
+    var sleepers = new THREE.InstancedMesh(new THREE.BoxGeometry(0.28, 0.1, 1.9), sleeperMat, sleeperCount);
+    var dummy = new THREE.Object3D();
+    var k = 0;
+    var p = { x: 0, z: 0, tx: 1, tz: 0 };
+    EDGES.forEach(function (e) {
+      var bed = new THREE.Mesh(buildStrip(e, 0, e.len, 0, 1.25, 0.0, 0.12, false), ballastMat);
+      bed.receiveShadow = true;
+      scene.add(bed);
+      var r1 = new THREE.Mesh(buildStrip(e, 0, e.len, -0.6, 0.08, 0.12, 0.3, false), railMat);
+      var r2 = new THREE.Mesh(buildStrip(e, 0, e.len, 0.6, 0.08, 0.12, 0.3, false), railMat);
+      scene.add(r1); scene.add(r2);
+      var cnt = Math.floor(e.len / 1.1) + 1;
+      for (var i = 0; i < cnt; i++) {
+        edgeAt(e, Math.min(e.len, i * 1.1 + 0.3), p);
+        dummy.position.set(p.x, 0.15, p.z);
+        dummy.rotation.set(0, Math.atan2(-p.tz, p.tx), 0);
+        dummy.updateMatrix();
+        sleepers.setMatrixAt(k++, dummy.matrix);
+      }
+    });
+    sleepers.count = k;
+    sleepers.instanceMatrix.needsUpdate = true;
+    sleepers.receiveShadow = true;
+    scene.add(sleepers);
+  })();
+
+  // ------------------------------------------------------------------ junctions
+  var junctions = [];
+  var hitMeshes = [];
+  var stripActiveMat = new THREE.MeshBasicMaterial({ color: 0xffe53b, side: THREE.DoubleSide });
+  var stripIdleMat = new THREE.MeshBasicMaterial({ color: 0x3d3d3d, side: THREE.DoubleSide });
+  var arrowMat = new THREE.MeshBasicMaterial({ color: 0xffdd33 });
+  var arrowOutlineMat = new THREE.MeshBasicMaterial({ color: 0x1a1a1a, side: THREE.BackSide });
+
+  function makeArrow() {
+    var g = new THREE.Group();
+    var shaftGeo = new THREE.BoxGeometry(2.3, 0.4, 0.75);
+    var headGeo = new THREE.ConeGeometry(1.05, 1.8, 14);
+    var shaft = new THREE.Mesh(shaftGeo, arrowMat);
+    shaft.position.x = -0.55;
+    var head = new THREE.Mesh(headGeo, arrowMat);
+    head.rotation.z = -Math.PI / 2;
+    head.position.x = 1.45;
+    var shaftO = new THREE.Mesh(shaftGeo, arrowOutlineMat);
+    shaftO.position.copy(shaft.position);
+    shaftO.scale.set(1.08, 1.5, 1.35);
+    var headO = new THREE.Mesh(headGeo, arrowOutlineMat);
+    headO.rotation.z = -Math.PI / 2;
+    headO.position.x = 1.5;
+    headO.scale.set(1.22, 1.18, 1.22);
+    g.add(shaftO); g.add(headO); g.add(shaft); g.add(head);
+    return g;
+  }
+
+  (function buildJunctions() {
+    var p = { x: 0, z: 0, tx: 1, tz: 0 };
+    var idx = 0;
+    for (var name in NODES) {
+      if (!Object.prototype.hasOwnProperty.call(NODES, name)) continue;
+      var node = NODES[name];
+      if (node.outs.length !== 2) continue;
+      var j = { node: node, strips: [], dirs: [], angles: [], arrow: null, ring: null, curAngle: 0, idx: idx++, pulse: 0 };
+      for (var o = 0; o < 2; o++) {
+        var e = node.outs[o];
+        var sEnd = Math.min(9.5, e.len - 0.5);
+        var strip = new THREE.Mesh(buildStrip(e, 1.2, sEnd, 0, 0.32, 0, 0.215, true), stripIdleMat);
+        scene.add(strip);
+        j.strips.push(strip);
+        edgeAt(e, Math.min(13, e.len * 0.7), p);
+        var dx = p.x - node.x, dz = p.z - node.z;
+        var l = Math.sqrt(dx * dx + dz * dz) || 1;
+        j.dirs.push({ x: dx / l, z: dz / l });
+        j.angles.push(Math.atan2(-dz, dx));
+      }
+      var ring = new THREE.Mesh(
+        new THREE.RingGeometry(2.6, 3.15, 40),
+        new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.55, side: THREE.DoubleSide, depthWrite: false })
+      );
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.set(node.x, 0.05, node.z);
+      scene.add(ring);
+      j.ring = ring;
+
+      // small signal post beside the junction
+      var post = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 2.2, 8), new THREE.MeshLambertMaterial({ color: 0x333333 }));
+      post.position.set(node.x - 1.2, 1.1, node.z + 2.9);
+      post.castShadow = true;
+      scene.add(post);
+      var lamp = new THREE.Mesh(new THREE.SphereGeometry(0.3, 12, 10), new THREE.MeshBasicMaterial({ color: 0xffe53b }));
+      lamp.position.set(node.x - 1.2, 2.3, node.z + 2.9);
+      scene.add(lamp);
+
+      var arrow = makeArrow();
+      scene.add(arrow);
+      j.arrow = arrow;
+
+      var hit = new THREE.Mesh(
+        new THREE.CylinderGeometry(3.6, 3.6, 6, 16),
+        new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false })
+      );
+      hit.position.set(node.x, 3, node.z);
+      hit.userData.junction = j;
+      scene.add(hit);
+      hitMeshes.push(hit);
+
+      junctions.push(j);
+      applyJunction(j, true);
+    }
+  })();
+
+  function applyJunction(j, instant) {
+    var st = j.node.state;
+    for (var o = 0; o < 2; o++) {
+      var active = (o === st);
+      j.strips[o].material = active ? stripActiveMat : stripIdleMat;
+      j.strips[o].position.y = active ? 0.015 : 0;
+    }
+    if (instant) {
+      j.curAngle = j.angles[st];
+      j.arrow.rotation.y = j.curAngle;
+      j.arrow.position.set(j.node.x + j.dirs[st].x * 4.6, 4.3, j.node.z + j.dirs[st].z * 4.6);
+    }
+  }
+  function toggleJunction(j) {
+    j.node.state = 1 - j.node.state;
+    j.pulse = 1;
+    applyJunction(j, false);
+  }
+
+  // ------------------------------------------------------------------ landscape
+  (function buildLandscape() {
+    // table / meadow
+    var ground = new THREE.Mesh(new THREE.BoxGeometry(156, 2, 92), new THREE.MeshLambertMaterial({ color: 0x79b85a }));
+    ground.position.set(-13, -1, 0);
+    ground.receiveShadow = true;
+    scene.add(ground);
+    var frame = new THREE.Mesh(new THREE.BoxGeometry(160, 3.4, 96), new THREE.MeshLambertMaterial({ color: 0x7a5a36 }));
+    frame.position.set(-13, -1.9, 0);
+    scene.add(frame);
+
+    // meadow patches (slightly different greens)
+    var patchMat1 = new THREE.MeshLambertMaterial({ color: 0x86c466 });
+    var patchMat2 = new THREE.MeshLambertMaterial({ color: 0x6dab50 });
+    for (var i = 0; i < 26; i++) {
+      var pr = 4 + srand() * 7;
+      var patch = new THREE.Mesh(new THREE.CircleGeometry(pr, 18), srand() < 0.5 ? patchMat1 : patchMat2);
+      patch.rotation.x = -Math.PI / 2;
+      patch.position.set(-84 + srand() * 140, 0.012 + i * 0.0006, -38 + srand() * 76);
+      patch.receiveShadow = true;
+      scene.add(patch);
+    }
+
+    // mountain with tunnel
+    var rockMat = new THREE.MeshLambertMaterial({ color: 0x8f8c86, flatShading: true });
+    var mountain = new THREE.Mesh(new THREE.ConeGeometry(22, 28, 12, 1), rockMat);
+    mountain.position.set(-66, 14, 0);
+    mountain.castShadow = true;
+    mountain.receiveShadow = true;
+    scene.add(mountain);
+    var snow = new THREE.Mesh(new THREE.ConeGeometry(6.6, 8.4, 12, 1), new THREE.MeshLambertMaterial({ color: 0xffffff, flatShading: true }));
+    snow.position.set(-66, 24.0, 0);
+    scene.add(snow);
+    var hillMat = new THREE.MeshLambertMaterial({ color: 0x74935c, flatShading: true });
+    var hill1 = new THREE.Mesh(new THREE.ConeGeometry(15, 14, 9, 1), hillMat);
+    hill1.position.set(-69, 7, -27);
+    hill1.castShadow = true; hill1.receiveShadow = true;
+    scene.add(hill1);
+    var hill2 = new THREE.Mesh(new THREE.ConeGeometry(14, 12, 9, 1), hillMat);
+    hill2.position.set(-66, 6, 26);
+    hill2.castShadow = true; hill2.receiveShadow = true;
+    scene.add(hill2);
+    var hill3 = new THREE.Mesh(new THREE.ConeGeometry(11, 16, 8, 1), rockMat);
+    hill3.position.set(-78, 8, -12);
+    hill3.castShadow = true;
+    scene.add(hill3);
+
+    // tunnel portal
+    var stoneMat = new THREE.MeshLambertMaterial({ color: 0x6f6a63 });
+    var pillarGeo = new THREE.BoxGeometry(4.8, 3.5, 0.95);
+    var pl = new THREE.Mesh(pillarGeo, stoneMat);
+    pl.position.set(-45.8, 1.75, -2.02);
+    pl.castShadow = true;
+    scene.add(pl);
+    var pr2 = new THREE.Mesh(pillarGeo, stoneMat);
+    pr2.position.set(-45.8, 1.75, 2.02);
+    pr2.castShadow = true;
+    scene.add(pr2);
+    var lintel = new THREE.Mesh(new THREE.BoxGeometry(4.8, 1.0, 5.0), stoneMat);
+    lintel.position.set(-45.8, 3.95, 0);
+    lintel.castShadow = true;
+    scene.add(lintel);
+    var keystone = new THREE.Mesh(new THREE.BoxGeometry(0.4, 1.3, 1.1), new THREE.MeshLambertMaterial({ color: 0x9a948b }));
+    keystone.position.set(-43.45, 3.95, 0);
+    scene.add(keystone);
+    var hole = new THREE.Mesh(new THREE.PlaneGeometry(3.1, 3.5), new THREE.MeshBasicMaterial({ color: 0x050505, side: THREE.DoubleSide }));
+    hole.rotation.y = Math.PI / 2;
+    hole.position.set(-43.6, 1.75, 0);
+    scene.add(hole);
+
+    // pond
+    var sand = new THREE.Mesh(new THREE.CircleGeometry(6.3, 30), new THREE.MeshLambertMaterial({ color: 0xd9c98f }));
+    sand.rotation.x = -Math.PI / 2;
+    sand.position.set(-15, 0.04, 0);
+    sand.receiveShadow = true;
+    scene.add(sand);
+    var water = new THREE.Mesh(new THREE.CircleGeometry(5.4, 30), new THREE.MeshPhongMaterial({ color: 0x3f9ad6, shininess: 90, specular: 0xffffff }));
+    water.rotation.x = -Math.PI / 2;
+    water.position.set(-15, 0.07, 0);
+    scene.add(water);
+
+    // houses
+    var wallMats = [0xf4ead2, 0xe9d5b5, 0xf7f3ea, 0xe6c9a8].map(function (c) { return new THREE.MeshLambertMaterial({ color: c }); });
+    var roofMats = [0xa8432f, 0x8a3b2a, 0x5d4a3c, 0xb5562f].map(function (c) { return new THREE.MeshLambertMaterial({ color: c, flatShading: true }); });
+    var doorMat = new THREE.MeshLambertMaterial({ color: 0x5a3a22 });
+    var winMat = new THREE.MeshLambertMaterial({ color: 0x9fd4ef, emissive: 0x223844 });
+    var roofGeo = new THREE.ConeGeometry(1, 1, 4, 1);
+    var houseSpots = [[-30, -25], [-22, 27], [-2, -32], [-6, 32], [20, -34], [24, 34], [-39, -14], [-41, 15], [8, -33], [10, 33], [-48, -30], [22, 0]];
+    var houses = [];
+    houseSpots.forEach(function (sp, hi) {
+      if (trackDist(sp[0], sp[1]) < 6.5) return;
+      var w = 3.6 + srand() * 1.6, d = 3.0 + srand() * 1.0, h = 2.3 + srand() * 0.8;
+      var g = new THREE.Group();
+      var body = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), wallMats[hi % wallMats.length]);
+      body.position.y = h / 2;
+      g.add(body);
+      var roof = new THREE.Mesh(roofGeo, roofMats[hi % roofMats.length]);
+      roof.rotation.y = Math.PI / 4;
+      var rg = new THREE.Group();
+      rg.add(roof);
+      rg.scale.set((w + 0.7) / 1.414, 1.7, (d + 0.7) / 1.414);
+      rg.position.y = h + 0.85;
+      g.add(rg);
+      var door = new THREE.Mesh(new THREE.BoxGeometry(0.7, 1.3, 0.1), doorMat);
+      door.position.set(0, 0.65, d / 2 + 0.03);
+      g.add(door);
+      var w1 = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.7, 0.1), winMat);
+      w1.position.set(-w / 2 + 0.85, h * 0.6, d / 2 + 0.03);
+      g.add(w1);
+      var w2 = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.7, 0.1), winMat);
+      w2.position.set(w / 2 - 0.85, h * 0.6, d / 2 + 0.03);
+      g.add(w2);
+      var chimney = new THREE.Mesh(new THREE.BoxGeometry(0.45, 1.2, 0.45), roofMats[2]);
+      chimney.position.set(w * 0.22, h + 1.0, 0);
+      g.add(chimney);
+      g.position.set(sp[0], 0, sp[1]);
+      g.rotation.y = (srand() - 0.5) * 0.8;
+      g.traverse(function (m) { if (m.isMesh) { m.castShadow = true; m.receiveShadow = true; } });
+      scene.add(g);
+      houses.push(sp);
+    });
+
+    // trees
+    var trunkGeo = new THREE.CylinderGeometry(0.18, 0.26, 1.4, 6);
+    var trunkMat = new THREE.MeshLambertMaterial({ color: 0x6b4a2b });
+    var pineGeo1 = new THREE.ConeGeometry(1.25, 2.3, 7);
+    var pineGeo2 = new THREE.ConeGeometry(0.9, 1.9, 7);
+    var pineMat = new THREE.MeshLambertMaterial({ color: 0x2f6e3a, flatShading: true });
+    var pineMat2 = new THREE.MeshLambertMaterial({ color: 0x3b8246, flatShading: true });
+    var leafGeo = new THREE.IcosahedronGeometry(1.35, 0);
+    var leafMat = new THREE.MeshLambertMaterial({ color: 0x4f9f3d, flatShading: true });
+    var leafMat2 = new THREE.MeshLambertMaterial({ color: 0x6fb14a, flatShading: true });
+    var placed = 0, attempts = 0;
+    while (placed < 95 && attempts < 1500) {
+      attempts++;
+      var x = -86 + srand() * 146;
+      var z = -42 + srand() * 84;
+      if (x > 35 && Math.abs(z) < 29) continue; // station area
+      if (trackDist(x, z) < 4.6) continue;
+      var dmx = x + 66, dmz = z;
+      if (Math.sqrt(dmx * dmx + dmz * dmz) < 23.5) continue;
+      if (Math.sqrt((x + 69) * (x + 69) + (z + 27) * (z + 27)) < 15.5) continue;
+      if (Math.sqrt((x + 66) * (x + 66) + (z - 26) * (z - 26)) < 14.5) continue;
+      if (Math.sqrt((x + 78) * (x + 78) + (z + 12) * (z + 12)) < 11.5) continue;
+      if (Math.sqrt((x + 15) * (x + 15) + z * z) < 7.5) continue; // pond
+      var bad = false;
+      for (var h2 = 0; h2 < houses.length; h2++) {
+        var hx = houses[h2][0] - x, hz = houses[h2][1] - z;
+        if (hx * hx + hz * hz < 30) { bad = true; break; }
+      }
+      if (bad) continue;
+      var tg = new THREE.Group();
+      var trunk = new THREE.Mesh(trunkGeo, trunkMat);
+      trunk.position.y = 0.7;
+      tg.add(trunk);
+      if (srand() < 0.55) {
+        var c1 = new THREE.Mesh(pineGeo1, srand() < 0.5 ? pineMat : pineMat2);
+        c1.position.y = 2.2;
+        tg.add(c1);
+        var c2 = new THREE.Mesh(pineGeo2, c1.material);
+        c2.position.y = 3.4;
+        tg.add(c2);
+      } else {
+        var crown = new THREE.Mesh(leafGeo, srand() < 0.5 ? leafMat : leafMat2);
+        crown.position.y = 2.4;
+        crown.rotation.set(srand() * 3, srand() * 3, 0);
+        tg.add(crown);
+      }
+      var sc = 0.8 + srand() * 0.7;
+      tg.scale.set(sc, sc, sc);
+      tg.position.set(x, 0, z);
+      tg.traverse(function (m) { if (m.isMesh) m.castShadow = true; });
+      scene.add(tg);
+      placed++;
+    }
+
+    // clouds
+    var cloudMat = new THREE.MeshLambertMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 });
+    var cloudGeo = new THREE.SphereGeometry(1, 10, 8);
+    for (var c = 0; c < 5; c++) {
+      var cg = new THREE.Group();
+      for (var b = 0; b < 4; b++) {
+        var blob = new THREE.Mesh(cloudGeo, cloudMat);
+        blob.position.set(b * 3.2 - 5, srand() * 1.2, srand() * 2 - 1);
+        var bs = 2.4 + srand() * 1.8;
+        blob.scale.set(bs, bs * 0.6, bs * 0.8);
+        cg.add(blob);
+      }
+      cg.position.set(-90 + c * 38 + srand() * 10, 46 + srand() * 8, -70 - srand() * 30);
+      scene.add(cg);
+      clouds.push(cg);
+    }
+  })();
+
+  // ------------------------------------------------------------------ stations
+  var stationPos = [];
+  (function buildStations() {
+    var names = ['S1', 'S2', 'S3', 'S4'];
+    var wallMat = new THREE.MeshLambertMaterial({ color: 0xf6f1e4 });
+    var darkMat = new THREE.MeshLambertMaterial({ color: 0x3a3a3a });
+    var roofGeo = new THREE.ConeGeometry(1, 1, 4, 1);
+    names.forEach(function (nm) {
+      var node = NODES[nm];
+      var c = node.station;
+      var sgn = node.z < 0 ? -1 : 1;
+      var colMat = new THREE.MeshLambertMaterial({ color: COLORS[c], flatShading: true });
+      var colGlow = new THREE.MeshLambertMaterial({ color: COLORS[c], emissive: COLORS[c], emissiveIntensity: 0.45 });
+      // platform
+      var plat = new THREE.Mesh(new THREE.BoxGeometry(13, 0.5, 5), new THREE.MeshLambertMaterial({ color: 0xcfc8ba }));
+      plat.position.set(45.5, 0.25, node.z + sgn * 3.95);
+      plat.receiveShadow = true; plat.castShadow = true;
+      scene.add(plat);
+      var edge = new THREE.Mesh(new THREE.BoxGeometry(13, 0.06, 0.7), colGlow);
+      edge.position.set(45.5, 0.53, node.z + sgn * 1.85);
+      scene.add(edge);
+      // colored mat between the rails so the color is obvious from above
+      var pad = new THREE.Mesh(new THREE.BoxGeometry(12, 0.04, 0.7), colGlow);
+      pad.position.set(45, 0.2, node.z);
+      scene.add(pad);
+      // building
+      var body = new THREE.Mesh(new THREE.BoxGeometry(6.4, 2.6, 2.6), wallMat);
+      body.position.set(46, 0.5 + 1.3, node.z + sgn * 4.8);
+      body.castShadow = true; body.receiveShadow = true;
+      scene.add(body);
+      var rg = new THREE.Group();
+      var roof = new THREE.Mesh(roofGeo, colMat);
+      roof.rotation.y = Math.PI / 4;
+      roof.castShadow = true;
+      rg.add(roof);
+      rg.scale.set(7.4 / 1.414, 1.8, 3.6 / 1.414);
+      rg.position.set(46, 0.5 + 2.6 + 0.9, node.z + sgn * 4.8);
+      scene.add(rg);
+      for (var w = -1; w <= 1; w++) {
+        var win = new THREE.Mesh(new THREE.BoxGeometry(0.9, 1.0, 0.1), darkMat);
+        win.position.set(46 + w * 2, 1.9, node.z + sgn * (4.8 - 1.33));
+        scene.add(win);
+      }
+      // signal mast with colored ball
+      var mast = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 6, 8), darkMat);
+      mast.position.set(40.5, 3.5, node.z + sgn * 4.8);
+      mast.castShadow = true;
+      scene.add(mast);
+      var ball = new THREE.Mesh(new THREE.SphereGeometry(1.0, 18, 14), colGlow);
+      ball.position.set(40.5, 7.0, node.z + sgn * 4.8);
+      ball.castShadow = true;
+      scene.add(ball);
+      // buffer stop
+      var buf = new THREE.Mesh(new THREE.BoxGeometry(0.7, 1.3, 2.2), colMat);
+      buf.position.set(52.1, 0.75, node.z);
+      buf.castShadow = true;
+      scene.add(buf);
+      stationPos[c] = { x: 48, y: 5, z: node.z };
+    });
+  })();
+
+  // ------------------------------------------------------------------ trains
+  var bodyMats = COLORS.map(function (c) { return new THREE.MeshPhongMaterial({ color: c, shininess: 60 }); });
+  var wagonMats = COLORS.map(function (c) {
+    var col = new THREE.Color(c);
+    col.lerp(new THREE.Color(0xffffff), 0.22);
+    return new THREE.MeshPhongMaterial({ color: col, shininess: 40 });
+  });
+  var blackMat = new THREE.MeshLambertMaterial({ color: 0x1f1f22 });
+  var chassisMat = new THREE.MeshLambertMaterial({ color: 0x33363c });
+  var roofMatT = new THREE.MeshLambertMaterial({ color: 0x2b2d33 });
+  var lampMat = new THREE.MeshBasicMaterial({ color: 0xfff6b0 });
+  var G = {
+    wheel: new THREE.CylinderGeometry(0.32, 0.32, 0.14, 12),
+    locoChassis: new THREE.BoxGeometry(3.0, 0.25, 1.4),
+    boiler: new THREE.CylinderGeometry(0.55, 0.55, 1.9, 14),
+    cabin: new THREE.BoxGeometry(1.05, 1.5, 1.4),
+    cabRoof: new THREE.BoxGeometry(1.3, 0.14, 1.6),
+    chimney: new THREE.CylinderGeometry(0.2, 0.15, 0.65, 10),
+    lamp: new THREE.SphereGeometry(0.17, 8, 6),
+    wagonChassis: new THREE.BoxGeometry(2.6, 0.25, 1.4),
+    wagonBody: new THREE.BoxGeometry(2.4, 1.05, 1.36),
+    wagonRoof: new THREE.BoxGeometry(2.5, 0.12, 1.46),
+    stripe: new THREE.BoxGeometry(2.42, 0.18, 1.38)
+  };
+  var whiteStripeMat = new THREE.MeshLambertMaterial({ color: 0xf5f5f5 });
+
+  function addWheels(g, xs) {
+    xs.forEach(function (x) {
+      [-0.72, 0.72].forEach(function (z) {
+        var w = new THREE.Mesh(G.wheel, blackMat);
+        w.rotation.x = Math.PI / 2;
+        w.position.set(x, 0.62, z);
+        g.add(w);
+      });
+    });
+  }
+  function makeLoco(c) {
+    var g = new THREE.Group();
+    var ch = new THREE.Mesh(G.locoChassis, chassisMat);
+    ch.position.y = 0.78;
+    g.add(ch);
+    var boiler = new THREE.Mesh(G.boiler, bodyMats[c]);
+    boiler.rotation.z = Math.PI / 2;
+    boiler.position.set(0.5, 1.45, 0);
+    g.add(boiler);
+    var cabin = new THREE.Mesh(G.cabin, bodyMats[c]);
+    cabin.position.set(-0.95, 1.65, 0);
+    g.add(cabin);
+    var cr = new THREE.Mesh(G.cabRoof, roofMatT);
+    cr.position.set(-0.95, 2.47, 0);
+    g.add(cr);
+    var chim = new THREE.Mesh(G.chimney, blackMat);
+    chim.position.set(1.05, 2.25, 0);
+    g.add(chim);
+    var lamp = new THREE.Mesh(G.lamp, lampMat);
+    lamp.position.set(1.47, 1.45, 0);
+    g.add(lamp);
+    addWheels(g, [-1.0, 0, 1.0]);
+    g.traverse(function (m) { if (m.isMesh) m.castShadow = true; });
+    return g;
+  }
+  function makeWagon(c) {
+    var g = new THREE.Group();
+    var ch = new THREE.Mesh(G.wagonChassis, chassisMat);
+    ch.position.y = 0.78;
+    g.add(ch);
+    var body = new THREE.Mesh(G.wagonBody, wagonMats[c]);
+    body.position.y = 1.43;
+    g.add(body);
+    var stripe = new THREE.Mesh(G.stripe, whiteStripeMat);
+    stripe.position.y = 1.5;
+    g.add(stripe);
+    var roof = new THREE.Mesh(G.wagonRoof, bodyMats[c]);
+    roof.position.y = 2.0;
+    g.add(roof);
+    addWheels(g, [-0.8, 0.8]);
+    g.traverse(function (m) { if (m.isMesh) m.castShadow = true; });
+    return g;
+  }
+
+  // ------------------------------------------------------------------ game state
+  var clouds = clouds || [];
+  var state = 'start'; // 'start' | 'playing' | 'over'
+  var trains = [];
+  var particles = [];
+  var score = 0, lives = 3, elapsed = 0, spawnTimer = 1, nextColor = 0, best = 0;
+  var tmpP = { x: 0, z: 0, tx: 1, tz: 0 };
+  var tmpV = new THREE.Vector3();
+
+  var elScore = document.getElementById('score');
+  var elLives = document.getElementById('lives');
+  var elNext = document.getElementById('nextDot');
+  var elTempo = document.getElementById('tempo');
+  var elStart = document.getElementById('startScreen');
+  var elOver = document.getElementById('overScreen');
+  var elFlash = document.getElementById('flash');
+
+  function speedNow() { return 7 + Math.min(10, elapsed * 0.05); }
+  function intervalNow() { return Math.max(2.4, 7.0 - elapsed * 0.03); }
+
+  function updateHud() {
+    elScore.textContent = String(score);
+    var h = '';
+    for (var i = 0; i < 3; i++) h += (i < lives) ? '♥' : '<span class="lost">♥</span>';
+    elLives.innerHTML = h;
+    elNext.style.background = COLOR_CSS[nextColor];
+    elTempo.textContent = 'x' + (speedNow() / 7).toFixed(1);
+  }
+
+  function popup(text, color, x, y, z) {
+    tmpV.set(x, y, z).project(camera);
+    var el = document.createElement('div');
+    el.className = 'pop';
+    el.textContent = text;
+    el.style.color = color;
+    el.style.left = ((tmpV.x * 0.5 + 0.5) * window.innerWidth) + 'px';
+    el.style.top = ((-tmpV.y * 0.5 + 0.5) * window.innerHeight) + 'px';
+    document.body.appendChild(el);
+    setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 1150);
+  }
+
+  function removeTrain(tr) {
+    for (var i = 0; i < tr.cars.length; i++) scene.remove(tr.cars[i]);
+  }
+  function clearParticles() {
+    for (var i = 0; i < particles.length; i++) {
+      scene.remove(particles[i].mesh);
+      particles[i].mesh.material.dispose();
+    }
+    particles.length = 0;
+  }
+
+  function resetGame() {
+    for (var i = 0; i < trains.length; i++) removeTrain(trains[i]);
+    trains.length = 0;
+    clearParticles();
+    score = 0; lives = 3; elapsed = 0; spawnTimer = 1.0;
+    nextColor = Math.floor(Math.random() * 4);
+    for (var k = 0; k < junctions.length; k++) {
+      junctions[k].node.state = 0;
+      applyJunction(junctions[k], true);
+    }
+    updateHud();
+  }
+
+  function startGame() {
+    resetGame();
+    state = 'playing';
+    elStart.classList.add('hidden');
+    elOver.classList.add('hidden');
+  }
+
+  function gameOver(reason) {
+    if (state !== 'playing') return;
+    state = 'over';
+    if (score > best) best = score;
+    document.getElementById('overReason').textContent = reason;
+    document.getElementById('finalScore').textContent = String(score);
+    document.getElementById('bestLine').textContent = 'Best this session: ' + best;
+    setTimeout(function () {
+      if (state === 'over') elOver.classList.remove('hidden');
+    }, 1000);
+  }
+
+  // choose a speed factor so that the new train cannot rear-end an earlier one
+  // as long as both are routed directly to their own stations
+  function pickFactor(color, len) {
+    var f = 0.8 + Math.random() * 0.45;
+    for (var i = 0; i < trains.length; i++) {
+      var A = trains[i];
+      if (A.arrived) continue;
+      if (A.dist - A.len < 7) return -1; // tunnel mouth still occupied
+      if (f <= A.f) continue;
+      var Lc = COMMON[color][A.color];
+      var g = A.dist;
+      var fmax;
+      if (A.color === color) {
+        fmax = A.f * (Lc - A.len - 9) / Math.max(1, Lc - g);
+      } else {
+        if (g - A.len > Lc) continue;
+        fmax = A.f * (Lc - 9) / Math.max(1, Lc + A.len - g);
+      }
+      if (fmax < f) f = fmax;
+    }
+    return f;
+  }
+
+  function trySpawn() {
+    var color = nextColor;
+    var nWag = 2 + (Math.random() < 0.4 ? 1 : 0);
+    var offs = [1.5];
+    for (var w = 0; w < nWag; w++) offs.push(4.7 + w * 3.0);
+    var len = offs[offs.length - 1] + 1.3;
+    var f = pickFactor(color, len);
+    if (f < 0.72) return false;
+    var tr = {
+      color: color, f: f, len: len, offs: offs, cars: [], pos: [],
+      dist: 1.0, path: [START_EDGE], starts: [0], pathLen: START_EDGE.len,
+      arrived: false, fade: 0
+    };
+    for (var i = 0; i < offs.length; i++) {
+      var car = (i === 0) ? makeLoco(color) : makeWagon(color);
+      car.visible = false;
+      scene.add(car);
+      tr.cars.push(car);
+      tr.pos.push({ x: -100, z: 0 });
+    }
+    trains.push(tr);
+    placeTrain(tr);
+    nextColor = Math.floor(Math.random() * 4);
+    return true;
+  }
+
+  function trainPoint(tr, d, out) {
+    if (d < 0) {
+      out.x = NODES.T.x + d; out.z = NODES.T.z; out.tx = 1; out.tz = 0;
+      return out;
+    }
+    var i = tr.path.length - 1;
+    while (i > 0 && tr.starts[i] > d) i--;
+    return edgeAt(tr.path[i], d - tr.starts[i], out);
+  }
+
+  function placeTrain(tr) {
+    for (var i = 0; i < tr.cars.length; i++) {
+      trainPoint(tr, tr.dist - tr.offs[i], tmpP);
+      var car = tr.cars[i];
+      car.position.set(tmpP.x, 0, tmpP.z);
+      car.rotation.y = Math.atan2(-tmpP.tz, tmpP.tx);
+      car.visible = tmpP.x > -45.2;
+      tr.pos[i].x = tmpP.x;
+      tr.pos[i].z = tmpP.z;
+    }
+  }
+
+  function arrive(tr, node) {
+    tr.arrived = true;
+    var sp = stationPos[node.station];
+    if (node.station === tr.color) {
+      score++;
+      popup('+1', '#7dff8a', sp.x, sp.y, sp.z);
+    } else {
+      lives--;
+      popup('− ♥', '#ff6b6b', sp.x, sp.y, sp.z);
+      elFlash.style.opacity = '1';
+      setTimeout(function () { elFlash.style.opacity = '0'; }, 180);
+    }
+    updateHud();
+    if (lives <= 0) gameOver('No lives left');
+  }
+
+  function explode(x, z) {
+    var geo = new THREE.SphereGeometry(0.6, 8, 6);
+    var cols = [0xffb300, 0xff6d00, 0xffffff, 0x555555, 0xffd54f];
+    for (var i = 0; i < 26; i++) {
+      var m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: cols[i % cols.length], transparent: true, opacity: 1 }));
+      m.position.set(x, 1.2, z);
+      var a = Math.random() * Math.PI * 2;
+      var sp = 2 + Math.random() * 7;
+      scene.add(m);
+      particles.push({ mesh: m, vx: Math.cos(a) * sp, vy: 4 + Math.random() * 8, vz: Math.sin(a) * sp, life: 1 });
+    }
+  }
+
+  function checkCollisions() {
+    var R2 = 2.2 * 2.2;
+    for (var i = 0; i < trains.length; i++) {
+      var A = trains[i];
+      if (A.arrived) continue;
+      for (var j = i + 1; j < trains.length; j++) {
+        var B = trains[j];
+        if (B.arrived) continue;
+        for (var a = 0; a < A.pos.length; a++) {
+          var pa = A.pos[a];
+          if (pa.x < -44) continue;
+          for (var b = 0; b < B.pos.length; b++) {
+            var pb = B.pos[b];
+            if (pb.x < -44) continue;
+            var dx = pa.x - pb.x, dz = pa.z - pb.z;
+            if (dx * dx + dz * dz < R2) {
+              explode((pa.x + pb.x) / 2, (pa.z + pb.z) / 2);
+              popup('CRASH!', '#ffd54f', (pa.x + pb.x) / 2, 5, (pa.z + pb.z) / 2);
+              gameOver('Two trains collided!');
+              return;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  function updateGame(dt) {
+    elapsed += dt;
+    var v = speedNow();
+    spawnTimer -= dt;
+    if (spawnTimer <= 0) {
+      if (trySpawn()) { spawnTimer = intervalNow(); updateHud(); }
+      else spawnTimer = 0.4;
+    }
+    var i;
+    for (i = 0; i < trains.length; i++) {
+      var tr = trains[i];
+      if (tr.arrived) {
+        tr.fade += dt * 3.2;
+        var s = Math.max(0.001, 1 - tr.fade);
+        for (var c = 0; c < tr.cars.length; c++) tr.cars[c].scale.set(s, s, s);
+        continue;
+      }
+      tr.dist += v * tr.f * dt;
+      while (tr.dist >= tr.pathLen) {
+        var node = tr.path[tr.path.length - 1].b;
+        if (node.outs.length === 0) {
+          tr.dist = tr.pathLen;
+          arrive(tr, node);
+          break;
+        }
+        var next = node.outs[node.outs.length > 1 ? node.state : 0];
+        tr.path.push(next);
+        tr.starts.push(tr.pathLen);
+        tr.pathLen += next.len;
+      }
+      placeTrain(tr);
+    }
+    for (i = trains.length - 1; i >= 0; i--) {
+      if (trains[i].arrived && trains[i].fade >= 1) {
+        removeTrain(trains[i]);
+        trains.splice(i, 1);
+      }
+    }
+    if (state === 'playing') checkCollisions();
+    if (((elapsed * 2) | 0) !== (((elapsed - dt) * 2) | 0)) updateHud();
+  }
+
+  // ------------------------------------------------------------------ input
+  var raycaster = new THREE.Raycaster();
+  var ndc = new THREE.Vector2();
+  var drag = { active: false, button: 0, sx: 0, sy: 0, lx: 0, ly: 0, moved: false };
+  var hovered = null;
+  var dom = renderer.domElement;
+
+  function pickJunction(cx, cy) {
+    ndc.set((cx / window.innerWidth) * 2 - 1, -(cy / window.innerHeight) * 2 + 1);
+    raycaster.setFromCamera(ndc, camera);
+    var hits = raycaster.intersectObjects(hitMeshes, false);
+    return hits.length ? hits[0].object.userData.junction : null;
+  }
+
+  dom.addEventListener('pointerdown', function (ev) {
+    drag.active = true;
+    drag.button = ev.button;
+    drag.sx = drag.lx = ev.clientX;
+    drag.sy = drag.ly = ev.clientY;
+    drag.moved = false;
+    try { dom.setPointerCapture(ev.pointerId); } catch (e) { /* ignore */ }
+  });
+  dom.addEventListener('pointermove', function (ev) {
+    if (drag.active) {
+      var dx = ev.clientX - drag.lx, dy = ev.clientY - drag.ly;
+      drag.lx = ev.clientX; drag.ly = ev.clientY;
+      if (!drag.moved && Math.abs(ev.clientX - drag.sx) + Math.abs(ev.clientY - drag.sy) > 6) drag.moved = true;
+      if (drag.moved) {
+        if (drag.button === 2 || ev.shiftKey) {
+          var k = camR * 0.0016;
+          var rx = Math.cos(camTheta), rz = -Math.sin(camTheta);
+          var fx = -Math.sin(camTheta), fz = -Math.cos(camTheta);
+          camTarget.x += (-dx * rx + dy * fx) * k;
+          camTarget.z += (-dx * rz + dy * fz) * k;
+          camTarget.x = Math.max(-70, Math.min(50, camTarget.x));
+          camTarget.z = Math.max(-40, Math.min(40, camTarget.z));
+        } else {
+          camTheta -= dx * 0.0055;
+          camPhi -= dy * 0.0055;
+          camPhi = Math.max(0.12, Math.min(1.42, camPhi));
+        }
+        updateCamera();
+      }
+    } else {
+      var j = (state === 'playing') ? pickJunction(ev.clientX, ev.clientY) : null;
+      hovered = j;
+      dom.style.cursor = j ? 'pointer' : 'grab';
+    }
+  });
+  function endDrag(ev) {
+    if (!drag.active) return;
+    drag.active = false;
+    try { dom.releasePointerCapture(ev.pointerId); } catch (e) { /* ignore */ }
+    if (!drag.moved && drag.button === 0 && state === 'playing' && ev.type === 'pointerup') {
+      var j = pickJunction(ev.clientX, ev.clientY);
+      if (j) toggleJunction(j);
+    }
+  }
+  dom.addEventListener('pointerup', endDrag);
+  dom.addEventListener('pointercancel', endDrag);
+  dom.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });
+  dom.addEventListener('wheel', function (ev) {
+    ev.preventDefault();
+    var f = Math.exp((ev.deltaY > 0 ? 1 : -1) * 0.1);
+    camR = Math.max(28, Math.min(210, camR * f));
+    updateCamera();
+  }, { passive: false });
+
+  window.addEventListener('resize', function () {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  document.getElementById('startBtn').addEventListener('click', startGame);
+  document.getElementById('restartBtn').addEventListener('click', startGame);
+
+  // ------------------------------------------------------------------ main loop
+  var lastT = performance.now();
+  var timeAcc = 0;
+
+  function animate(now) {
+    requestAnimationFrame(animate);
+    var dt = (now - lastT) / 1000;
+    lastT = now;
+    if (!(dt > 0)) dt = 0;
+    if (dt > 0.05) dt = 0.05;
+    timeAcc += dt;
+
+    if (state === 'playing') updateGame(dt);
+
+    // junction arrows
+    var k = 1 - Math.exp(-14 * dt);
+    for (var i = 0; i < junctions.length; i++) {
+      var j = junctions[i];
+      var st = j.node.state;
+      var da = j.angles[st] - j.curAngle;
+      while (da > Math.PI) da -= Math.PI * 2;
+      while (da < -Math.PI) da += Math.PI * 2;
+      j.curAngle += da * k;
+      j.arrow.rotation.y = j.curAngle;
+      var tx = j.node.x + j.dirs[st].x * 4.6, tz = j.node.z + j.dirs[st].z * 4.6;
+      j.arrow.position.x += (tx - j.arrow.position.x) * k;
+      j.arrow.position.z += (tz - j.arrow.position.z) * k;
+      j.arrow.position.y = 4.3 + Math.sin(timeAcc * 3 + j.idx) * 0.25;
+      j.pulse = Math.max(0, j.pulse - dt * 3);
+      var sc = 1 + j.pulse * 0.45;
+      j.arrow.scale.set(sc, sc, sc);
+      j.ring.material.opacity = (hovered === j ? 0.95 : 0.5) + j.pulse * 0.3;
+      var rs = (hovered === j ? 1.08 : 1) + j.pulse * 0.2;
+      j.ring.scale.set(rs, rs, 1);
+    }
+
+    // particles
+    for (var p = particles.length - 1; p >= 0; p--) {
+      var pt = particles[p];
+      pt.life -= dt * 0.8;
+      pt.vy -= 14 * dt;
+      pt.mesh.position.x += pt.vx * dt;
+      pt.mesh.position.y += pt.vy * dt;
+      pt.mesh.position.z += pt.vz * dt;
+      if (pt.mesh.position.y < 0.3) { pt.mesh.position.y = 0.3; pt.vy *= -0.4; }
+      var ps = 0.6 + (1 - pt.life) * 1.6;
+      pt.mesh.scale.set(ps, ps, ps);
+      pt.mesh.material.opacity = Math.max(0, pt.life);
+      if (pt.life <= 0) {
+        scene.remove(pt.mesh);
+        pt.mesh.material.dispose();
+        particles.splice(p, 1);
+      }
+    }
+
+    // clouds drift
+    for (var c = 0; c < clouds.length; c++) {
+      clouds[c].position.x += dt * 1.2;
+      if (clouds[c].position.x > 130) clouds[c].position.x = -150;
+    }
+
+    renderer.render(scene, camera);
+  }
+
+  updateHud();
+  requestAnimationFrame(animate);
+})();
+</script>
+</body>
+</html>
