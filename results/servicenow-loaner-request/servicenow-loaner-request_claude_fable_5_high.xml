@@ -1,0 +1,445 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<unload unload_date="2026-11-16 00:00:00">
+<sys_remote_update_set action="INSERT_OR_UPDATE">
+<application display_value="Global">global</application>
+<application_name>Global</application_name>
+<application_scope>global</application_scope>
+<application_version/>
+<collisions>0</collisions>
+<description>Loan Desk - stands up the IT equipment loan desk as a Global-scope custom application (six stories).
+Story 1 - Loan Request table (schema foundation): u_loan_request extends task with requester, asset tag, loan status, due date, overdue and notes, LN auto-numbering, plus a Loan Desk application menu with a Loan Requests module. Test: open Loan Desk &gt; Loan Requests, click New, save with a requester and asset tag and expect number LN0001001, loan status defaulting to requested, requester and asset tag mandatory.
+Story 2 - Approval gatekeeper business rule: a before insert/update rule aborts requested -&gt; returned and aborts approval without a due date, server-side. Test: on a requested loan set loan status to returned and save (error message, record unchanged, also when done via REST or import); set approved with an empty due date (error); then set a due date, save as approved, save as returned (both succeed).
+Story 3 - Form usability client scripts: notes stay hidden until a requester is chosen; a warning appears when loan status flips to returned while due date is empty. Test: open a new form (Notes hidden), pick a requester (Notes appears), set loan status to returned with an empty due date (warning on due date), fill the due date and change status again (no warning).
+Story 4 - Overdue loan sweep: a scheduled script execution runs daily at 02:00, sets overdue=true on approved loans past their due date (idempotent, returned and not-yet-due loans untouched) and fires u_loan_request.overdue, which sends the "Loan Overdue Alert" email to the requester naming asset tag and due date. Test: create an approved loan due yesterday, open the job and click Execute Now, confirm overdue is true, run it again (no further change), and check System Mailboxes / Outbox for the email; a returned loan and a loan due tomorrow stay untouched.
+Story 5 - Roles and ACLs: roles lab_borrower and lab_supervisor; borrower may read and create but not write, delete or approve (write on u_loan_status is supervisor-only); supervisor may read, create, write, delete and approve; users without either role may not read. Test: impersonate a user with each role and one with neither and verify list visibility, New, editing, deleting and whether loan status can be changed to approved.
+Story 6 - Form and list layout: form sections Identification (number, requester, asset tag), Scheduling (loan status, due date, overdue with overdue read-only) and Remarks (notes); the list shows number, requester, asset tag, loan status, due date, overdue. Test: open a Loan Request and verify the three titled sections and the read-only overdue flag, then open the list and verify the six columns.</description>
+<inserted>0</inserted>
+<name>Loan Desk</name>
+<origin_sys_id/>
+<release_date/>
+<remote_sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b3c</remote_sys_id>
+<state>loaded</state>
+<summary/>
+<sys_class_name>sys_remote_update_set</sys_class_name>
+<sys_created_by>admin</sys_created_by>
+<sys_created_on>2026-11-16 00:00:00</sys_created_on>
+<sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b01</sys_id>
+<update_source/>
+<updated>0</updated>
+</sys_remote_update_set>
+<sys_update_xml action="INSERT_OR_UPDATE">
+<action>INSERT_OR_UPDATE</action>
+<application display_value="Global">global</application>
+<application_name>Global</application_name>
+<application_scope>global</application_scope>
+<category>customer</category>
+<name>u_loan_request</name>
+<payload><![CDATA[<?xml version="1.0" encoding="UTF-8"?><database><element active="true" audit="true" extends="task" label="Loan Request" name="u_loan_request" sys_id="4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b02" type="collection"><element label="Requester" mandatory="true" max_length="32" name="u_requester" reference="sys_user" sys_id="4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b03" type="reference"/><element display="true" label="Asset tag" mandatory="true" max_length="40" name="u_asset_tag" sys_id="4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b04" type="string"/><element choice="3" default="requested" label="Loan status" max_length="40" name="u_loan_status" sys_id="4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b05" type="string"/><element label="Due date" max_length="10" name="u_due_date" sys_id="4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b06" type="glide_date"/><element default="false" label="Overdue" max_length="40" name="u_overdue" sys_id="4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b07" type="boolean"/><element label="Notes" max_length="4000" name="u_notes" sys_id="4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b08" type="string"/></element></database>]]></payload>
+<remote_update_set display_value="Loan Desk">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b01</remote_update_set>
+<replace_on_upgrade>false</replace_on_upgrade>
+<sys_id>7e2d4c6b8a9f0e1d2c3b4a5968778a01</sys_id>
+<target_name>u_loan_request</target_name>
+<type>Table</type>
+<update_domain>global</update_domain>
+</sys_update_xml>
+<sys_update_xml action="INSERT_OR_UPDATE">
+<action>INSERT_OR_UPDATE</action>
+<application display_value="Global">global</application>
+<application_name>Global</application_name>
+<application_scope>global</application_scope>
+<category>customer</category>
+<name>sys_choice_u_loan_request_u_loan_status</name>
+<payload><![CDATA[<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_choice"><sys_choice action="INSERT_OR_UPDATE"><element>u_loan_status</element><inactive>false</inactive><label>Requested</label><language>en</language><name>u_loan_request</name><sequence>0</sequence><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b09</sys_id><value>requested</value></sys_choice><sys_choice action="INSERT_OR_UPDATE"><element>u_loan_status</element><inactive>false</inactive><label>Approved</label><language>en</language><name>u_loan_request</name><sequence>1</sequence><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b0a</sys_id><value>approved</value></sys_choice><sys_choice action="INSERT_OR_UPDATE"><element>u_loan_status</element><inactive>false</inactive><label>Rejected</label><language>en</language><name>u_loan_request</name><sequence>2</sequence><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b0b</sys_id><value>rejected</value></sys_choice><sys_choice action="INSERT_OR_UPDATE"><element>u_loan_status</element><inactive>false</inactive><label>Returned</label><language>en</language><name>u_loan_request</name><sequence>3</sequence><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b0c</sys_id><value>returned</value></sys_choice></record_update>]]></payload>
+<remote_update_set display_value="Loan Desk">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b01</remote_update_set>
+<replace_on_upgrade>false</replace_on_upgrade>
+<sys_id>7e2d4c6b8a9f0e1d2c3b4a5968778a02</sys_id>
+<target_name>u_loan_request.u_loan_status</target_name>
+<type>Choice</type>
+<update_domain>global</update_domain>
+</sys_update_xml>
+<sys_update_xml action="INSERT_OR_UPDATE">
+<action>INSERT_OR_UPDATE</action>
+<application display_value="Global">global</application>
+<application_name>Global</application_name>
+<application_scope>global</application_scope>
+<category>customer</category>
+<name>sys_number_4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b0d</name>
+<payload><![CDATA[<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_number"><sys_number action="INSERT_OR_UPDATE"><category display_value="Loan Request">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b02</category><maximum_digits>7</maximum_digits><number>1000</number><prefix>LN</prefix><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b0d</sys_id></sys_number></record_update>]]></payload>
+<remote_update_set display_value="Loan Desk">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b01</remote_update_set>
+<replace_on_upgrade>false</replace_on_upgrade>
+<sys_id>7e2d4c6b8a9f0e1d2c3b4a5968778a03</sys_id>
+<target_name>LN</target_name>
+<type>Number</type>
+<update_domain>global</update_domain>
+</sys_update_xml>
+<sys_update_xml action="INSERT_OR_UPDATE">
+<action>INSERT_OR_UPDATE</action>
+<application display_value="Global">global</application>
+<application_name>Global</application_name>
+<application_scope>global</application_scope>
+<category>customer</category>
+<name>sys_app_application_4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b0e</name>
+<payload><![CDATA[<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_app_application"><sys_app_application action="INSERT_OR_UPDATE"><active>true</active><category/><hint>Equipment loan desk</hint><order>100</order><roles/><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b0e</sys_id><title>Loan Desk</title></sys_app_application></record_update>]]></payload>
+<remote_update_set display_value="Loan Desk">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b01</remote_update_set>
+<replace_on_upgrade>false</replace_on_upgrade>
+<sys_id>7e2d4c6b8a9f0e1d2c3b4a5968778a04</sys_id>
+<target_name>Loan Desk</target_name>
+<type>Application Menu</type>
+<update_domain>global</update_domain>
+</sys_update_xml>
+<sys_update_xml action="INSERT_OR_UPDATE">
+<action>INSERT_OR_UPDATE</action>
+<application display_value="Global">global</application>
+<application_name>Global</application_name>
+<application_scope>global</application_scope>
+<category>customer</category>
+<name>sys_app_module_4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b0f</name>
+<payload><![CDATA[<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_app_module"><sys_app_module action="INSERT_OR_UPDATE"><active>true</active><application display_value="Loan Desk">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b0e</application><filter/><link_type>LIST</link_type><name>u_loan_request</name><order>100</order><roles/><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b0f</sys_id><title>Loan Requests</title><view_name/></sys_app_module></record_update>]]></payload>
+<remote_update_set display_value="Loan Desk">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b01</remote_update_set>
+<replace_on_upgrade>false</replace_on_upgrade>
+<sys_id>7e2d4c6b8a9f0e1d2c3b4a5968778a05</sys_id>
+<target_name>Loan Requests</target_name>
+<type>Module</type>
+<update_domain>global</update_domain>
+</sys_update_xml>
+<sys_update_xml action="INSERT_OR_UPDATE">
+<action>INSERT_OR_UPDATE</action>
+<application display_value="Global">global</application>
+<application_name>Global</application_name>
+<application_scope>global</application_scope>
+<category>customer</category>
+<name>sys_script_4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b10</name>
+<payload><![CDATA[<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script"><sys_script action="INSERT_OR_UPDATE"><abort_action>false</abort_action><action_delete>false</action_delete><action_insert>true</action_insert><action_query>false</action_query><action_update>true</action_update><active>true</active><add_message>false</add_message><advanced>true</advanced><collection>u_loan_request</collection><condition/><description>Server-side gatekeeper: a loan may not go straight from requested to returned, and approval requires a due date. Runs before insert and update, so it also covers REST and imports.</description><filter_condition/><is_rest>false</is_rest><name>Loan Request approval gatekeeper</name><order>100</order><priority>100</priority><script>(function executeRule(current, previous /*null when async*/) {
+	if (current.u_loan_status.changesTo('returned')) {
+		var prior = current.isNewRecord() ? 'requested' : previous.u_loan_status.toString();
+		if (prior === 'requested') {
+			gs.addErrorMessage('A loan request must be approved before it can be returned.');
+			current.setAbortAction(true);
+			return;
+		}
+	}
+	if (current.u_loan_status.changesTo('approved') &amp;&amp; current.u_due_date.nil()) {
+		gs.addErrorMessage('A due date is required before a loan request can be approved.');
+		current.setAbortAction(true);
+	}
+})(current, previous);</script><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b10</sys_id><when>before</when></sys_script></record_update>]]></payload>
+<remote_update_set display_value="Loan Desk">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b01</remote_update_set>
+<replace_on_upgrade>false</replace_on_upgrade>
+<sys_id>7e2d4c6b8a9f0e1d2c3b4a5968778a06</sys_id>
+<target_name>Loan Request approval gatekeeper</target_name>
+<type>Business Rule</type>
+<update_domain>global</update_domain>
+</sys_update_xml>
+<sys_update_xml action="INSERT_OR_UPDATE">
+<action>INSERT_OR_UPDATE</action>
+<application display_value="Global">global</application>
+<application_name>Global</application_name>
+<application_scope>global</application_scope>
+<category>customer</category>
+<name>sys_script_client_4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b11</name>
+<payload><![CDATA[<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_client"><sys_script_client action="INSERT_OR_UPDATE"><active>true</active><applies_extended>false</applies_extended><description>Hides the Notes field on load until a requester is present.</description><field/><global>true</global><isolate_script>true</isolate_script><messages/><name>Hide notes until requester chosen</name><order>100</order><script>function onLoad() {
+	g_form.setDisplay('u_notes', g_form.getValue('u_requester') !== '');
+}</script><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b11</sys_id><table>u_loan_request</table><type>onLoad</type><ui_type>10</ui_type><view/></sys_script_client></record_update>]]></payload>
+<remote_update_set display_value="Loan Desk">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b01</remote_update_set>
+<replace_on_upgrade>false</replace_on_upgrade>
+<sys_id>7e2d4c6b8a9f0e1d2c3b4a5968778a07</sys_id>
+<target_name>Hide notes until requester chosen</target_name>
+<type>Client Script</type>
+<update_domain>global</update_domain>
+</sys_update_xml>
+<sys_update_xml action="INSERT_OR_UPDATE">
+<action>INSERT_OR_UPDATE</action>
+<application display_value="Global">global</application>
+<application_name>Global</application_name>
+<application_scope>global</application_scope>
+<category>customer</category>
+<name>sys_script_client_4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b12</name>
+<payload><![CDATA[<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_client"><sys_script_client action="INSERT_OR_UPDATE"><active>true</active><applies_extended>false</applies_extended><description>Shows the Notes field once a requester is chosen and hides it again when the requester is cleared.</description><field>u_requester</field><global>true</global><isolate_script>true</isolate_script><messages/><name>Show notes once requester chosen</name><order>100</order><script>function onChange(control, oldValue, newValue, isLoading) {
+	if (isLoading) {
+		return;
+	}
+	g_form.setDisplay('u_notes', newValue !== '');
+}</script><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b12</sys_id><table>u_loan_request</table><type>onChange</type><ui_type>10</ui_type><view/></sys_script_client></record_update>]]></payload>
+<remote_update_set display_value="Loan Desk">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b01</remote_update_set>
+<replace_on_upgrade>false</replace_on_upgrade>
+<sys_id>7e2d4c6b8a9f0e1d2c3b4a5968778a08</sys_id>
+<target_name>Show notes once requester chosen</target_name>
+<type>Client Script</type>
+<update_domain>global</update_domain>
+</sys_update_xml>
+<sys_update_xml action="INSERT_OR_UPDATE">
+<action>INSERT_OR_UPDATE</action>
+<application display_value="Global">global</application>
+<application_name>Global</application_name>
+<application_scope>global</application_scope>
+<category>customer</category>
+<name>sys_script_client_4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b13</name>
+<payload><![CDATA[<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_client"><sys_script_client action="INSERT_OR_UPDATE"><active>true</active><applies_extended>false</applies_extended><description>Warns when the loan status is changed to returned while the due date is empty. Legitimate edits show no warning.</description><field>u_loan_status</field><global>true</global><isolate_script>true</isolate_script><messages/><name>Warn on return without due date</name><order>100</order><script>function onChange(control, oldValue, newValue, isLoading) {
+	if (isLoading || newValue === oldValue) {
+		return;
+	}
+	g_form.hideFieldMsg('u_due_date', true);
+	if (newValue === 'returned' &amp;&amp; g_form.getValue('u_due_date') === '') {
+		g_form.showFieldMsg('u_due_date', 'This loan is being marked as returned although no due date was recorded.', 'warning');
+	}
+}</script><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b13</sys_id><table>u_loan_request</table><type>onChange</type><ui_type>10</ui_type><view/></sys_script_client></record_update>]]></payload>
+<remote_update_set display_value="Loan Desk">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b01</remote_update_set>
+<replace_on_upgrade>false</replace_on_upgrade>
+<sys_id>7e2d4c6b8a9f0e1d2c3b4a5968778a09</sys_id>
+<target_name>Warn on return without due date</target_name>
+<type>Client Script</type>
+<update_domain>global</update_domain>
+</sys_update_xml>
+<sys_update_xml action="INSERT_OR_UPDATE">
+<action>INSERT_OR_UPDATE</action>
+<application display_value="Global">global</application>
+<application_name>Global</application_name>
+<application_scope>global</application_scope>
+<category>customer</category>
+<name>sys_ui_policy_4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b14</name>
+<payload><![CDATA[<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_ui_policy"><sys_ui_policy action="INSERT_OR_UPDATE"><active>true</active><conditions/><description>Keeps the Overdue flag read-only on the form; only the nightly overdue loan sweep sets it.</description><global>true</global><inherit>false</inherit><on_load>true</on_load><order>100</order><reverse_if_false>true</reverse_if_false><run_scripts>false</run_scripts><short_description>Overdue is read-only</short_description><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b14</sys_id><table>u_loan_request</table><view/></sys_ui_policy><sys_ui_policy_action action="INSERT_OR_UPDATE"><disabled>true</disabled><field>u_overdue</field><mandatory>ignore</mandatory><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b15</sys_id><table>u_loan_request</table><ui_policy display_value="Overdue is read-only">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b14</ui_policy><visible>ignore</visible></sys_ui_policy_action></record_update>]]></payload>
+<remote_update_set display_value="Loan Desk">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b01</remote_update_set>
+<replace_on_upgrade>false</replace_on_upgrade>
+<sys_id>7e2d4c6b8a9f0e1d2c3b4a5968778a0a</sys_id>
+<target_name>Overdue is read-only</target_name>
+<type>UI Policy</type>
+<update_domain>global</update_domain>
+</sys_update_xml>
+<sys_update_xml action="INSERT_OR_UPDATE">
+<action>INSERT_OR_UPDATE</action>
+<application display_value="Global">global</application>
+<application_name>Global</application_name>
+<application_scope>global</application_scope>
+<category>customer</category>
+<name>sysauto_script_4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b16</name>
+<payload><![CDATA[<?xml version="1.0" encoding="UTF-8"?><record_update table="sysauto_script"><sysauto_script action="INSERT_OR_UPDATE"><active>true</active><condition/><conditional>false</conditional><name>Overdue loan sweep</name><run_start/><run_time>1970-01-01 02:00:00</run_time><run_type>daily</run_type><script>(function() {
+	var loan = new GlideRecord('u_loan_request');
+	loan.addQuery('u_loan_status', 'approved');
+	loan.addQuery('u_overdue', false);
+	loan.addNotNullQuery('u_due_date');
+	loan.addQuery('u_due_date', '&lt;', gs.beginningOfToday());
+	loan.query();
+	while (loan.next()) {
+		loan.setValue('u_overdue', true);
+		loan.update();
+		gs.eventQueue('u_loan_request.overdue', loan, loan.getValue('u_requester'), loan.getDisplayValue('u_due_date'));
+	}
+})();</script><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b16</sys_id></sysauto_script></record_update>]]></payload>
+<remote_update_set display_value="Loan Desk">4f3a9b2c8d1e5f0a7b8c9d0e1f2a3b01</remote_update_set>
+<replace_on_upgrade>false</replace_on_upgrade>
+<sys_id>7e2d4c6b8a9f0e1d2c3b4a5968778a0b</sys_id>
+<target_name>Overdue loan sweep</target_name>
+<type>Scheduled Script Execution</type>
+<update_domain>global</update_domain>
+</sys_update_xml>
+<sys_update_xml action="INSERT_OR_UPDATE">
+<action>INSERT_OR_UPDATE</action>
+<application display_value="Global">global</application>
+<application_name>Global</application_name>
+<application_scope>global</application_scope>
+<category>customer</category>
+<name>sysevent_register_4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b17</name>
+<payload><![CDATA[<?xml version="1.0" encoding="UTF-8"?><record_update table="sysevent_register"><sysevent_register action="INSERT_OR_UPDATE"><description>Fired by the nightly overdue loan sweep for each loan that has just been flagged overdue. parm1 is the requester sys_id, parm2 the due date.</description><event_name>u_loan_request.overdue</event_name><fired_by>Overdue loan sweep</fired_by><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b17</sys_id><table>u_loan_request</table></sysevent_register></record_update>]]></payload>
+<remote_update_set display_value="Loan Desk">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b01</remote_update_set>
+<replace_on_upgrade>false</replace_on_upgrade>
+<sys_id>7e2d4c6b8a9f0e1d2c3b4a5968778a0c</sys_id>
+<target_name>u_loan_request.overdue</target_name>
+<type>Event Registration</type>
+<update_domain>global</update_domain>
+</sys_update_xml>
+<sys_update_xml action="INSERT_OR_UPDATE">
+<action>INSERT_OR_UPDATE</action>
+<application display_value="Global">global</application>
+<application_name>Global</application_name>
+<application_scope>global</application_scope>
+<category>customer</category>
+<name>sysevent_email_action_4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b18</name>
+<payload><![CDATA[<?xml version="1.0" encoding="UTF-8"?><record_update table="sysevent_email_action"><sysevent_email_action action="INSERT_OR_UPDATE"><action_insert>false</action_insert><action_update>false</action_update><active>true</active><collection>u_loan_request</collection><condition/><content_type>text/html</content_type><event_name>u_loan_request.overdue</event_name><event_parm_1>true</event_parm_1><event_parm_2>false</event_parm_2><force_delivery>false</force_delivery><message_html>&lt;p&gt;Loan ${number} for asset ${u_asset_tag} was due back on ${u_due_date} and is now overdue.&lt;/p&gt;&lt;p&gt;Please return the equipment to the IT loan desk as soon as possible.&lt;/p&gt;</message_html><name>Loan Overdue Alert</name><send_self>false</send_self><subject>Loan Overdue Alert: ${u_asset_tag} is overdue (due ${u_due_date})</subject><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b18</sys_id><weight>0</weight></sysevent_email_action></record_update>]]></payload>
+<remote_update_set display_value="Loan Desk">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b01</remote_update_set>
+<replace_on_upgrade>false</replace_on_upgrade>
+<sys_id>7e2d4c6b8a9f0e1d2c3b4a5968778a0d</sys_id>
+<target_name>Loan Overdue Alert</target_name>
+<type>Notification</type>
+<update_domain>global</update_domain>
+</sys_update_xml>
+<sys_update_xml action="INSERT_OR_UPDATE">
+<action>INSERT_OR_UPDATE</action>
+<application display_value="Global">global</application>
+<application_name>Global</application_name>
+<application_scope>global</application_scope>
+<category>customer</category>
+<name>sys_user_role_4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b19</name>
+<payload><![CDATA[<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_user_role"><sys_user_role action="INSERT_OR_UPDATE"><assignable_by/><can_delegate>true</can_delegate><description>Equipment loan desk borrower: may read and create loan requests but may not write, delete or approve them.</description><elevated_privilege>false</elevated_privilege><grantable>true</grantable><includes_roles/><name>lab_borrower</name><suppress_activity>false</suppress_activity><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b19</sys_id></sys_user_role></record_update>]]></payload>
+<remote_update_set display_value="Loan Desk">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b01</remote_update_set>
+<replace_on_upgrade>false</replace_on_upgrade>
+<sys_id>7e2d4c6b8a9f0e1d2c3b4a5968778a0e</sys_id>
+<target_name>lab_borrower</target_name>
+<type>Role</type>
+<update_domain>global</update_domain>
+</sys_update_xml>
+<sys_update_xml action="INSERT_OR_UPDATE">
+<action>INSERT_OR_UPDATE</action>
+<application display_value="Global">global</application>
+<application_name>Global</application_name>
+<application_scope>global</application_scope>
+<category>customer</category>
+<name>sys_user_role_4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b1a</name>
+<payload><![CDATA[<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_user_role"><sys_user_role action="INSERT_OR_UPDATE"><assignable_by/><can_delegate>true</can_delegate><description>Equipment loan desk supervisor: may read, create, write, delete and approve loan requests.</description><elevated_privilege>false</elevated_privilege><grantable>true</grantable><includes_roles/><name>lab_supervisor</name><suppress_activity>false</suppress_activity><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b1a</sys_id></sys_user_role></record_update>]]></payload>
+<remote_update_set display_value="Loan Desk">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b01</remote_update_set>
+<replace_on_upgrade>false</replace_on_upgrade>
+<sys_id>7e2d4c6b8a9f0e1d2c3b4a5968778a0f</sys_id>
+<target_name>lab_supervisor</target_name>
+<type>Role</type>
+<update_domain>global</update_domain>
+</sys_update_xml>
+<sys_update_xml action="INSERT_OR_UPDATE">
+<action>INSERT_OR_UPDATE</action>
+<application display_value="Global">global</application>
+<application_name>Global</application_name>
+<application_scope>global</application_scope>
+<category>customer</category>
+<name>sys_security_acl_4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b1b</name>
+<payload><![CDATA[<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_security_acl"><sys_security_acl action="INSERT_OR_UPDATE"><active>true</active><admin_overrides>true</admin_overrides><advanced>false</advanced><condition/><description>Loan requests are visible only to loan desk borrowers and supervisors.</description><name>u_loan_request</name><operation>read</operation><script/><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b1b</sys_id><type>record</type></sys_security_acl><sys_security_acl_role action="INSERT_OR_UPDATE"><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b20</sys_id><sys_security_acl display_value="u_loan_request">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b1b</sys_security_acl><sys_user_role display_value="lab_borrower">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b19</sys_user_role></sys_security_acl_role><sys_security_acl_role action="INSERT_OR_UPDATE"><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b21</sys_id><sys_security_acl display_value="u_loan_request">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b1b</sys_security_acl><sys_user_role display_value="lab_supervisor">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b1a</sys_user_role></sys_security_acl_role></record_update>]]></payload>
+<remote_update_set display_value="Loan Desk">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b01</remote_update_set>
+<replace_on_upgrade>false</replace_on_upgrade>
+<sys_id>7e2d4c6b8a9f0e1d2c3b4a5968778a10</sys_id>
+<target_name>u_loan_request</target_name>
+<type>Access Control</type>
+<update_domain>global</update_domain>
+</sys_update_xml>
+<sys_update_xml action="INSERT_OR_UPDATE">
+<action>INSERT_OR_UPDATE</action>
+<application display_value="Global">global</application>
+<application_name>Global</application_name>
+<application_scope>global</application_scope>
+<category>customer</category>
+<name>sys_security_acl_4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b1c</name>
+<payload><![CDATA[<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_security_acl"><sys_security_acl action="INSERT_OR_UPDATE"><active>true</active><admin_overrides>true</admin_overrides><advanced>false</advanced><condition/><description>Only loan desk supervisors may update loan requests.</description><name>u_loan_request</name><operation>write</operation><script/><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b1c</sys_id><type>record</type></sys_security_acl><sys_security_acl_role action="INSERT_OR_UPDATE"><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b24</sys_id><sys_security_acl display_value="u_loan_request">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b1c</sys_security_acl><sys_user_role display_value="lab_supervisor">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b1a</sys_user_role></sys_security_acl_role></record_update>]]></payload>
+<remote_update_set display_value="Loan Desk">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b01</remote_update_set>
+<replace_on_upgrade>false</replace_on_upgrade>
+<sys_id>7e2d4c6b8a9f0e1d2c3b4a5968778a11</sys_id>
+<target_name>u_loan_request</target_name>
+<type>Access Control</type>
+<update_domain>global</update_domain>
+</sys_update_xml>
+<sys_update_xml action="INSERT_OR_UPDATE">
+<action>INSERT_OR_UPDATE</action>
+<application display_value="Global">global</application>
+<application_name>Global</application_name>
+<application_scope>global</application_scope>
+<category>customer</category>
+<name>sys_security_acl_4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b1d</name>
+<payload><![CDATA[<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_security_acl"><sys_security_acl action="INSERT_OR_UPDATE"><active>true</active><admin_overrides>true</admin_overrides><advanced>false</advanced><condition/><description>Loan desk borrowers and supervisors may create loan requests.</description><name>u_loan_request</name><operation>create</operation><script/><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b1d</sys_id><type>record</type></sys_security_acl><sys_security_acl_role action="INSERT_OR_UPDATE"><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b22</sys_id><sys_security_acl display_value="u_loan_request">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b1d</sys_security_acl><sys_user_role display_value="lab_borrower">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b19</sys_user_role></sys_security_acl_role><sys_security_acl_role action="INSERT_OR_UPDATE"><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b23</sys_id><sys_security_acl display_value="u_loan_request">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b1d</sys_security_acl><sys_user_role display_value="lab_supervisor">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b1a</sys_user_role></sys_security_acl_role></record_update>]]></payload>
+<remote_update_set display_value="Loan Desk">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b01</remote_update_set>
+<replace_on_upgrade>false</replace_on_upgrade>
+<sys_id>7e2d4c6b8a9f0e1d2c3b4a5968778a12</sys_id>
+<target_name>u_loan_request</target_name>
+<type>Access Control</type>
+<update_domain>global</update_domain>
+</sys_update_xml>
+<sys_update_xml action="INSERT_OR_UPDATE">
+<action>INSERT_OR_UPDATE</action>
+<application display_value="Global">global</application>
+<application_name>Global</application_name>
+<application_scope>global</application_scope>
+<category>customer</category>
+<name>sys_security_acl_4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b1e</name>
+<payload><![CDATA[<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_security_acl"><sys_security_acl action="INSERT_OR_UPDATE"><active>true</active><admin_overrides>true</admin_overrides><advanced>false</advanced><condition/><description>Only loan desk supervisors may delete loan requests.</description><name>u_loan_request</name><operation>delete</operation><script/><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b1e</sys_id><type>record</type></sys_security_acl><sys_security_acl_role action="INSERT_OR_UPDATE"><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b25</sys_id><sys_security_acl display_value="u_loan_request">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b1e</sys_security_acl><sys_user_role display_value="lab_supervisor">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b1a</sys_user_role></sys_security_acl_role></record_update>]]></payload>
+<remote_update_set display_value="Loan Desk">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b01</remote_update_set>
+<replace_on_upgrade>false</replace_on_upgrade>
+<sys_id>7e2d4c6b8a9f0e1d2c3b4a5968778a13</sys_id>
+<target_name>u_loan_request</target_name>
+<type>Access Control</type>
+<update_domain>global</update_domain>
+</sys_update_xml>
+<sys_update_xml action="INSERT_OR_UPDATE">
+<action>INSERT_OR_UPDATE</action>
+<application display_value="Global">global</application>
+<application_name>Global</application_name>
+<application_scope>global</application_scope>
+<category>customer</category>
+<name>sys_security_acl_4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b1f</name>
+<payload><![CDATA[<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_security_acl"><sys_security_acl action="INSERT_OR_UPDATE"><active>true</active><admin_overrides>true</admin_overrides><advanced>false</advanced><condition/><description>Only loan desk supervisors may change the loan status, so only they can approve or reject a loan.</description><name>u_loan_request.u_loan_status</name><operation>write</operation><script/><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b1f</sys_id><type>record</type></sys_security_acl><sys_security_acl_role action="INSERT_OR_UPDATE"><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b26</sys_id><sys_security_acl display_value="u_loan_request.u_loan_status">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b1f</sys_security_acl><sys_user_role display_value="lab_supervisor">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b1a</sys_user_role></sys_security_acl_role></record_update>]]></payload>
+<remote_update_set display_value="Loan Desk">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b01</remote_update_set>
+<replace_on_upgrade>false</replace_on_upgrade>
+<sys_id>7e2d4c6b8a9f0e1d2c3b4a5968778a14</sys_id>
+<target_name>u_loan_request.u_loan_status</target_name>
+<type>Access Control</type>
+<update_domain>global</update_domain>
+</sys_update_xml>
+<sys_update_xml action="INSERT_OR_UPDATE">
+<action>INSERT_OR_UPDATE</action>
+<application display_value="Global">global</application>
+<application_name>Global</application_name>
+<application_scope>global</application_scope>
+<category>customer</category>
+<name>sys_ui_section_4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b28</name>
+<payload><![CDATA[<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_ui_section"><sys_ui_section action="INSERT_OR_UPDATE"><caption>Identification</caption><header>false</header><name>u_loan_request</name><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b28</sys_id><view/></sys_ui_section><sys_ui_element action="INSERT_OR_UPDATE"><element>number</element><position>0</position><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b2e</sys_id><sys_ui_section display_value="u_loan_request (Identification)">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b28</sys_ui_section><type>element</type></sys_ui_element><sys_ui_element action="INSERT_OR_UPDATE"><element>u_requester</element><position>1</position><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b2f</sys_id><sys_ui_section display_value="u_loan_request (Identification)">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b28</sys_ui_section><type>element</type></sys_ui_element><sys_ui_element action="INSERT_OR_UPDATE"><element>u_asset_tag</element><position>2</position><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b30</sys_id><sys_ui_section display_value="u_loan_request (Identification)">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b28</sys_ui_section><type>element</type></sys_ui_element></record_update>]]></payload>
+<remote_update_set display_value="Loan Desk">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b01</remote_update_set>
+<replace_on_upgrade>false</replace_on_upgrade>
+<sys_id>7e2d4c6b8a9f0e1d2c3b4a5968778a16</sys_id>
+<target_name>u_loan_request</target_name>
+<type>Form Section</type>
+<update_domain>global</update_domain>
+</sys_update_xml>
+<sys_update_xml action="INSERT_OR_UPDATE">
+<action>INSERT_OR_UPDATE</action>
+<application display_value="Global">global</application>
+<application_name>Global</application_name>
+<application_scope>global</application_scope>
+<category>customer</category>
+<name>sys_ui_section_4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b29</name>
+<payload><![CDATA[<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_ui_section"><sys_ui_section action="INSERT_OR_UPDATE"><caption>Scheduling</caption><header>false</header><name>u_loan_request</name><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b29</sys_id><view/></sys_ui_section><sys_ui_element action="INSERT_OR_UPDATE"><element>u_loan_status</element><position>0</position><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b31</sys_id><sys_ui_section display_value="u_loan_request (Scheduling)">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b29</sys_ui_section><type>element</type></sys_ui_element><sys_ui_element action="INSERT_OR_UPDATE"><element>u_due_date</element><position>1</position><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b32</sys_id><sys_ui_section display_value="u_loan_request (Scheduling)">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b29</sys_ui_section><type>element</type></sys_ui_element><sys_ui_element action="INSERT_OR_UPDATE"><element>u_overdue</element><position>2</position><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b33</sys_id><sys_ui_section display_value="u_loan_request (Scheduling)">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b29</sys_ui_section><type>element</type></sys_ui_element></record_update>]]></payload>
+<remote_update_set display_value="Loan Desk">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b01</remote_update_set>
+<replace_on_upgrade>false</replace_on_upgrade>
+<sys_id>7e2d4c6b8a9f0e1d2c3b4a5968778a17</sys_id>
+<target_name>u_loan_request</target_name>
+<type>Form Section</type>
+<update_domain>global</update_domain>
+</sys_update_xml>
+<sys_update_xml action="INSERT_OR_UPDATE">
+<action>INSERT_OR_UPDATE</action>
+<application display_value="Global">global</application>
+<application_name>Global</application_name>
+<application_scope>global</application_scope>
+<category>customer</category>
+<name>sys_ui_section_4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b2a</name>
+<payload><![CDATA[<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_ui_section"><sys_ui_section action="INSERT_OR_UPDATE"><caption>Remarks</caption><header>false</header><name>u_loan_request</name><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b2a</sys_id><view/></sys_ui_section><sys_ui_element action="INSERT_OR_UPDATE"><element>u_notes</element><position>0</position><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b34</sys_id><sys_ui_section display_value="u_loan_request (Remarks)">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b2a</sys_ui_section><type>element</type></sys_ui_element></record_update>]]></payload>
+<remote_update_set display_value="Loan Desk">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b01</remote_update_set>
+<replace_on_upgrade>false</replace_on_upgrade>
+<sys_id>7e2d4c6b8a9f0e1d2c3b4a5968778a18</sys_id>
+<target_name>u_loan_request</target_name>
+<type>Form Section</type>
+<update_domain>global</update_domain>
+</sys_update_xml>
+<sys_update_xml action="INSERT_OR_UPDATE">
+<action>INSERT_OR_UPDATE</action>
+<application display_value="Global">global</application>
+<application_name>Global</application_name>
+<application_scope>global</application_scope>
+<category>customer</category>
+<name>sys_ui_form_4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b27</name>
+<payload><![CDATA[<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_ui_form"><sys_ui_form action="INSERT_OR_UPDATE"><name>u_loan_request</name><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b27</sys_id><sys_user/><view/></sys_ui_form><sys_ui_form_section action="INSERT_OR_UPDATE"><position>0</position><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b2b</sys_id><sys_ui_form display_value="u_loan_request">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b27</sys_ui_form><sys_ui_section display_value="u_loan_request (Identification)">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b28</sys_ui_section></sys_ui_form_section><sys_ui_form_section action="INSERT_OR_UPDATE"><position>1</position><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b2c</sys_id><sys_ui_form display_value="u_loan_request">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b27</sys_ui_form><sys_ui_section display_value="u_loan_request (Scheduling)">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b29</sys_ui_section></sys_ui_form_section><sys_ui_form_section action="INSERT_OR_UPDATE"><position>2</position><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b2d</sys_id><sys_ui_form display_value="u_loan_request">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b27</sys_ui_form><sys_ui_section display_value="u_loan_request (Remarks)">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b2a</sys_ui_section></sys_ui_form_section></record_update>]]></payload>
+<remote_update_set display_value="Loan Desk">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b01</remote_update_set>
+<replace_on_upgrade>false</replace_on_upgrade>
+<sys_id>7e2d4c6b8a9f0e1d2c3b4a5968778a15</sys_id>
+<target_name>u_loan_request</target_name>
+<type>Form</type>
+<update_domain>global</update_domain>
+</sys_update_xml>
+<sys_update_xml action="INSERT_OR_UPDATE">
+<action>INSERT_OR_UPDATE</action>
+<application display_value="Global">global</application>
+<application_name>Global</application_name>
+<application_scope>global</application_scope>
+<category>customer</category>
+<name>sys_ui_list_4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b35</name>
+<payload><![CDATA[<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_ui_list"><sys_ui_list action="INSERT_OR_UPDATE"><name>u_loan_request</name><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b35</sys_id><sys_user/><view/></sys_ui_list><sys_ui_list_element action="INSERT_OR_UPDATE"><element>number</element><list_id display_value="u_loan_request">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b35</list_id><position>0</position><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b36</sys_id></sys_ui_list_element><sys_ui_list_element action="INSERT_OR_UPDATE"><element>u_requester</element><list_id display_value="u_loan_request">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b35</list_id><position>1</position><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b37</sys_id></sys_ui_list_element><sys_ui_list_element action="INSERT_OR_UPDATE"><element>u_asset_tag</element><list_id display_value="u_loan_request">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b35</list_id><position>2</position><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b38</sys_id></sys_ui_list_element><sys_ui_list_element action="INSERT_OR_UPDATE"><element>u_loan_status</element><list_id display_value="u_loan_request">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b35</list_id><position>3</position><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b39</sys_id></sys_ui_list_element><sys_ui_list_element action="INSERT_OR_UPDATE"><element>u_due_date</element><list_id display_value="u_loan_request">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b35</list_id><position>4</position><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b3a</sys_id></sys_ui_list_element><sys_ui_list_element action="INSERT_OR_UPDATE"><element>u_overdue</element><list_id display_value="u_loan_request">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b35</list_id><position>5</position><sys_id>4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b3b</sys_id></sys_ui_list_element></record_update>]]></payload>
+<remote_update_set display_value="Loan Desk">4f3a9b2c8d1e5f6a7b8c9d0e1f2a3b01</remote_update_set>
+<replace_on_upgrade>false</replace_on_upgrade>
+<sys_id>7e2d4c6b8a9f0e1d2c3b4a5968778a19</sys_id>
+<target_name>u_loan_request</target_name>
+<type>List</type>
+<update_domain>global</update_domain>
+</sys_update_xml>
+</unload>
