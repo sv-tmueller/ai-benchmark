@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Seating Puzzle — Step-by-Step Solution</title>
+<style>
+  :root {
+    --ink: #1f2430;
+    --muted: #5b6372;
+    --accent: #2f6f4f;
+    --card: #ffffff;
+    --bg: #f4f1ea;
+    --line: #d8d2c4;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 2rem 1rem 4rem;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: Georgia, "Times New Roman", serif;
+    line-height: 1.6;
+  }
+  main {
+    max-width: 46rem;
+    margin: 0 auto;
+  }
+  h1 {
+    font-size: 1.9rem;
+    margin: 0 0 0.25rem;
+  }
+  .subtitle {
+    color: var(--muted);
+    margin: 0 0 2rem;
+    font-style: italic;
+  }
+  section {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 1.25rem 1.5rem;
+    margin-bottom: 1.5rem;
+  }
+  h2 {
+    font-size: 1.2rem;
+    margin: 0 0 0.75rem;
+    color: var(--accent);
+    letter-spacing: 0.02em;
+  }
+  ol.clues, ol.steps {
+    margin: 0;
+    padding-left: 1.4rem;
+  }
+  ol.clues li, ol.steps li {
+    margin-bottom: 0.5rem;
+  }
+  ol.steps li strong {
+    color: var(--accent);
+  }
+  .note {
+    color: var(--muted);
+    font-size: 0.95rem;
+    margin-top: 0.75rem;
+  }
+  #answer {
+    background: var(--card);
+    border: 2px solid var(--accent);
+    border-radius: 10px;
+    padding: 1.25rem 1.5rem;
+  }
+  #answer h2 {
+    margin-bottom: 1rem;
+  }
+  .arrangement {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 1.25rem;
+  }
+  .arrangement:last-child {
+    margin-bottom: 0;
+  }
+  .arrangement-label {
+    flex-basis: 100%;
+    font-weight: bold;
+    color: var(--muted);
+    font-size: 0.9rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 0.25rem;
+  }
+  .seat {
+    flex: 1 1 0;
+    min-width: 5.2rem;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #faf8f3;
+    text-align: center;
+    padding: 0.5rem 0.25rem 0.65rem;
+  }
+  .seat .seat-number {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 0.2rem;
+  }
+  .seat .person {
+    display: block;
+    font-size: 1.05rem;
+    font-weight: bold;
+    color: var(--ink);
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Seating Puzzle: Who Sits Where?</h1>
+  <p class="subtitle">Five people — Alice, Bob, Carol, Dave, and Eve — in seats 1 to 5, left to right.</p>
+
+  <section>
+    <h2>The Clues</h2>
+    <ol class="clues">
+      <li>Alice is not next to Bob.</li>
+      <li>Carol sits immediately to the right of Dave.</li>
+      <li>Eve sits at one of the ends (seat 1 or seat 5).</li>
+      <li>Bob sits somewhere to the left of Carol.</li>
+      <li>There is exactly one person between Alice and Dave (their seats differ by exactly 2).</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Step-by-Step Reasoning</h2>
+    <ol class="steps">
+      <li><strong>Anchor on the Dave–Carol pair.</strong> Clue 2 forces Dave and Carol into an adjacent pair with Dave on the left. The possible placements are (Dave&nbsp;1, Carol&nbsp;2), (Dave&nbsp;2, Carol&nbsp;3), (Dave&nbsp;3, Carol&nbsp;4), and (Dave&nbsp;4, Carol&nbsp;5). I test each case in turn.</li>
+      <li><strong>Case Dave&nbsp;1, Carol&nbsp;2 — eliminated.</strong> Clue 4 says Bob is left of Carol, so Bob would need a seat before seat 2; the only such seat is 1, which Dave occupies. Contradiction, so this case is impossible.</li>
+      <li><strong>Case Dave&nbsp;2, Carol&nbsp;3.</strong> Clue 5 puts Alice two seats from Dave: seat 0 does not exist, so Alice is in seat 4. Clue 4 needs Bob left of seat 3; the only free seat left of 3 is seat 1, so Bob is in seat 1. That leaves Eve in seat 5, which is an end, satisfying clue 3. Clue 1: Alice (4) and Bob (1) are not adjacent. All five clues hold — <em>Bob, Dave, Carol, Alice, Eve</em> is a valid arrangement.</li>
+      <li><strong>Case Dave&nbsp;3, Carol&nbsp;4.</strong> Clue 5 puts Alice in seat 1 or seat 5. Sub-case Alice&nbsp;1: the free seats are 2 and 5; clue 3 forces Eve into seat 5 (the only free end), leaving Bob in seat 2 — but then Bob is next to Alice, violating clue 1, so this sub-case fails. Sub-case Alice&nbsp;5: the free seats are 1 and 2; clue 3 forces Eve into seat 1 (the only free end), leaving Bob in seat 2, which is left of Carol (clue 4 holds). Clue 1: Bob (2) and Alice (5) are not adjacent. All five clues hold — <em>Eve, Bob, Dave, Carol, Alice</em> is a valid arrangement.</li>
+      <li><strong>Case Dave&nbsp;4, Carol&nbsp;5 — eliminated.</strong> Clue 5 puts Alice in seat 2 (seat 6 does not exist). Clue 3 forces Eve into seat 1, the only free end, leaving Bob in seat 3. But then Bob (3) sits next to Alice (2), violating clue 1. Contradiction, so this case is impossible.</li>
+      <li><strong>Collect the results.</strong> Every placement of the Dave–Carol pair has been checked exhaustively. Exactly two arrangements satisfy all five clues: Bob–Dave–Carol–Alice–Eve and Eve–Bob–Dave–Carol–Alice.</li>
+    </ol>
+    <p class="note">The case analysis covers all possibilities, so no other arrangement can work.</p>
+  </section>
+
+  <div id="answer">
+    <h2>Final Answer — All Valid Arrangements</h2>
+    <div class="arrangement">
+      <span class="arrangement-label">Arrangement 1</span>
+      <span class="seat"><span class="seat-number">Seat 1</span><span class="person">Bob</span></span>
+      <span class="seat"><span class="seat-number">Seat 2</span><span class="person">Dave</span></span>
+      <span class="seat"><span class="seat-number">Seat 3</span><span class="person">Carol</span></span>
+      <span class="seat"><span class="seat-number">Seat 4</span><span class="person">Alice</span></span>
+      <span class="seat"><span class="seat-number">Seat 5</span><span class="person">Eve</span></span>
+    </div>
+    <div class="arrangement">
+      <span class="arrangement-label">Arrangement 2</span>
+      <span class="seat"><span class="seat-number">Seat 1</span><span class="person">Eve</span></span>
+      <span class="seat"><span class="seat-number">Seat 2</span><span class="person">Bob</span></span>
+      <span class="seat"><span class="seat-number">Seat 3</span><span class="person">Dave</span></span>
+      <span class="seat"><span class="seat-number">Seat 4</span><span class="person">Carol</span></span>
+      <span class="seat"><span class="seat-number">Seat 5</span><span class="person">Alice</span></span>
+    </div>
+  </div>
+</main>
+</body>
+</html>
