@@ -1,0 +1,819 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lava Lamp — Ember Studio</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #0d0b0a; }
+  canvas { position: fixed; left: 0; top: 0; width: 100vw; height: 100vh; display: block; background: #0d0b0a; }
+</style>
+<script type="application/json" id="bridgebench-manifest">
+{
+  "schema": "bridgebench.manifest/1",
+  "id": "lava-lamp",
+  "title": "Photoreal ray-marched lava lamp studio shot",
+  "version": "1.0.0",
+  "deterministic": true,
+  "seeded": true,
+  "defaultSeed": 1,
+  "controls": [],
+  "state": { "heat": 0.65, "paletteIndex": 0 },
+  "palettes": ["Ember"],
+  "renderer": "webgl-raymarch",
+  "exposure": { "toneMapping": "ACES", "exposure": 1.0, "outputColorSpace": "srgb" },
+  "api": ["getState", "reset", "destroy", "pause", "resume", "play", "step", "advance", "seek", "renderFrame", "getManifest"]
+}
+</script>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<script>
+(function () {
+  'use strict';
+
+  // ---------------------------------------------------------------------------
+  // Fixed configuration
+  // ---------------------------------------------------------------------------
+  var HEAT = 0.65;
+  var PALETTE_INDEX = 0;
+  var PALETTES = [
+    { name: 'Ember', core: [0.62, 0.065, 0.014], hot: [1.0, 0.40, 0.055], glow: [1.0, 0.52, 0.17] }
+  ];
+  var LAMP_TOP = 6.14, LAMP_BOTTOM = 0.0, LAMP_HALF_WIDTH = 0.985;
+  var LAMP_CENTER_Y = (LAMP_TOP + LAMP_BOTTOM) * 0.5;
+  var FIT = 0.68;               // lamp bounds occupy at most 68% of each viewport dimension
+  var CAM_DIST = 24.0, CAM_ELEV = 0.10;
+  var SIM_STEP = 1 / 120;       // fixed simulation substep (seconds)
+  var NB = 8;
+  var DEFAULT_SEED = 1;
+  var EXPOSURE = 1.0;
+
+  var manifestEl = document.getElementById('bridgebench-manifest');
+  var manifest = JSON.parse(manifestEl.textContent);
+  manifest.controls = [];
+
+  // ---------------------------------------------------------------------------
+  // Shaders
+  // ---------------------------------------------------------------------------
+  var VERT = [
+    'attribute vec2 aPos;',
+    'void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }'
+  ].join('\n');
+
+  var FRAG = `
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+uniform vec2 uRes;
+uniform vec3 uCamPos;
+uniform vec3 uCamFwd;
+uniform vec3 uCamRight;
+uniform vec3 uCamUp;
+uniform float uFocal;
+uniform float uTime;
+uniform float uPoolTop;
+uniform float uHeat;
+uniform float uExposure;
+uniform vec4 uBA[8];
+uniform vec4 uBB[8];
+uniform vec3 uCore;
+uniform vec3 uHot;
+uniform vec3 uGlow;
+
+#define PI 3.14159265
+const float GY0 = 1.60;
+const float GY1 = 5.62;
+const float WALLZ = 6.0;
+
+float hash11(float p){ p = fract(p * 0.1031); p *= p + 33.33; p *= p + p; return fract(p); }
+float hash12(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+float noise1(float x){ float i = floor(x); float f = fract(x); f = f*f*(3.0-2.0*f); return mix(hash11(i), hash11(i+1.0), f); }
+float noise2(vec2 x){
+  vec2 i = floor(x); vec2 f = fract(x); f = f*f*(3.0-2.0*f);
+  float a = hash12(i), b = hash12(i+vec2(1.0,0.0)), c = hash12(i+vec2(0.0,1.0)), d = hash12(i+vec2(1.0,1.0));
+  return mix(mix(a,b,f.x), mix(c,d,f.x), f.y);
+}
+float smin(float a, float b, float k){ float h = clamp(0.5 + 0.5*(b-a)/k, 0.0, 1.0); return mix(b, a, h) - k*h*(1.0-h); }
+float smax(float a, float b, float k){ return -smin(-a, -b, k); }
+
+// ---------------------------------------------------------------- studio env
+float strip(float az, float c, float w, float rough){
+  float x = abs(az - c);
+  float s = 1.0 - smoothstep(w*0.5, w*0.5 + 0.012 + rough*0.9, x);
+  return s * (w / (w + rough*0.9));
+}
+vec3 env(vec3 d, float rough){
+  vec3 c = mix(vec3(0.012,0.010,0.009), vec3(0.046,0.040,0.035), smoothstep(-0.2, 0.6, d.y));
+  c += vec3(0.055,0.024,0.010) * smoothstep(0.0, -0.5, d.y) * (0.6 + 0.6*uHeat);
+  c += vec3(0.06,0.058,0.055) * smoothstep(0.1, 0.9, d.y);
+  c += vec3(0.20,0.195,0.19) * smoothstep(0.55, 0.97, d.y);
+  float az = atan(d.x, -d.z);
+  float v = smoothstep(-0.32 - rough, -0.12, d.y) * (1.0 - smoothstep(0.58, 0.82 + rough, d.y));
+  c += strip(az, -0.66, 0.075, rough) * v * vec3(4.5, 4.75, 5.2);
+  c += strip(az,  0.80, 0.055, rough) * v * vec3(3.0, 3.15, 3.45);
+  c += strip(az,  2.50, 0.10,  rough) * v * vec3(1.6, 1.65, 1.75);
+  c += strip(az, -2.55, 0.10,  rough) * v * vec3(1.35, 1.4, 1.5);
+  return c;
+}
+
+// ---------------------------------------------------------------- lamp geometry
+float glassR(float y){
+  float t = clamp((y - GY0) / (GY1 - GY0), 0.0, 1.0);
+  if (t < 0.28) return mix(0.50, 0.80, sin(t / 0.28 * PI * 0.5));
+  return 0.80 - 0.43 * pow((t - 0.28) / 0.72, 1.25);
+}
+float sdGlass(vec3 p){
+  float d = (length(p.xz) - glassR(p.y)) * 0.9;
+  return max(d, max(GY0 - p.y, p.y - GY1));
+}
+float sdInner(vec3 p){
+  float d = (length(p.xz) - (glassR(p.y) - 0.045)) * 0.9;
+  return max(d, max(1.66 - p.y, p.y - 5.50));
+}
+float rCyl(vec3 p, float R, float cy, float h, float rad){
+  vec2 d = vec2(length(p.xz) - (R - rad), abs(p.y - cy) - (h - rad));
+  return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - rad;
+}
+float baseR(float y){
+  float s = clamp((y - 0.12) / 1.38, 0.0, 1.0);
+  return 0.555 + 0.375 * pow(1.0 - s, 1.6);
+}
+float sdBase(vec3 p){
+  float rr = length(p.xz);
+  float foot = rCyl(p, 0.985, 0.065, 0.065, 0.025);
+  float body = (rr - baseR(p.y)) * 0.85;
+  body = max(body, max(0.06 - p.y, p.y - 1.50));
+  float d = smin(foot, body, 0.04);
+  float collar = rCyl(p, 0.605, 1.545, 0.075, 0.025);
+  d = smin(d, collar, 0.02);
+  float gy = 0.46;
+  float groove = length(vec2(rr - baseR(gy), p.y - gy)) - 0.016;
+  d = smax(d, -groove, 0.01);
+  float gy2 = 1.40;
+  float groove2 = length(vec2(rr - baseR(gy2), p.y - gy2)) - 0.010;
+  d = smax(d, -groove2, 0.006);
+  return d;
+}
+float sdCap(vec3 p){
+  float y0 = 5.57, y1 = 6.14;
+  float s = clamp((p.y - y0) / (y1 - y0), 0.0, 1.0);
+  float r = mix(0.405, 0.265, s) - 0.02;
+  float d = (length(p.xz) - r) * 0.95;
+  d = max(d, max(y0 + 0.02 - p.y, p.y - (y1 - 0.02)));
+  d -= 0.02;
+  float lip = rCyl(p, 0.42, 5.595, 0.03, 0.012);
+  return min(d, lip);
+}
+vec2 mapLamp(vec3 p){
+  vec2 r = vec2(sdBase(p), 1.0);
+  float c = sdCap(p);
+  if (c < r.x) r = vec2(c, 2.0);
+  float g = sdGlass(p);
+  if (g < r.x) r = vec2(g, 3.0);
+  return r;
+}
+vec3 nLamp(vec3 p){
+  const vec2 e = vec2(0.0007, -0.0007);
+  return normalize(e.xyy*mapLamp(p+e.xyy).x + e.yyx*mapLamp(p+e.yyx).x + e.yxy*mapLamp(p+e.yxy).x + e.xxx*mapLamp(p+e.xxx).x);
+}
+vec3 nGlass(vec3 p){
+  const vec2 e = vec2(0.0007, -0.0007);
+  return normalize(e.xyy*sdGlass(p+e.xyy) + e.yyx*sdGlass(p+e.yyx) + e.yxy*sdGlass(p+e.yxy) + e.xxx*sdGlass(p+e.xxx));
+}
+vec3 nInner(vec3 p){
+  const vec2 e = vec2(0.001, -0.001);
+  return normalize(e.xyy*sdInner(p+e.xyy) + e.yyx*sdInner(p+e.yyx) + e.yxy*sdInner(p+e.yxy) + e.xxx*sdInner(p+e.xxx));
+}
+
+// ---------------------------------------------------------------- wax
+float sdWaxRaw(vec3 p){
+  float d = p.y - uPoolTop - 0.02 * sin(p.x*6.0 + uTime*0.5) * sin(p.z*5.0 - uTime*0.4);
+  for (int i = 0; i < 8; i++){
+    vec4 a = uBA[i];
+    vec4 b = uBB[i];
+    vec3 q = p - a.xyz;
+    float s = b.x;
+    float sq = sqrt(s);
+    float db = (length(vec3(q.x*sq, q.y/s, q.z*sq)) - a.w) / sq;
+    if (b.y > 0.001){
+      float y0 = b.z;
+      float L = max(a.y - y0, 0.01);
+      vec3 pa = p - vec3(a.x, y0, a.z);
+      float h = clamp(pa.y / L, 0.0, 1.0);
+      float hh = h - 0.55;
+      float rn = b.y * (0.55 + 2.2*hh*hh);
+      float dn = (length(pa - vec3(0.0, h*L, 0.0)) - rn) * 0.85;
+      db = smin(db, dn, 0.08);
+    }
+    d = smin(d, db, 0.2);
+  }
+  return d;
+}
+vec3 nWax(vec3 p){
+  const vec2 e = vec2(0.002, -0.002);
+  return normalize(e.xyy*sdWaxRaw(p+e.xyy) + e.yyx*sdWaxRaw(p+e.yyx) + e.yxy*sdWaxRaw(p+e.yxy) + e.xxx*sdWaxRaw(p+e.xxx));
+}
+
+// ---------------------------------------------------------------- studio surfaces
+vec3 wallColor(vec3 p){
+  vec3 c = vec3(0.046, 0.039, 0.034);
+  c *= 0.72 + 0.48 * smoothstep(-1.0, 7.0, p.y) * exp(-p.x*p.x*0.018);
+  c *= 0.94 + 0.06 * noise2(p.xy*1.7);
+  vec2 q = vec2(p.x, p.y - 3.1);
+  c += uGlow * 0.10 * exp(-dot(q,q)*0.085) * (0.55 + 0.7*uHeat);
+  return c;
+}
+vec3 tableBase(vec3 p){
+  float rr = length(p.xz);
+  float mott = 0.88 + 0.12*noise2(p.xz*3.1) + 0.05*noise2(p.xz*17.0);
+  vec3 c = vec3(0.030, 0.026, 0.023) * mott;
+  // light from the glowing bottle
+  vec3 L = vec3(0.0, 2.6, 0.0) - p;
+  float d2 = dot(L, L);
+  float ndl = max(L.y / sqrt(d2), 0.0);
+  float occ = smoothstep(0.92, 1.9, rr);
+  c += uGlow * 0.85 * ndl / d2 * occ * (0.55 + 0.7*uHeat);
+  // studio key wash
+  c += vec3(0.012, 0.012, 0.012) * smoothstep(8.0, 0.0, length(p.xz - vec2(-2.0, -3.0)));
+  // contact shadow beneath the foot
+  c *= mix(0.30, 1.0, smoothstep(0.98, 1.45, rr));
+  // heater glow spilling from under the base
+  c += vec3(1.0, 0.36, 0.08) * 0.20 * exp(-max(rr - 0.985, 0.0) * 4.5) * smoothstep(0.95, 1.0, rr) * (0.55 + 0.7*uHeat);
+  return c;
+}
+vec3 bgSimple(vec3 ro, vec3 rd){
+  float tw = rd.z > 0.0 ? (WALLZ - ro.z) / rd.z : 1e5;
+  float tt = rd.y < 0.0 ? -ro.y / rd.y : 1e5;
+  if (tt < tw){
+    vec3 p = ro + rd*tt;
+    vec3 c = tableBase(p) + env(reflect(rd, vec3(0.0,1.0,0.0)), 0.4) * 0.05;
+    float k = smoothstep(WALLZ - 2.2, WALLZ, p.z);
+    return mix(c, wallColor(vec3(p.x, 0.0, WALLZ)), k*k*0.85);
+  }
+  if (tw < 1e4) return wallColor(ro + rd*tw);
+  return env(rd, 0.3) * 0.3;
+}
+
+// ---------------------------------------------------------------- shading
+vec3 shadeWax(vec3 p, vec3 rd){
+  vec3 n = nWax(p);
+  vec3 v = -rd;
+  float gain = 0.55 + 0.7*uHeat;
+  vec3 L = normalize(vec3(0.0, 1.35, 0.0) - p);
+  float hf = exp(-max(p.y - uPoolTop, 0.0) * 0.55);
+  // optical thickness along the view ray: thin edges transmit, thick cores stay deep
+  float th = 0.03;
+  for (int k = 0; k < 14; k++){
+    float d = sdWaxRaw(p + rd*th);
+    if (d > -0.002) break;
+    th += max(-d, 0.015);
+  }
+  float trans = exp(-th * 5.5);
+  float wrap = clamp((dot(n, L) + 0.5) / 1.5, 0.0, 1.0);
+  float nv = clamp(dot(n, v), 0.0, 1.0);
+  float rim = pow(1.0 - nv, 3.0);
+  vec3 col = uCore * (0.30 + 0.85*wrap*hf + 0.25*hf);
+  col += uHot * trans * (0.55 + 1.6*hf);
+  col += uGlow * rim * 0.35 * (0.5 + hf);
+  float pool = smoothstep(uPoolTop + 0.22, uPoolTop - 0.04, p.y);
+  col += uHot * pool * 1.3 + uGlow * pool * 0.35;
+  col *= gain;
+  float F = 0.02 + 0.98*pow(1.0 - nv, 5.0);
+  col += env(reflect(rd, n), 0.05) * F * 0.5;
+  return col;
+}
+vec3 liquidGlow(vec3 p, float dw){
+  float hb = exp(-max(p.y - uPoolTop, 0.0) * 1.1);
+  float near = exp(-max(dw, 0.0) * 9.0);
+  return (uGlow * (0.018 + 0.10*hb) + uHot * near * 0.09 * (0.4 + hb)) * (0.55 + 0.7*uHeat);
+}
+vec3 interior(vec3 ro, vec3 rd){
+  float t = 0.0;
+  vec3 acc = vec3(0.0);
+  bool entered = false;
+  for (int i = 0; i < 96; i++){
+    vec3 p = ro + rd*t;
+    float di = sdInner(p);
+    if (di < 0.0) entered = true;
+    else if (entered && di > 0.004) break;
+    if (!entered && t > 0.35) break;
+    float dw = sdWaxRaw(p);
+    float d = max(dw, di);
+    if (entered && d < 0.0015){
+      vec3 T = exp(-t * vec3(0.04, 0.07, 0.12));
+      return acc + shadeWax(p, rd) * T;
+    }
+    float st = clamp(d, 0.006, 0.09);
+    if (entered) acc += liquidGlow(p, dw) * st;
+    t += st;
+  }
+  vec3 pe = ro + rd*t;
+  vec3 T = exp(-t * vec3(0.04, 0.07, 0.12));
+  vec3 ne = nInner(pe);
+  vec3 rdo = refract(rd, -ne, 1.38);
+  if (dot(rdo, rdo) < 0.01) rdo = reflect(rd, -ne);
+  vec3 col = acc + bgSimple(pe + rdo*0.08, rdo) * T * 0.92;
+  col += env(reflect(rd, -ne), 0.0) * 0.03 * T;
+  return col;
+}
+vec3 shadeMetal(vec3 p, vec3 rd, vec3 n, float cap){
+  vec3 v = -rd;
+  float lines = noise1(p.y * 70.0) * 0.6 + noise1(p.y * 230.0 + 17.0) * 0.4;
+  vec3 r = reflect(rd, n);
+  float c = clamp(dot(n, v), 0.0, 1.0);
+  vec3 F0 = vec3(0.91, 0.90, 0.88);
+  vec3 F = F0 + (1.0 - F0) * pow(1.0 - c, 5.0);
+  float rough = 0.14 + 0.07*lines;
+  vec3 e = env(r, rough);
+  vec3 gc = cap > 0.5 ? vec3(0.0, 4.3, 0.0) : vec3(0.0, 2.6, 0.0);
+  vec3 tg = normalize(gc - p);
+  float lobe = pow(max(dot(r, tg), 0.0), 5.0);
+  e += uGlow * lobe * (cap > 0.5 ? 0.9 : 1.6) * (0.55 + 0.7*uHeat);
+  e += vec3(1.0, 0.38, 0.10) * 0.22 * smoothstep(0.05, -0.6, r.y) * (1.0 - cap) * exp(-p.y*1.2);
+  e += uGlow * 0.04 * max(n.y, 0.0) * (1.0 - cap);
+  float ao = cap > 0.5 ? 1.0 : mix(0.55, 1.0, smoothstep(0.0, 0.06, p.y));
+  return e * F * (0.92 + 0.08*lines) * ao;
+}
+vec3 shadeGlass(vec3 p, vec3 rd){
+  vec3 n = nGlass(p);
+  float c = clamp(dot(-rd, n), 0.0, 1.0);
+  float F = 0.04 + 0.96*pow(1.0 - c, 5.0);
+  vec3 refl = env(reflect(rd, n), 0.0);
+  vec3 rdi = refract(rd, n, 1.0 / 1.38);
+  vec3 inside = vec3(0.0);
+  if (dot(rdi, rdi) > 0.01) inside = interior(p + rdi*0.002, rdi);
+  inside *= vec3(0.97, 0.985, 0.98);
+  return mix(inside, refl, F);
+}
+vec3 glassGlowSimple(vec3 p, vec3 rd){
+  float h = clamp((p.y - uPoolTop) / 3.5, 0.0, 1.0);
+  vec3 n = normalize(vec3(p.x, 0.001, p.z));
+  float c = abs(dot(rd, n));
+  vec3 col = mix(uHot * 1.1, uCore * 0.6, h) * (0.35 + 0.65*c) * (0.55 + 0.7*uHeat);
+  col += env(reflect(rd, n), 0.0) * 0.05;
+  return col;
+}
+bool boundCyl(vec3 ro, vec3 rd, out float tn, out float tf){
+  tn = 0.0; tf = 0.0;
+  float a = dot(rd.xz, rd.xz);
+  float b = dot(ro.xz, rd.xz);
+  float c = dot(ro.xz, ro.xz) - 1.0;
+  float h = b*b - a*c;
+  if (h < 0.0 || a < 1e-7) return false;
+  h = sqrt(h);
+  float t0 = (-b - h) / a, t1 = (-b + h) / a;
+  float ry = abs(rd.y) < 1e-6 ? 1e-6 : rd.y;
+  float y0 = (0.0 - ro.y) / ry, y1 = (6.17 - ro.y) / ry;
+  tn = max(max(t0, min(y0, y1)), 0.0);
+  tf = min(t1, max(y0, y1));
+  return tn < tf;
+}
+bool marchReflect(vec3 ro, vec3 rd, out vec3 col, out float th){
+  col = vec3(0.0); th = 0.0;
+  float tn, tf;
+  if (!boundCyl(ro, rd, tn, tf)) return false;
+  float t = tn;
+  for (int i = 0; i < 64; i++){
+    vec3 p = ro + rd*t;
+    vec2 m = mapLamp(p);
+    if (m.x < 0.002){
+      th = t;
+      if (m.y > 2.5) col = glassGlowSimple(p, rd);
+      else col = shadeMetal(p, rd, nLamp(p), m.y > 1.5 ? 1.0 : 0.0);
+      return true;
+    }
+    t += m.x;
+    if (t > tf) break;
+  }
+  return false;
+}
+vec3 tableFull(vec3 p, vec3 rd){
+  vec3 c = tableBase(p);
+  vec3 r = reflect(rd, vec3(0.0, 1.0, 0.0));
+  float cs = clamp(-rd.y, 0.0, 1.0);
+  float F = 0.03 + 0.97*pow(1.0 - cs, 5.0);
+  vec3 rc; float th;
+  vec3 refl;
+  if (marchReflect(p + r*0.003, r, rc, th)) refl = rc * exp(-th*0.45) * 0.8;
+  else refl = env(r, 0.35);
+  c += refl * F * 0.6;
+  return c;
+}
+vec3 bgPrimary(vec3 ro, vec3 rd){
+  float tw = rd.z > 0.0 ? (WALLZ - ro.z) / rd.z : 1e5;
+  float tt = rd.y < 0.0 ? -ro.y / rd.y : 1e5;
+  if (tt < tw){
+    vec3 p = ro + rd*tt;
+    vec3 c = tableFull(p, rd);
+    float k = smoothstep(WALLZ - 2.2, WALLZ, p.z);
+    return mix(c, wallColor(vec3(p.x, 0.0, WALLZ)), k*k*0.85);
+  }
+  return wallColor(ro + rd*tw);
+}
+vec3 aces(vec3 x){ return clamp((x*(2.51*x + 0.03)) / (x*(2.43*x + 0.59) + 0.14), 0.0, 1.0); }
+
+void main(){
+  vec2 uv = (gl_FragCoord.xy - 0.5*uRes) / uRes.y;
+  vec3 ro = uCamPos;
+  vec3 rd = normalize(uCamFwd*uFocal + uCamRight*uv.x + uCamUp*uv.y);
+  vec3 col = vec3(0.0);
+  bool hit = false;
+  float tn, tf;
+  if (boundCyl(ro, rd, tn, tf)){
+    float t = tn;
+    for (int i = 0; i < 120; i++){
+      vec3 p = ro + rd*t;
+      vec2 m = mapLamp(p);
+      if (m.x < 0.0008){
+        hit = true;
+        if (m.y > 2.5) col = shadeGlass(p, rd);
+        else col = shadeMetal(p, rd, nLamp(p), m.y > 1.5 ? 1.0 : 0.0);
+        break;
+      }
+      t += m.x;
+      if (t > tf) break;
+    }
+  }
+  if (!hit) col = bgPrimary(ro, rd);
+  col *= uExposure;
+  col = aces(col);
+  vec2 q = gl_FragCoord.xy / uRes - 0.5;
+  col *= 1.0 - 0.28*dot(q, q);
+  col = pow(col, vec3(1.0/2.2));
+  col += (hash12(gl_FragCoord.xy) - 0.5) / 255.0;
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+  // ---------------------------------------------------------------------------
+  // Deterministic wax choreography
+  // ---------------------------------------------------------------------------
+  function hashSeed(seed) {
+    if (typeof seed === 'number' && isFinite(seed)) return (Math.floor(seed) >>> 0) ^ 0x9e3779b9;
+    var s = String(seed == null ? DEFAULT_SEED : seed), h = 2166136261 >>> 0;
+    for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+    return h;
+  }
+  function mulberry32(a) {
+    return function () {
+      a = (a + 0x6D2B79F5) >>> 0;
+      var t = a;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function glassR(y) {
+    var t = Math.min(Math.max((y - 1.60) / (5.62 - 1.60), 0), 1);
+    if (t < 0.28) return 0.50 + (0.80 - 0.50) * Math.sin(t / 0.28 * Math.PI * 0.5);
+    return 0.80 - 0.43 * Math.pow((t - 0.28) / 0.72, 1.25);
+  }
+  function smooth01(e0, e1, x) {
+    var t = Math.min(Math.max((x - e0) / (e1 - e0), 0), 1);
+    return t * t * (3 - 2 * t);
+  }
+
+  var BASE_POOL = 1.96;
+  var SPEED = 0.55 + 0.7 * HEAT;
+
+  function buildBlobs(seed) {
+    var rnd = mulberry32(hashSeed(seed));
+    // Prewarmed arrangement: one blob still necked to the pool, a merging pair
+    // mid-bottle, one cooling at the top and several sinking at different heights.
+    var layout = [
+      { r: 0.215, ph: 0.10, P: 52 },
+      { r: 0.190, ph: 0.34, P: 47 },
+      { r: 0.165, ph: 0.34, P: 58 },
+      { r: 0.255, ph: 0.53, P: 63 },
+      { r: 0.200, ph: 0.71, P: 49 },
+      { r: 0.145, ph: 0.86, P: 41 },
+      { r: 0.120, ph: 0.23, P: 44 },
+      { r: 0.235, ph: 0.63, P: 67 }
+    ];
+    var out = layout.map(function (b) {
+      return {
+        r: b.r * (0.92 + 0.16 * rnd()),
+        ph: (b.ph + (rnd() - 0.5) * 0.03 + 1) % 1,
+        P: b.P * (0.9 + 0.2 * rnd()),
+        th: rnd() * Math.PI * 2,
+        w: (0.05 + 0.07 * rnd()) * (rnd() < 0.5 ? -1 : 1),
+        a: 0.25 + 0.4 * rnd(),
+        wob: rnd() * Math.PI * 2
+      };
+    });
+    out[2].ph = (out[1].ph + 0.012) % 1;
+    out[2].th = out[1].th + Math.PI;
+    out[1].a = 0.36; out[2].a = 0.36;
+    out[0].a = Math.min(out[0].a, 0.3);
+    return out;
+  }
+
+  function cycleY(ph, bottom, top) {
+    if (ph < 0.48) { var u = ph / 0.48; return bottom + (top - bottom) * u * u * (3 - 2 * u); }
+    if (ph < 0.58) { var u2 = (ph - 0.48) / 0.10; return top - 0.06 * Math.sin(u2 * Math.PI); }
+    var u3 = (ph - 0.58) / 0.42; return top + (bottom - top) * u3 * u3 * (3 - 2 * u3);
+  }
+
+  var blobA = new Float32Array(NB * 4);
+  var blobB = new Float32Array(NB * 4);
+
+  function poolTopAt(t) { return BASE_POOL + 0.02 * Math.sin(t * 0.21); }
+
+  function computeBlobs(blobs, t) {
+    var pool = poolTopAt(t);
+    for (var i = 0; i < NB; i++) {
+      var b = blobs[i];
+      var period = b.P / SPEED;
+      var ph = ((b.ph + t / period) % 1 + 1) % 1;
+      var bottom = BASE_POOL - 0.25 * b.r;
+      var top = 5.22 - b.r * 0.6;
+      var y = cycleY(ph, bottom, top);
+      var dph = 0.002;
+      var vy = (cycleY(Math.min(ph + dph, 0.9999), bottom, top) - cycleY(Math.max(ph - dph, 0), bottom, top)) / (2 * dph * period);
+      var dwell = (ph > 0.46 && ph < 0.62) ? Math.sin((ph - 0.46) / 0.16 * Math.PI) : 0;
+      var s = Math.max(0.8, 1 + Math.min(Math.abs(vy) * 2.2, 0.45) - 0.15 * dwell);
+      var rEff = b.r * (0.6 + 0.4 * smooth01(0, 0.12, ph));
+      rEff *= 1 - 0.4 * smooth01(0.92, 1.0, ph);
+      var rin = glassR(y) - 0.045;
+      var maxOff = Math.max(0, rin - rEff / Math.sqrt(s) - 0.04);
+      var amp = maxOff * b.a * (0.85 + 0.15 * Math.sin(t * 0.13 + b.wob));
+      var ang = b.th + b.w * t;
+      var neck = ph < 0.17 ? b.r * 0.7 * (1 - smooth01(0.03, 0.17, ph)) : 0;
+      blobA[i * 4] = Math.cos(ang) * amp;
+      blobA[i * 4 + 1] = y;
+      blobA[i * 4 + 2] = Math.sin(ang) * amp;
+      blobA[i * 4 + 3] = rEff;
+      blobB[i * 4] = s;
+      blobB[i * 4 + 1] = neck;
+      blobB[i * 4 + 2] = pool - 0.08;
+      blobB[i * 4 + 3] = 0;
+    }
+    return pool;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Renderer
+  // ---------------------------------------------------------------------------
+  var canvas = document.getElementById('scene');
+  var ctxOpts = { antialias: false, alpha: false, depth: false, stencil: false, preserveDrawingBuffer: true, powerPreference: 'high-performance' };
+  var gl = null, prog = null, buf = null, vao = null, loc = {};
+  var isGL2 = false;
+  var contextLost = false;
+  var destroyed = false;
+  var raf = 0;
+  var paused = false;
+  var lastNow = null;
+  var accum = 0;
+  var substeps = 0;
+  var seedValue = DEFAULT_SEED;
+  var blobs = buildBlobs(seedValue);
+  var renderScale = 1.0;
+  var frameAvg = 1 / 60;
+  var lastScaleChange = 0;
+
+  function compile(type, src) {
+    var sh = gl.createShader(type);
+    gl.shaderSource(sh, src);
+    gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+      var log = gl.getShaderInfoLog(sh);
+      gl.deleteShader(sh);
+      throw new Error('Shader compile failed: ' + log);
+    }
+    return sh;
+  }
+
+  function initGL() {
+    gl = canvas.getContext('webgl2', ctxOpts);
+    isGL2 = !!gl;
+    if (!gl) gl = canvas.getContext('webgl', ctxOpts) || canvas.getContext('experimental-webgl', ctxOpts);
+    if (!gl) return false;
+    var vs = compile(gl.VERTEX_SHADER, VERT);
+    var fs = compile(gl.FRAGMENT_SHADER, FRAG);
+    prog = gl.createProgram();
+    gl.attachShader(prog, vs);
+    gl.attachShader(prog, fs);
+    gl.bindAttribLocation(prog, 0, 'aPos');
+    gl.linkProgram(prog);
+    gl.deleteShader(vs);
+    gl.deleteShader(fs);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error('Program link failed: ' + gl.getProgramInfoLog(prog));
+    if (isGL2) { vao = gl.createVertexArray(); gl.bindVertexArray(vao); }
+    buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    gl.useProgram(prog);
+    ['uRes', 'uCamPos', 'uCamFwd', 'uCamRight', 'uCamUp', 'uFocal', 'uTime', 'uPoolTop', 'uHeat', 'uExposure',
+     'uBA', 'uBB', 'uCore', 'uHot', 'uGlow'].forEach(function (n) { loc[n] = gl.getUniformLocation(prog, n); });
+    var pal = PALETTES[PALETTE_INDEX];
+    gl.uniform3fv(loc.uCore, pal.core);
+    gl.uniform3fv(loc.uHot, pal.hot);
+    gl.uniform3fv(loc.uGlow, pal.glow);
+    gl.uniform1f(loc.uHeat, HEAT);
+    gl.uniform1f(loc.uExposure, EXPOSURE);
+    return true;
+  }
+
+  function releaseGL() {
+    if (!gl) return;
+    try {
+      if (buf) gl.deleteBuffer(buf);
+      if (vao && isGL2) gl.deleteVertexArray(vao);
+      if (prog) gl.deleteProgram(prog);
+    } catch (e) { /* context may already be lost */ }
+    buf = null; vao = null; prog = null; loc = {};
+  }
+
+  function resizeCanvas() {
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var cw = Math.max(1, window.innerWidth), ch = Math.max(1, window.innerHeight);
+    var scale = dpr * renderScale;
+    var maxPixels = 2.4e6;
+    if (cw * ch * scale * scale > maxPixels) scale = Math.sqrt(maxPixels / (cw * ch));
+    var w = Math.max(1, Math.round(cw * scale)), h = Math.max(1, Math.round(ch * scale));
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  }
+
+  function setCamera(w, h) {
+    var aspect = w / h;
+    var s = Math.min(FIT / (LAMP_TOP - LAMP_BOTTOM), FIT * aspect / (2 * LAMP_HALF_WIDTH));
+    var ce = Math.cos(CAM_ELEV), se = Math.sin(CAM_ELEV);
+    var pos = [0, LAMP_CENTER_Y + CAM_DIST * se, -CAM_DIST * ce];
+    var fwd = [0, -se, ce];
+    var right = [1, 0, 0];
+    var up = [0, ce, se];
+    gl.uniform3fv(loc.uCamPos, pos);
+    gl.uniform3fv(loc.uCamFwd, fwd);
+    gl.uniform3fv(loc.uCamRight, right);
+    gl.uniform3fv(loc.uCamUp, up);
+    gl.uniform1f(loc.uFocal, s * CAM_DIST);
+  }
+
+  function simTime() { return substeps * SIM_STEP; }
+
+  function draw() {
+    if (destroyed || contextLost || !gl || !prog) return;
+    resizeCanvas();
+    var w = canvas.width, h = canvas.height;
+    gl.viewport(0, 0, w, h);
+    gl.useProgram(prog);
+    if (isGL2) gl.bindVertexArray(vao);
+    var t = simTime();
+    var pool = computeBlobs(blobs, t);
+    gl.uniform2f(loc.uRes, w, h);
+    setCamera(w, h);
+    gl.uniform1f(loc.uTime, t);
+    gl.uniform1f(loc.uPoolTop, pool);
+    gl.uniform4fv(loc.uBA, blobA);
+    gl.uniform4fv(loc.uBB, blobB);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  function adaptQuality(dt, now) {
+    frameAvg = frameAvg * 0.92 + dt * 0.08;
+    if (now - lastScaleChange < 1200) return;
+    if (frameAvg > 1 / 28 && renderScale > 0.45) { renderScale = Math.max(0.45, renderScale * 0.85); lastScaleChange = now; }
+    else if (frameAvg < 1 / 55 && renderScale < 1) { renderScale = Math.min(1, renderScale * 1.08); lastScaleChange = now; }
+  }
+
+  function frame(now) {
+    if (destroyed) return;
+    raf = requestAnimationFrame(frame);
+    if (contextLost) return;
+    if (!paused) {
+      if (lastNow === null) lastNow = now;
+      var dt = Math.min(Math.max((now - lastNow) / 1000, 0), 0.1);
+      lastNow = now;
+      if (dt > 0) adaptQuality(dt, now);
+      accum += dt;
+      while (accum >= SIM_STEP) { accum -= SIM_STEP; substeps++; }
+      draw();
+    }
+  }
+
+  function onResize() { draw(); }
+  function onContextLost(e) { e.preventDefault(); contextLost = true; }
+  function onContextRestored() {
+    contextLost = false;
+    releaseGL();
+    try { initGL(); } catch (err) { console.error(err); }
+    lastNow = null;
+    draw();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Benchmark API
+  // ---------------------------------------------------------------------------
+  function getState() {
+    return { heat: HEAT, paletteIndex: PALETTE_INDEX };
+  }
+
+  function reset(seed) {
+    if (seed !== undefined && seed !== null) seedValue = seed;
+    blobs = buildBlobs(seedValue);
+    substeps = 0;
+    accum = 0;
+    lastNow = null;
+    draw();
+    return getState();
+  }
+
+  function advance(ms) {
+    var n = Math.max(0, Math.round((Number(ms) || 0) / 1000 / SIM_STEP));
+    substeps += n;
+    draw();
+    return getState();
+  }
+
+  function step(frames) {
+    var f = frames === undefined ? 1 : Math.max(0, Math.floor(Number(frames) || 0));
+    return advance(f * 1000 / 60);
+  }
+
+  function seek(seconds) {
+    substeps = Math.max(0, Math.round((Number(seconds) || 0) / SIM_STEP));
+    accum = 0;
+    lastNow = null;
+    draw();
+    return getState();
+  }
+
+  function pause() { paused = true; lastNow = null; return getState(); }
+  function resume() { paused = false; lastNow = null; return getState(); }
+
+  function renderFrame() { draw(); return getState(); }
+
+  function destroy() {
+    if (destroyed) return;
+    destroyed = true;
+    cancelAnimationFrame(raf);
+    raf = 0;
+    window.removeEventListener('resize', onResize);
+    canvas.removeEventListener('webglcontextlost', onContextLost);
+    canvas.removeEventListener('webglcontextrestored', onContextRestored);
+    releaseGL();
+    if (gl) {
+      var ext = gl.getExtension('WEBGL_lose_context');
+      if (ext) ext.loseContext();
+    }
+    gl = null;
+  }
+
+  var api = {
+    manifest: manifest,
+    getManifest: function () { return manifest; },
+    getState: getState,
+    reset: reset,
+    destroy: destroy,
+    pause: pause,
+    resume: resume,
+    play: resume,
+    step: step,
+    advance: advance,
+    seek: seek,
+    renderFrame: renderFrame,
+    render: renderFrame,
+    getElapsed: function () { return simTime(); },
+    isPaused: function () { return paused; },
+    canvas: canvas
+  };
+
+  window.BRIDGEBENCH_MANIFEST = manifest;
+  window.BridgeBench = api;
+  window.bridgeBench = api;
+  window.bench = api;
+  window.__bench = api;
+  window.benchmark = api;
+  window.lavaLamp = api;
+
+  // ---------------------------------------------------------------------------
+  // Boot
+  // ---------------------------------------------------------------------------
+  try {
+    var params = new URLSearchParams(window.location.search);
+    if (params.has('seed')) {
+      var sv = params.get('seed');
+      seedValue = /^-?\d+$/.test(sv) ? parseInt(sv, 10) : sv;
+      blobs = buildBlobs(seedValue);
+    }
+  } catch (e) { /* ignore */ }
+
+  window.addEventListener('resize', onResize);
+  canvas.addEventListener('webglcontextlost', onContextLost, false);
+  canvas.addEventListener('webglcontextrestored', onContextRestored, false);
+
+  var ok = false;
+  try { ok = initGL(); } catch (err) { console.error(err); ok = false; }
+  if (ok) draw();
+  raf = requestAnimationFrame(frame);
+
+  try { window.dispatchEvent(new CustomEvent('bridgebench:ready', { detail: { manifest: manifest } })); } catch (e) { /* ignore */ }
+})();
+</script>
+</body>
+</html>
