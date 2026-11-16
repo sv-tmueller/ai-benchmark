@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HydraSense</title>
+<style>
+  :root {
+    --ink: #1c1f1e;
+    --paper: #f7f6f2;
+    --accent: #7a9a84;
+    --muted: #8a8f8c;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: Georgia, "Times New Roman", serif;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4rem 1.5rem;
+  }
+  main {
+    max-width: 42rem;
+    text-align: center;
+  }
+  h1 {
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-weight: 300;
+    font-size: clamp(2.75rem, 7vw, 4.5rem);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    margin-bottom: 0.75rem;
+  }
+  .rule {
+    width: 3.5rem;
+    height: 2px;
+    background: var(--accent);
+    margin: 0 auto 2.75rem;
+  }
+  #description {
+    font-size: 1.1875rem;
+    line-height: 1.85;
+    text-align: left;
+  }
+  #description p + p {
+    margin-top: 1.4em;
+  }
+  #description p:first-child::first-letter {
+    font-size: 1.6em;
+    line-height: 1;
+    color: var(--accent);
+  }
+  .wordcount {
+    margin-top: 3rem;
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 0.75rem;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>HydraSense</h1>
+  <div class="rule"></div>
+  <div id="description">
+    <p>Meet HydraSense, the water bottle that pays attention so you don&rsquo;t have to. A built-in sensor quietly tracks every sip throughout your day, while a soft, ambient glow offers a gentle nudge when it&rsquo;s time to drink. No alarms, no noise. And when you want the full picture, HydraSense syncs seamlessly with iOS and Android health apps.</p>
+    <p>Crafted from vacuum-insulated stainless steel, its 750ml body keeps water cold from your first meeting to your evening run. One USB-C charge delivers thirty days of effortless hydration tracking, about as low-maintenance as wellness gets.</p>
+    <p>Available in matte black, sage green, and coral, HydraSense fits your desk, your bag, and your pace. Because feeling your best shouldn&rsquo;t be another task on your list. It should simply flow.</p>
+  </div>
+  <p class="wordcount">124 words</p>
+</main>
+</body>
+</html>
