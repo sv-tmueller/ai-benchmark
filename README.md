@@ -52,7 +52,7 @@ name) and a `[system]`/`[user]` text pair.
 | Prompt | Deliverable | Runtime needs |
 |---|---|---|
 | `game-melon-jelly.toml` | HTML: soft-body watermelon slice to squish and cut | None — fully offline |
-| `game-lava-lamp.toml` | HTML: ray-marched lava lamp studio shot | None — fully offline |
+| `scene-lava-lamp.toml` | HTML: ray-marched lava lamp studio shot | None — fully offline |
 | `game-minecraft.toml` | HTML: voxel world with mining, crafting and mobs | Internet — Three.js + JSZip from a CDN; optional resource pack |
 | `scene-meridian-launch.toml` | HTML: scripted rocket launch scene | Internet — Three.js from a CDN |
 | `scene-sunset-ocean.toml` | HTML: open ocean at sunset | Internet — Three.js from a CDN |
@@ -183,7 +183,7 @@ for example `generated (high, max), review pending`.
 | Prompt | Deliverable | Target path | Status |
 |---|---|---|---|
 | `game-melon-jelly` | HTML | `results/melon-jelly/melon-jelly_claude_fable_5_2_<effort>.html` | generated (medium), review pending |
-| `game-lava-lamp` | HTML | `results/lava-lamp/lava-lamp_claude_fable_5_2_<effort>.html` | generated (medium), review pending |
+| `scene-lava-lamp` | HTML | `results/lava-lamp/lava-lamp_claude_fable_5_2_<effort>.html` | generated (medium), review pending |
 | `game-minecraft` | HTML | `results/minecraft/minecraft_claude_fable_5_2_<effort>.html` | generated (medium), review pending |
 | `scene-meridian-launch` | HTML | `results/meridian-launch/meridian-launch_claude_fable_5_2_<effort>.html` | generated (medium), review pending |
 | `scene-sunset-ocean` | HTML | `results/sunset-ocean/sunset-ocean_claude_fable_5_2_<effort>.html` | generated (medium), review pending |
