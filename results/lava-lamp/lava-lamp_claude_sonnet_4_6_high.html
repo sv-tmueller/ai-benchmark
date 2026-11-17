@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lava Lamp</title>
+<style>
+html,body{margin:0;padding:0;width:100%;height:100%;background:#1c1a14;overflow:hidden;display:flex;align-items:center;justify-content:center}
+canvas{display:block}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+(function(){'use strict';
+
+/* Seeded PRNG (mulberry32) */
+function mkRng(a){
+  a=a>>>0;
+  return function(){
+    a=(a+0x6D2B79F5)>>>0;
+    var t=Math.imul(a^(a>>>15),1|a);
+    t^=t+Math.imul(t^(t>>>7),61|t);
+    return((t^(t>>>14))>>>0)/4294967296;
+  };
+}
+
+/* ── Blob physics ── */
+var NB=7;
+var blobs=[],raf=null,simT=0,lastMs=0,curSeed=0xAB12CD34;
+
+function blobR_js(y){
+  var t=Math.max(0,Math.min(1,(y+0.69)/1.38));
+  return 0.165-0.020*t;
+}
+
+function initBlobs(seed){
+  var rng=mkRng(seed);
+  blobs=[];
+  for(var i=0;i<NB;i++){
+    var r=0.072+rng()*0.063;
+    var ang=rng()*6.2832,dr=rng()*0.07;
+    blobs.push({x:Math.cos(ang)*dr,y:-0.60+rng()*0.12,z:Math.sin(ang)*dr,vx:0,vy:0,vz:0,r:r,temp:0});
+  }
+}
+
+function physStep(dt){
+  for(var i=0;i<NB;i++){
+    var b=blobs[i];
+    if(b.y<-0.30) b.temp=Math.min(1,b.temp+0.70*dt);
+    else if(b.y>0.25) b.temp=Math.max(0,b.temp-0.55*dt);
+    var fy=b.temp*1.15-0.42*(1.0-b.temp*0.45);
+    b.vy+=fy*dt;
+    b.vx*=0.90;b.vz*=0.90;b.vy*=0.93;
+    b.x+=b.vx*dt;b.y+=b.vy*dt;b.z+=b.vz*dt;
+    var br=blobR_js(b.y),mr=Math.max(br-b.r*0.55,0.001);
+    var hr=Math.sqrt(b.x*b.x+b.z*b.z);
+    if(hr>mr){var s=mr/hr;b.x*=s;b.z*=s;b.vx*=-0.3;b.vz*=-0.3;}
+    if(b.y<-0.68+b.r){b.y=-0.68+b.r;b.vy=Math.abs(b.vy)*0.25;}
+    if(b.y> 0.68-b.r){b.y= 0.68-b.r;b.vy=-Math.abs(b.vy)*0.25;}
+  }
+}
+
+function prewarm(seed,n){
+  initBlobs(seed);simT=0;
+  for(var i=0;i<n;i++) physStep(0.016);
+}
+
+/* ── WebGL ── */
+var canvas=document.getElementById('c');
+var gl=canvas.getContext('webgl2',{antialias:false,alpha:false,depth:false,stencil:false});
+if(!gl){
+  document.body.innerHTML='<p style="color:#ccc;font-family:sans-serif;padding:40px">WebGL 2 required</p>';
+  return;
+}
+
+var prog=null,uTime,uRes,uBlobs,uBlobR;
+
+function resize(){
+  var W=innerWidth*0.80,H=innerHeight*0.80;
+  var w=Math.min(W,H*0.5),h=w*2.0;
+  if(h>H){h=H;w=h*0.5;}
+  canvas.width=Math.round(w);canvas.height=Math.round(h);
+  canvas.style.width=canvas.width+'px';canvas.style.height=canvas.height+'px';
+  gl.viewport(0,0,canvas.width,canvas.height);
+  if(prog){gl.useProgram(prog);gl.uniform2f(uRes,canvas.width,canvas.height);}
+}
+
+var VS=`#version 300 es
+in vec2 a_pos;out vec2 v_uv;
+void main(){v_uv=a_pos*.5+.5;gl_Position=vec4(a_pos,0,1);}`;
+
+var FS=`#version 300 es
+precision highp float;
+in vec2 v_uv;out vec4 fragColor;
+uniform float u_time;
+uniform vec2  u_res;
+uniform vec3  u_blobs[7];
+uniform float u_blobR[7];
+
+float smin(float a,float b,float k){float h=max(k-abs(a-b),0.)/k;return min(a,b)-h*h*h*k/6.;}
+float sdS(vec3 p,float r){return length(p)-r;}
+float sdCyl(vec3 p,float h,float r){vec2 d=abs(vec2(length(p.xz),p.y))-vec2(r,h);return min(max(d.x,d.y),0.)+length(max(d,0.));}
+float sdCone(vec3 p,float h,float r1,float r2){
+  vec2 q=vec2(length(p.xz),p.y),k1=vec2(r2,h),k2=vec2(r2-r1,2.*h);
+  vec2 ca=vec2(q.x-min(q.x,(q.y<0.)?r1:r2),abs(q.y)-h);
+  vec2 cb=q-k1+k2*clamp(dot(k1-q,k2)/dot(k2,k2),0.,1.);
+  return((cb.x<0.&&ca.y<0.)?-1.:1.)*sqrt(min(dot(ca,ca),dot(cb,cb)));
+}
+
+/* Bottle outer — tapered glass cylinder with rounded ends */
+float sdBO(vec3 p){
+  return min(sdCone(p,.72,.192,.172),
+         min(sdS(p-vec3(0,-.72,0),.194),
+             sdS(p-vec3(0, .72,0),.174)));
+}
+
+/* Silver base */
+float sdBase(vec3 p){
+  vec3 b=p-vec3(0,-.95,0);
+  return smin(sdCyl(b,.17,.26),sdCyl(p-vec3(0,-.77,0),.028,.213),.030);
+}
+
+/* Silver cap */
+float sdCap(vec3 p){
+  vec3 b=p-vec3(0,.845,0);
+  return smin(sdCyl(b,.055,.152),sdS(b-vec3(0,.055,0),.152),.025);
+}
+
+/* Wax metaballs — unrolled for constant-index safety */
+float sdWax(vec3 p){
+  float d=1e9;
+  d=smin(d,sdS(p-u_blobs[0],u_blobR[0]),.12);
+  d=smin(d,sdS(p-u_blobs[1],u_blobR[1]),.12);
+  d=smin(d,sdS(p-u_blobs[2],u_blobR[2]),.12);
+  d=smin(d,sdS(p-u_blobs[3],u_blobR[3]),.12);
+  d=smin(d,sdS(p-u_blobs[4],u_blobR[4]),.12);
+  d=smin(d,sdS(p-u_blobs[5],u_blobR[5]),.12);
+  d=smin(d,sdS(p-u_blobs[6],u_blobR[6]),.12);
+  return d;
+}
+
+#define MT_FL 0.
+#define MT_BA 1.
+#define MT_CA 2.
+#define MT_GL 3.
+
+vec2 scene(vec3 p){
+  float d=p.y+1.115,m=MT_FL;
+  float db=sdBase(p);if(db<d){d=db;m=MT_BA;}
+  float dc=sdCap(p); if(dc<d){d=dc;m=MT_CA;}
+  float dg=sdBO(p);  if(dg<d){d=dg;m=MT_GL;}
+  return vec2(d,m);
+}
+
+vec3 nS(vec3 p){float e=.0013;return normalize(vec3(scene(p+vec3(e,0,0)).x-scene(p-vec3(e,0,0)).x,scene(p+vec3(0,e,0)).x-scene(p-vec3(0,e,0)).x,scene(p+vec3(0,0,e)).x-scene(p-vec3(0,0,e)).x));}
+vec3 nBO(vec3 p){float e=.0013;return normalize(vec3(sdBO(p+vec3(e,0,0))-sdBO(p-vec3(e,0,0)),sdBO(p+vec3(0,e,0))-sdBO(p-vec3(0,e,0)),sdBO(p+vec3(0,0,e))-sdBO(p-vec3(0,0,e))));}
+vec3 nWax(vec3 p){float e=.0013;return normalize(vec3(sdWax(p+vec3(e,0,0))-sdWax(p-vec3(e,0,0)),sdWax(p+vec3(0,e,0))-sdWax(p-vec3(0,e,0)),sdWax(p+vec3(0,0,e))-sdWax(p-vec3(0,0,e))));}
+
+/* ── Lighting & environment ── */
+
+/* Vertical softbox strips (narrow horizontal angle, tall) */
+float sbx(vec3 rd){
+  vec2 h=normalize(rd.xz);
+  float yF=clamp(1.-abs(rd.y)*1.4,.2,1.);
+  float dL=pow(max(dot(h,normalize(vec2(-.85,-.52))),0.),200.);
+  float dR=pow(max(dot(h,normalize(vec2( .85,-.52))),0.),200.);
+  return(dL+dR)*14.*yF;
+}
+
+vec3 env(vec3 rd){
+  return mix(vec3(.058,.052,.046),vec3(.102,.095,.088),rd.y*.5+.5)
+        +vec3(.90,.92,.98)*sbx(rd)*.90;
+}
+
+float htr(vec3 p){vec3 d=p-vec3(0,-1.1,0);return .55/(1.+dot(d,d)*10.);}
+
+vec3 lgtS(vec3 p,vec3 n,vec3 vd,vec3 alb,float sp,float ss){
+  vec3 kL=normalize(vec3(-1.4,2.2,-1.1));
+  float kD=max(dot(n,kL),0.);
+  vec3  kH=normalize(vd+kL);
+  vec3  c=(alb*kD*.76+vec3(.90,.92,.98)*pow(max(dot(n,kH),0.),sp)*ss)*vec3(.80,.84,.95);
+  c+=alb*max(dot(n,normalize(vec3(1.3,.5,-.3))),0.)*.19*vec3(.60,.50,.35);
+  c+=alb*max(dot(n,vec3(0,1,0)),0.)*htr(p)*1.9*vec3(1.,.48,.08);
+  return c+alb*.068*vec3(.90,.84,.76);
+}
+
+/* Wax color: amber edge (thin) → deep red-orange core (thick) */
+vec3 waxC(vec3 p,float t){
+  float hf=clamp((-p.y-.20)/.60,0.,1.);
+  return mix(
+    mix(vec3(.98,.56,.055),vec3(.78,.095,.010),t),
+    vec3(1.,.60,.07),
+    hf*(1.-t)*.42
+  );
+}
+
+/* ── Ray marching ── */
+
+vec2 rmS(vec3 ro,vec3 rd,float tn,float tx){
+  float t=tn;
+  for(int i=0;i<96;i++){
+    vec2 d=scene(ro+t*rd);
+    if(d.x<.0009*(1.+t)) return vec2(t,d.y);
+    t+=d.x; if(t>tx) break;
+  }
+  return vec2(-1,-1);
+}
+
+float rmW(vec3 ro,vec3 rd,float tx){
+  float t=.004;
+  for(int i=0;i<72;i++){
+    vec3 p=ro+t*rd;
+    if(sdBO(p)>.045) return -1.;
+    float d=sdWax(p);
+    if(d<.0009) return t;
+    t+=max(d,.004); if(t>tx) break;
+  }
+  return -1.;
+}
+
+/* Measure approximate wax thickness along ray */
+float wTk(vec3 p,vec3 rd){
+  float v=0.;
+  for(int i=0;i<24;i++){
+    if(sdWax(p)>.002) break;
+    v+=.009; p+=rd*.009;
+  }
+  return v;
+}
+
+/* Render bottle interior: wax or amber liquid */
+vec3 gint(vec3 ro,vec3 rd){
+  float tw=rmW(ro,rd,1.4);
+  if(tw>0.){
+    vec3 wp=ro+tw*rd;
+    vec3 wn=nWax(wp);
+    if(dot(wn,rd)>0.) wn=-wn;
+    float tk=wTk(wp,rd);
+    float t=clamp(tk/.22,0.,1.);
+    vec3 vd=-rd;
+    vec3 kL=normalize(vec3(-1.4,2.2,-1.1));
+    float back=max(-dot(wn,kL),0.)*(1.-t)*.80;
+    vec3 edge=vec3(.98,.56,.055);
+    return lgtS(wp,wn,vd,waxC(wp,t),22.,.28)+edge*back*vec3(.9,.5,.05);
+  }
+  /* Clear liquid: faint amber tint over dim studio */
+  return env(rd)*.68+vec3(.52,.33,.06)*.13;
+}
+
+/* ── Surface shading ── */
+vec3 shade(vec3 ro,vec3 rd){
+  vec2 hit=rmS(ro,rd,.1,8.5);
+  if(hit.x<0.) return env(rd);
+  float t=hit.x,m=hit.y;
+  vec3 p=ro+t*rd,vd=-rd;
+
+  /* Dark table */
+  if(m==MT_FL){
+    vec3 n=vec3(0,1,0);
+    vec3 c=vec3(.050,.045,.040)+htr(p)*.32*vec3(1.,.5,.1);
+    c+=vec3(.45,.38,.28)*max(dot(n,normalize(vec3(-1.4,2.2,-1.1))),0.)*.16;
+    return mix(c,env(reflect(rd,n))*.40,pow(1.-abs(dot(vd,n)),4.)*.10);
+  }
+
+  /* Brushed silver base */
+  if(m==MT_BA){
+    vec3 n=nS(p);if(dot(n,vd)<0.)n=-n;
+    float fr=pow(1.-abs(dot(vd,n)),3.)*.50+.04;
+    vec3 rfl=reflect(rd,n);
+    return clamp(mix(lgtS(p,n,vd,vec3(.68,.68,.66),65.,.65),
+                     env(rfl)+vec3(.95,.95,1.)*sbx(rfl)*1.6,fr),0.,1.);
+  }
+
+  /* Brushed silver cap */
+  if(m==MT_CA){
+    vec3 n=nS(p);if(dot(n,vd)<0.)n=-n;
+    float fr=pow(1.-abs(dot(vd,n)),3.)*.55+.04;
+    vec3 rfl=reflect(rd,n);
+    return clamp(mix(lgtS(p,n,vd,vec3(.74,.74,.72),85.,.85),
+                     env(rfl)+vec3(.95,.95,1.)*sbx(rfl)*2.2,fr),0.,1.);
+  }
+
+  /* Glass: Schlick fresnel, refraction into bottle interior */
+  if(m==MT_GL){
+    vec3 n=nBO(p);if(dot(n,rd)>0.)n=-n;
+    float cosI=abs(dot(vd,n));
+    float fr=clamp((.04+(1.-.04)*pow(1.-cosI,5.))*1.7+.025,0.,.95);
+    vec3 rfl=reflect(rd,n);
+    vec3 rfr=refract(rd,n,1./1.47);
+    if(length(rfr)<.01) rfr=rd;
+    vec3 rC=env(rfl)+vec3(1.,1.,1.05)*sbx(rfl)*3.;
+    return clamp(mix(gint(p+rfr*.025,rfr),rC,fr),0.,1.);
+  }
+
+  return env(rd);
+}
+
+void main(){
+  vec2 uv=(v_uv-.5)*2.;
+  uv.x*=u_res.x/u_res.y;
+
+  /* Camera at z=2.6, aimed slightly below center for balanced framing */
+  vec3 ro=vec3(0,0,2.6);
+  vec3 cf=normalize(vec3(0,-.08,0)-ro);
+  vec3 cr=normalize(cross(cf,vec3(0,1,0)));
+  vec3 cu=normalize(cross(cr,cf));
+  vec3 rd=normalize(cf+uv.x*.52*cr+uv.y*.52*cu);
+
+  vec3 col=shade(ro,rd);
+
+  /* Vignette */
+  vec2 uv2=v_uv-.5;
+  uv2.x*=u_res.x/u_res.y;
+  col*=(1.-.28*dot(uv2,uv2)*4.)*1.06;
+
+  /* Gamma */
+  fragColor=vec4(pow(clamp(col,0.,1.),vec3(1./2.2)),1);
+}`;
+
+function mkS(type,src){
+  var s=gl.createShader(type);
+  gl.shaderSource(s,src);gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){
+    console.error(gl.getShaderInfoLog(s));return null;
+  }
+  return s;
+}
+
+var vs=mkS(gl.VERTEX_SHADER,VS),fs=mkS(gl.FRAGMENT_SHADER,FS);
+if(!vs||!fs){document.body.textContent='Shader error – see console';return;}
+var p2=gl.createProgram();
+gl.attachShader(p2,vs);gl.attachShader(p2,fs);gl.linkProgram(p2);
+if(!gl.getProgramParameter(p2,gl.LINK_STATUS)){console.error(gl.getProgramInfoLog(p2));return;}
+prog=p2;gl.useProgram(prog);
+uTime=gl.getUniformLocation(prog,'u_time');
+uRes =gl.getUniformLocation(prog,'u_res');
+uBlobs=gl.getUniformLocation(prog,'u_blobs');
+uBlobR=gl.getUniformLocation(prog,'u_blobR');
+
+var buf=gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]),gl.STATIC_DRAW);
+var ap=gl.getAttribLocation(prog,'a_pos');
+gl.enableVertexAttribArray(ap);
+gl.vertexAttribPointer(ap,2,gl.FLOAT,false,0,0);
+
+resize();window.addEventListener('resize',resize);
+prewarm(curSeed,500);
+
+function frame(ms){
+  raf=requestAnimationFrame(frame);
+  var dt=Math.min((ms-lastMs)/1000,.033);lastMs=ms;
+  physStep(dt);simT+=dt;
+  var bp=new Float32Array(NB*3),br=new Float32Array(NB);
+  for(var i=0;i<NB;i++){
+    bp[i*3]=blobs[i].x;bp[i*3+1]=blobs[i].y;bp[i*3+2]=blobs[i].z;
+    br[i]=blobs[i].r;
+  }
+  gl.uniform1f(uTime,simT);
+  gl.uniform3fv(uBlobs,bp);
+  gl.uniform1fv(uBlobR,br);
+  gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
+}
+lastMs=performance.now();
+raf=requestAnimationFrame(frame);
+
+/* ── BridgeBench manifest & API ── */
+window.__benchAPI={
+  manifest:{
+    id:'scene-lava-lamp',
+    version:'1.0.0',
+    title:'Photoreal ray-marched lava lamp studio shot',
+    endpoint:'none',
+    controls:[],
+    stateKeys:['heat','paletteIndex']
+  },
+  getState:function(){return{heat:0.65,paletteIndex:0};},
+  reset:function(seed){
+    if(typeof seed!=='number'||!isFinite(seed)) seed=0xAB12CD34;
+    curSeed=seed>>>0;simT=0;lastMs=performance.now();
+    prewarm(curSeed,500);
+  },
+  destroy:function(){
+    if(raf!==null){cancelAnimationFrame(raf);raf=null;}
+    window.removeEventListener('resize',resize);
+    gl.deleteProgram(prog);
+    gl.deleteBuffer(buf);
+  }
+};
+
+})();
+</script>
+</body>
+</html>
