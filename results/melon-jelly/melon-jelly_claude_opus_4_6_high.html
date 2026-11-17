@@ -1,0 +1,924 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Melon Jelly – XPBD Soft-Body Watermelon</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{overflow:hidden;background:#1a1a2e;font-family:system-ui,sans-serif;user-select:none;touch-action:none}
+canvas{display:block}
+#toolbar{position:fixed;top:12px;left:12px;display:flex;gap:6px;z-index:10}
+#toolbar button{padding:6px 14px;border:none;border-radius:6px;background:#2d2d44;color:#eee;font-size:13px;cursor:pointer;transition:background .15s}
+#toolbar button:hover{background:#3d3d5c}
+#toolbar button.active{background:#6c5ce7;color:#fff}
+#colorPanel{position:fixed;top:52px;left:12px;display:none;background:#2d2d44;border-radius:8px;padding:8px;z-index:10;flex-wrap:wrap;gap:6px;width:200px}
+#colorPanel.show{display:flex}
+.swatch{width:28px;height:28px;border-radius:50%;cursor:pointer;border:2px solid transparent;transition:border-color .15s}
+.swatch:hover,.swatch.sel{border-color:#fff}
+#colorPanel input[type=color]{width:60px;height:28px;border:none;background:none;cursor:pointer}
+#paramPanel{position:fixed;top:12px;right:12px;background:#2d2d44;border-radius:8px;padding:10px;z-index:10;color:#ccc;font-size:12px;display:none;width:200px}
+#paramPanel.show{display:block}
+#paramPanel label{display:flex;justify-content:space-between;margin:4px 0}
+#paramPanel input[type=range]{width:100px}
+#fps{position:fixed;bottom:12px;right:12px;color:#8f8;font-size:13px;font-family:monospace;z-index:10;cursor:pointer}
+</style>
+</head>
+<body>
+<div id="toolbar">
+<button id="btnGrab" class="active">Grab</button>
+<button id="btnKnife">Knife</button>
+<button id="btnColor">Color</button>
+<button id="btnReset">Reset</button>
+<button id="btnParams">⚙</button>
+</div>
+<div id="colorPanel">
+<div class="swatch sel" data-c="#e74c6f"></div>
+<div class="swatch" data-c="#ff6b6b"></div>
+<div class="swatch" data-c="#f39c12"></div>
+<div class="swatch" data-c="#fdcb6e"></div>
+<div class="swatch" data-c="#a29bfe"></div>
+<div class="swatch" data-c="#55efc4"></div>
+<div class="swatch" data-c="#fd79a8"></div>
+<div class="swatch" data-c="#e17055"></div>
+<input type="color" id="customColor" value="#e74c6f">
+</div>
+<div id="paramPanel">
+<b>Parameters</b>
+<label>Stiffness <input type="range" id="pStiff" min="0.01" max="1" step="0.01" value="0.35"></label>
+<label>Damping <input type="range" id="pDamp" min="0" max="0.05" step="0.001" value="0.01"></label>
+<label>Gravity <input type="range" id="pGrav" min="0" max="2000" step="50" value="800"></label>
+<label>Wobble <input type="range" id="pWobble" min="0" max="1" step="0.01" value="0.6"></label>
+</div>
+<div id="fps">FPS: --</div>
+<canvas id="c"></canvas>
+<script>
+"use strict";
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const DPR = window.devicePixelRatio || 1;
+
+let W, H;
+function resize() {
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * DPR; canvas.height = H * DPR;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+resize();
+window.addEventListener('resize', resize);
+
+// --- Parameters ---
+const params = {
+  stiffness: 0.35,
+  damping: 0.01,
+  gravity: 800,
+  wobble: 0.6
+};
+
+document.getElementById('pStiff').oninput = e => params.stiffness = +e.target.value;
+document.getElementById('pDamp').oninput = e => params.damping = +e.target.value;
+document.getElementById('pGrav').oninput = e => params.gravity = +e.target.value;
+document.getElementById('pWobble').oninput = e => params.wobble = +e.target.value;
+
+// --- Tool state ---
+let tool = 'grab';
+let fleshColor = '#e74c6f';
+const RIND_COLOR = '#2ecc71';
+const PITH_COLOR = '#f1f0e8';
+const SEED_COLOR = '#2c3e50';
+const FLOOR_Y_OFFSET = 80;
+let floorY;
+
+function updateFloorY() { floorY = H - FLOOR_Y_OFFSET; }
+updateFloorY();
+window.addEventListener('resize', updateFloorY);
+
+// --- UI ---
+const btnGrab = document.getElementById('btnGrab');
+const btnKnife = document.getElementById('btnKnife');
+const btnColor = document.getElementById('btnColor');
+const btnReset = document.getElementById('btnReset');
+const btnParams = document.getElementById('btnParams');
+const colorPanel = document.getElementById('colorPanel');
+const paramPanel = document.getElementById('paramPanel');
+const fpsEl = document.getElementById('fps');
+let showFps = true;
+fpsEl.onclick = () => { showFps = !showFps; fpsEl.style.display = showFps ? 'block' : 'none'; };
+
+function setTool(t) {
+  tool = t;
+  btnGrab.classList.toggle('active', t === 'grab');
+  btnKnife.classList.toggle('active', t === 'knife');
+  btnColor.classList.toggle('active', t === 'color');
+  colorPanel.classList.toggle('show', t === 'color');
+}
+btnGrab.onclick = () => setTool('grab');
+btnKnife.onclick = () => setTool('knife');
+btnColor.onclick = () => setTool('color');
+btnReset.onclick = () => initSimulation();
+btnParams.onclick = () => paramPanel.classList.toggle('show');
+
+document.querySelectorAll('.swatch').forEach(s => {
+  s.style.background = s.dataset.c;
+  s.onclick = () => {
+    fleshColor = s.dataset.c;
+    document.querySelectorAll('.swatch').forEach(x => x.classList.remove('sel'));
+    s.classList.add('sel');
+    document.getElementById('customColor').value = fleshColor;
+  };
+});
+document.getElementById('customColor').oninput = e => {
+  fleshColor = e.target.value;
+  document.querySelectorAll('.swatch').forEach(x => x.classList.remove('sel'));
+};
+
+// --- Geometry: half-disc melon ---
+/** @type {{x:number,y:number,ox:number,oy:number,vx:number,vy:number,mass:number,invMass:number,isRind:boolean,isPith:boolean,isSeed:boolean,pinned:boolean}[]} */
+let particles = [];
+/** @type {{a:number,b:number,rest:number,stiffness:number}[]} */
+let distConstraints = [];
+/** @type {{a:number,b:number,c:number,restArea:number}[]} */
+let areaConstraints = [];
+/** @type {number[][]} */
+let triangles = [];
+/** @type {{cx:number,cy:number,particleIdx:number}[]} */
+let seeds = [];
+
+/** @type {{particles:number[],distConstraints:{a:number,b:number,rest:number,stiffness:number}[],areaConstraints:{a:number,b:number,c:number,restArea:number}[],triangles:number[][],seeds:{cx:number,cy:number,particleIdx:number}[]}[]} */
+let bodies = [];
+
+function createMelon() {
+  particles = [];
+  distConstraints = [];
+  areaConstraints = [];
+  triangles = [];
+  seeds = [];
+  bodies = [];
+
+  const cx = W / 2;
+  const cy = H / 2 - 30;
+  const R = Math.min(W, H) * 0.2;
+  const rows = 14;
+  const cols = 22;
+  const rindThickness = 0.15;
+  const pithThickness = 0.07;
+
+  const pidx = /** @type {number[][]} */ ([]);
+
+  // Generate particles in a half-disc grid
+  for (let r = 0; r <= rows; r++) {
+    pidx[r] = [];
+    const frac = r / rows;
+    const radius = R * frac;
+    const numCols = r === 0 ? 1 : Math.max(3, Math.round(cols * frac));
+    for (let c = 0; c <= numCols; c++) {
+      const angle = Math.PI * (c / numCols);
+      const px = cx + radius * Math.cos(angle);
+      const py = cy - radius * Math.sin(angle);
+      const isRind = frac > (1 - rindThickness);
+      const isPith = !isRind && frac > (1 - rindThickness - pithThickness);
+      const mass = isRind ? 1.5 : 1.0;
+      const idx = particles.length;
+      particles.push({
+        x: px, y: py, ox: px, oy: py,
+        vx: 0, vy: 0,
+        mass, invMass: 1 / mass,
+        isRind, isPith, isSeed: false, pinned: false
+      });
+      pidx[r].push(idx);
+    }
+  }
+
+  // Also add the flat bottom edge
+  const bottomIdxs = [];
+  const numBottom = cols + 1;
+  for (let c = 0; c <= numBottom; c++) {
+    const px = cx - R + (2 * R * c / numBottom);
+    const py = cy;
+    const isRind = (c <= 1 || c >= numBottom - 1);
+    const mass = isRind ? 1.5 : 1.0;
+    const idx = particles.length;
+    particles.push({
+      x: px, y: py, ox: px, oy: py,
+      vx: 0, vy: 0,
+      mass, invMass: 1 / mass,
+      isRind, isPith: false, isSeed: false, pinned: false
+    });
+    bottomIdxs.push(idx);
+  }
+
+  // Triangulate using Delaunay-like approach (simple fan + grid)
+  const allPts = particles.map((p, i) => [p.x, p.y, i]);
+
+  // Use simple ear-clipping triangulation via sorted points
+  // Better: use a proper Delaunay. We'll do a simple one.
+  triangles = delaunay(allPts);
+
+  // Create distance constraints from triangle edges
+  const edgeSet = new Set();
+  function addEdge(a, b) {
+    const key = a < b ? a + ',' + b : b + ',' + a;
+    if (edgeSet.has(key)) return;
+    edgeSet.add(key);
+    const dx = particles[a].x - particles[b].x;
+    const dy = particles[a].y - particles[b].y;
+    const rest = Math.sqrt(dx * dx + dy * dy);
+    const isRindEdge = particles[a].isRind && particles[b].isRind;
+    distConstraints.push({
+      a, b, rest,
+      stiffness: isRindEdge ? 0.9 : 0.35
+    });
+  }
+
+  for (const tri of triangles) {
+    addEdge(tri[0], tri[1]);
+    addEdge(tri[1], tri[2]);
+    addEdge(tri[2], tri[0]);
+
+    // Area constraint
+    const ax = particles[tri[0]].x, ay = particles[tri[0]].y;
+    const bx = particles[tri[1]].x, by = particles[tri[1]].y;
+    const ccx = particles[tri[2]].x, ccy = particles[tri[2]].y;
+    const area = 0.5 * Math.abs((bx - ax) * (ccy - ay) - (ccx - ax) * (by - ay));
+    if (area > 0.5) {
+      areaConstraints.push({ a: tri[0], b: tri[1], c: tri[2], restArea: area });
+    }
+  }
+
+  // Place seeds in flesh area
+  const seedCount = 12;
+  for (let i = 0; i < seedCount; i++) {
+    const angle = Math.PI * (0.15 + 0.7 * i / seedCount);
+    const r2 = R * (0.3 + 0.35 * Math.random());
+    const sx = cx + r2 * Math.cos(angle);
+    const sy = cy - r2 * Math.sin(angle);
+    // Find nearest particle
+    let best = 0, bestD = Infinity;
+    for (let j = 0; j < particles.length; j++) {
+      const dx = particles[j].x - sx, dy = particles[j].y - sy;
+      const d = dx * dx + dy * dy;
+      if (d < bestD) { bestD = d; best = j; }
+    }
+    seeds.push({ cx: sx - particles[best].x, cy: sy - particles[best].y, particleIdx: best });
+  }
+
+  // Single body initially
+  const allIndices = particles.map((_, i) => i);
+  bodies = [{
+    particles: allIndices,
+    distConstraints: distConstraints.slice(),
+    areaConstraints: areaConstraints.slice(),
+    triangles: triangles.slice(),
+    seeds: seeds.slice()
+  }];
+}
+
+/** Simple Delaunay triangulation (Bowyer-Watson) */
+function delaunay(points) {
+  if (points.length < 3) return [];
+
+  const coords = points.map(p => [p[0], p[1]]);
+  const indices = points.map(p => p[2]);
+
+  // Super triangle
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const [x, y] of coords) {
+    if (x < minX) minX = x; if (y < minY) minY = y;
+    if (x > maxX) maxX = x; if (y > maxY) maxY = y;
+  }
+  const dx = maxX - minX, dy = maxY - minY;
+  const dmax = Math.max(dx, dy);
+  const midX = (minX + maxX) / 2, midY = (minY + maxY) / 2;
+
+  const p1 = [midX - 20 * dmax, midY - dmax];
+  const p2 = [midX, midY + 20 * dmax];
+  const p3 = [midX + 20 * dmax, midY - dmax];
+
+  const allCoords = coords.concat([p1, p2, p3]);
+  const n = coords.length;
+  const st = [n, n + 1, n + 2];
+
+  /** @type {number[][]} */
+  let tris = [st.slice()];
+
+  function circumscribed(tri, px, py) {
+    const [i, j, k] = tri;
+    const ax = allCoords[i][0], ay = allCoords[i][1];
+    const bx = allCoords[j][0], by = allCoords[j][1];
+    const cx2 = allCoords[k][0], cy2 = allCoords[k][1];
+    const D = 2 * (ax * (by - cy2) + bx * (cy2 - ay) + cx2 * (ay - by));
+    if (Math.abs(D) < 1e-10) return false;
+    const ux = ((ax * ax + ay * ay) * (by - cy2) + (bx * bx + by * by) * (cy2 - ay) + (cx2 * cx2 + cy2 * cy2) * (ay - by)) / D;
+    const uy = ((ax * ax + ay * ay) * (cx2 - bx) + (bx * bx + by * by) * (ax - cx2) + (cx2 * cx2 + cy2 * cy2) * (bx - ax)) / D;
+    const r2 = (ax - ux) * (ax - ux) + (ay - uy) * (ay - uy);
+    const d2 = (px - ux) * (px - ux) + (py - uy) * (py - uy);
+    return d2 < r2;
+  }
+
+  for (let i = 0; i < n; i++) {
+    const px = allCoords[i][0], py = allCoords[i][1];
+    const bad = [];
+    for (let t = tris.length - 1; t >= 0; t--) {
+      if (circumscribed(tris[t], px, py)) {
+        bad.push(tris[t]);
+        tris.splice(t, 1);
+      }
+    }
+    // Find boundary polygon
+    const edges = [];
+    for (const tri of bad) {
+      for (let e = 0; e < 3; e++) {
+        const a = tri[e], b = tri[(e + 1) % 3];
+        let shared = false;
+        for (const other of bad) {
+          if (other === tri) continue;
+          if ((other[0] === a || other[1] === a || other[2] === a) &&
+              (other[0] === b || other[1] === b || other[2] === b)) {
+            shared = true; break;
+          }
+        }
+        if (!shared) edges.push([a, b]);
+      }
+    }
+    for (const [a, b] of edges) {
+      tris.push([a, b, i]);
+    }
+  }
+
+  // Remove super triangle vertices
+  const result = [];
+  for (const tri of tris) {
+    if (tri[0] >= n || tri[1] >= n || tri[2] >= n) continue;
+    result.push([indices[tri[0]], indices[tri[1]], indices[tri[2]]]);
+  }
+  return result;
+}
+
+// --- XPBD Simulation ---
+const SUBSTEPS = 10;
+const DT = 1 / 60;
+
+function simulate() {
+  const subDt = DT / SUBSTEPS;
+  const g = params.gravity;
+  const damp = 1 - params.damping;
+  updateFloorY();
+
+  for (let sub = 0; sub < SUBSTEPS; sub++) {
+    // Predict
+    for (const p of particles) {
+      if (p.pinned) continue;
+      p.vx *= damp;
+      p.vy *= damp;
+      p.vy += g * subDt;
+      // Clamp velocity
+      const vMag = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
+      if (vMag > 2000) {
+        p.vx *= 2000 / vMag;
+        p.vy *= 2000 / vMag;
+      }
+      p.ox = p.x;
+      p.oy = p.y;
+      p.x += p.vx * subDt;
+      p.y += p.vy * subDt;
+    }
+
+    // Solve distance constraints
+    const stiffMul = params.stiffness;
+    for (const body of bodies) {
+      for (const c of body.distConstraints) {
+        const pa = particles[c.a], pb = particles[c.b];
+        let ddx = pb.x - pa.x, ddy = pb.y - pa.y;
+        let dist = Math.sqrt(ddx * ddx + ddy * ddy);
+        if (dist < 0.001) { dist = 0.001; ddx = 0.001; }
+        const diff = (dist - c.rest) / dist;
+        const stiff = Math.min(c.stiffness * stiffMul * 3, 1);
+        const w = pa.invMass + pb.invMass;
+        if (w === 0) continue;
+        const correction = diff * stiff / w;
+        if (!pa.pinned) {
+          pa.x += ddx * correction * pa.invMass;
+          pa.y += ddy * correction * pa.invMass;
+        }
+        if (!pb.pinned) {
+          pb.x -= ddx * correction * pb.invMass;
+          pb.y -= ddy * correction * pb.invMass;
+        }
+      }
+
+      // Area preservation
+      const wobbleFactor = params.wobble;
+      for (const c of body.areaConstraints) {
+        const pa = particles[c.a], pb = particles[c.b], pc = particles[c.c];
+        const ex1 = pb.x - pa.x, ey1 = pb.y - pa.y;
+        const ex2 = pc.x - pa.x, ey2 = pc.y - pa.y;
+        const area = 0.5 * (ex1 * ey2 - ex2 * ey1);
+        const targetArea = c.restArea * (1 + 0.0 * wobbleFactor);
+        if (Math.abs(area) < 0.01) continue;
+        const ratio = (area - targetArea) / area * 0.15 * wobbleFactor;
+        const cx2 = (pa.x + pb.x + pc.x) / 3;
+        const cy2 = (pa.y + pb.y + pc.y) / 3;
+        if (!pa.pinned) {
+          pa.x += (pa.x - cx2) * ratio * pa.invMass;
+          pa.y += (pa.y - cy2) * ratio * pa.invMass;
+        }
+        if (!pb.pinned) {
+          pb.x += (pb.x - cx2) * ratio * pb.invMass;
+          pb.y += (pb.y - cy2) * ratio * pb.invMass;
+        }
+        if (!pc.pinned) {
+          pc.x += (pc.x - cx2) * ratio * pc.invMass;
+          pc.y += (pc.y - cy2) * ratio * pc.invMass;
+        }
+      }
+    }
+
+    // Collision constraints
+    const wallMargin = 5;
+    const friction = 0.4;
+    for (const p of particles) {
+      if (p.pinned) continue;
+      // Floor
+      if (p.y > floorY) {
+        p.y = floorY;
+        const vy = (p.y - p.oy) / subDt;
+        if (vy > 0) p.oy = p.y;
+        // Friction
+        const vxr = (p.x - p.ox);
+        p.x -= vxr * friction;
+      }
+      // Walls
+      if (p.x < wallMargin) { p.x = wallMargin; p.ox = Math.max(p.ox, wallMargin); }
+      if (p.x > W - wallMargin) { p.x = W - wallMargin; p.ox = Math.min(p.ox, W - wallMargin); }
+      // Ceiling
+      if (p.y < wallMargin) { p.y = wallMargin; p.oy = Math.max(p.oy, wallMargin); }
+    }
+
+    // Interaction constraints
+    if (grabActive && grabIndices.length > 0) {
+      for (const gi of grabIndices) {
+        const p = particles[gi.idx];
+        if (!p) continue;
+        const tx = mouseX + gi.offX;
+        const ty = mouseY + gi.offY;
+        const compliance = 0.0001;
+        const alpha = compliance / (subDt * subDt);
+        const ddx = p.x - tx, ddy = p.y - ty;
+        const dist = Math.sqrt(ddx * ddx + ddy * ddy);
+        if (dist > 0.01) {
+          const correction = dist / (1 + alpha);
+          p.x -= (ddx / dist) * correction * 0.5;
+          p.y -= (ddy / dist) * correction * 0.5;
+        }
+      }
+    }
+
+    // Update velocities from positions
+    for (const p of particles) {
+      if (p.pinned) continue;
+      p.vx = (p.x - p.ox) / subDt;
+      p.vy = (p.y - p.oy) / subDt;
+      // NaN guard
+      if (isNaN(p.x) || isNaN(p.y)) {
+        p.x = p.ox; p.y = p.oy; p.vx = 0; p.vy = 0;
+      }
+    }
+  }
+}
+
+// --- Interaction ---
+let mouseX = 0, mouseY = 0;
+let grabActive = false;
+let grabIndices = [];
+let knifeActive = false;
+let knifePath = [];
+let pinchActive = false;
+
+function getCanvasPos(e) {
+  const rect = canvas.getBoundingClientRect();
+  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+}
+
+canvas.addEventListener('pointerdown', e => {
+  const pos = getCanvasPos(e);
+  mouseX = pos.x; mouseY = pos.y;
+
+  if (tool === 'grab') {
+    if (e.shiftKey || e.button === 2) {
+      // Pinch mode
+      pinchActive = true;
+      grabActive = true;
+      grabIndices = findNearParticles(pos.x, pos.y, 60);
+    } else {
+      grabActive = true;
+      grabIndices = findNearParticles(pos.x, pos.y, 40);
+    }
+  } else if (tool === 'knife') {
+    knifeActive = true;
+    knifePath = [{ x: pos.x, y: pos.y }];
+  }
+  canvas.setPointerCapture(e.pointerId);
+});
+
+canvas.addEventListener('pointermove', e => {
+  const pos = getCanvasPos(e);
+  mouseX = pos.x; mouseY = pos.y;
+  if (knifeActive) {
+    knifePath.push({ x: pos.x, y: pos.y });
+  }
+});
+
+canvas.addEventListener('pointerup', e => {
+  if (tool === 'grab') {
+    grabActive = false;
+    grabIndices = [];
+    pinchActive = false;
+  } else if (tool === 'knife' && knifeActive) {
+    knifeActive = false;
+    if (knifePath.length >= 2) {
+      performCut(knifePath);
+    }
+    knifePath = [];
+  }
+});
+
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+function findNearParticles(px, py, radius) {
+  const results = [];
+  for (let i = 0; i < particles.length; i++) {
+    const p = particles[i];
+    const dx = p.x - px, dy = p.y - py;
+    const d = Math.sqrt(dx * dx + dy * dy);
+    if (d < radius) {
+      results.push({ idx: i, offX: p.x - px, offY: p.y - py, dist: d });
+    }
+  }
+  results.sort((a, b) => a.dist - b.dist);
+  return results.slice(0, 15);
+}
+
+// --- Cutting ---
+function segmentsIntersect(x1, y1, x2, y2, x3, y3, x4, y4) {
+  const d = (x2 - x1) * (y4 - y3) - (y2 - y1) * (x4 - x3);
+  if (Math.abs(d) < 1e-10) return false;
+  const t = ((x3 - x1) * (y4 - y3) - (y3 - y1) * (x4 - x3)) / d;
+  const u = ((x3 - x1) * (y2 - y1) - (y3 - y1) * (x2 - x1)) / d;
+  return t >= 0 && t <= 1 && u >= 0 && u <= 1;
+}
+
+function performCut(path) {
+  const cutEdges = new Set();
+  const cutTris = new Set();
+
+  for (let bi = 0; bi < bodies.length; bi++) {
+    const body = bodies[bi];
+    // Check each triangle against cut path
+    for (let ti = 0; ti < body.triangles.length; ti++) {
+      const tri = body.triangles[ti];
+      const pa = particles[tri[0]], pb = particles[tri[1]], pc = particles[tri[2]];
+      let cut = false;
+      for (let pi = 0; pi < path.length - 1; pi++) {
+        const kx1 = path[pi].x, ky1 = path[pi].y;
+        const kx2 = path[pi + 1].x, ky2 = path[pi + 1].y;
+        if (segmentsIntersect(kx1, ky1, kx2, ky2, pa.x, pa.y, pb.x, pb.y) ||
+            segmentsIntersect(kx1, ky1, kx2, ky2, pb.x, pb.y, pc.x, pc.y) ||
+            segmentsIntersect(kx1, ky1, kx2, ky2, pc.x, pc.y, pa.x, pa.y)) {
+          cut = true;
+          break;
+        }
+      }
+      if (cut) {
+        cutTris.add(bi + ',' + ti);
+        // Mark edges for removal
+        const edges = [[tri[0], tri[1]], [tri[1], tri[2]], [tri[2], tri[0]]];
+        for (const [a, b] of edges) {
+          for (let pi = 0; pi < path.length - 1; pi++) {
+            if (segmentsIntersect(path[pi].x, path[pi].y, path[pi+1].x, path[pi+1].y,
+                particles[a].x, particles[a].y, particles[b].x, particles[b].y)) {
+              const key = Math.min(a, b) + ',' + Math.max(a, b);
+              cutEdges.add(key);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (cutEdges.size === 0) return;
+
+  // Remove cut triangles and edges from bodies, then rebuild bodies from connected components
+  const newBodies = [];
+  for (let bi = 0; bi < bodies.length; bi++) {
+    const body = bodies[bi];
+    const remainingTris = [];
+    const remainingDistC = [];
+    const remainingAreaC = [];
+
+    for (let ti = 0; ti < body.triangles.length; ti++) {
+      if (!cutTris.has(bi + ',' + ti)) {
+        remainingTris.push(body.triangles[ti]);
+      }
+    }
+
+    for (const c of body.distConstraints) {
+      const key = Math.min(c.a, c.b) + ',' + Math.max(c.a, c.b);
+      if (!cutEdges.has(key)) {
+        remainingDistC.push(c);
+      }
+    }
+
+    for (const c of body.areaConstraints) {
+      let keep = true;
+      const triKey = bi + ',' + body.triangles.findIndex(
+        t => (t[0] === c.a && t[1] === c.b && t[2] === c.c) ||
+             (t[0] === c.b && t[1] === c.c && t[2] === c.a) ||
+             (t[0] === c.c && t[1] === c.a && t[2] === c.b)
+      );
+      if (cutTris.has(triKey)) keep = false;
+      if (keep) remainingAreaC.push(c);
+    }
+
+    // Find connected components via remaining triangles
+    const particleSet = new Set();
+    for (const tri of remainingTris) {
+      particleSet.add(tri[0]); particleSet.add(tri[1]); particleSet.add(tri[2]);
+    }
+
+    const adj = new Map();
+    for (const tri of remainingTris) {
+      for (let i = 0; i < 3; i++) {
+        const a = tri[i], b = tri[(i + 1) % 3];
+        if (!adj.has(a)) adj.set(a, new Set());
+        if (!adj.has(b)) adj.set(b, new Set());
+        adj.get(a).add(b);
+        adj.get(b).add(a);
+      }
+    }
+
+    const visited = new Set();
+    const components = [];
+    for (const pid of particleSet) {
+      if (visited.has(pid)) continue;
+      const comp = new Set();
+      const stack = [pid];
+      while (stack.length) {
+        const cur = stack.pop();
+        if (visited.has(cur)) continue;
+        visited.add(cur);
+        comp.add(cur);
+        const neighbors = adj.get(cur);
+        if (neighbors) for (const nb of neighbors) {
+          if (!visited.has(nb)) stack.push(nb);
+        }
+      }
+      components.push(comp);
+    }
+
+    for (const comp of components) {
+      const compTris = remainingTris.filter(t => comp.has(t[0]) && comp.has(t[1]) && comp.has(t[2]));
+      const compDist = remainingDistC.filter(c => comp.has(c.a) && comp.has(c.b));
+      const compArea = remainingAreaC.filter(c => comp.has(c.a) && comp.has(c.b) && comp.has(c.c));
+      const compSeeds = body.seeds.filter(s => comp.has(s.particleIdx));
+      if (compTris.length > 0) {
+        newBodies.push({
+          particles: [...comp],
+          distConstraints: compDist,
+          areaConstraints: compArea,
+          triangles: compTris,
+          seeds: compSeeds
+        });
+      }
+    }
+  }
+
+  if (newBodies.length > 0) {
+    bodies = newBodies;
+  }
+}
+
+// --- Rendering ---
+function render() {
+  ctx.clearRect(0, 0, W, H);
+
+  // Background gradient
+  const bgGrad = ctx.createLinearGradient(0, 0, 0, H);
+  bgGrad.addColorStop(0, '#1a1a2e');
+  bgGrad.addColorStop(1, '#16213e');
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, W, H);
+
+  // Floor
+  ctx.fillStyle = '#2d2d44';
+  ctx.fillRect(0, floorY, W, H - floorY);
+  ctx.strokeStyle = '#3d3d5c';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(0, floorY);
+  ctx.lineTo(W, floorY);
+  ctx.stroke();
+
+  // Render each body
+  for (const body of bodies) {
+    // Shadow
+    ctx.save();
+    ctx.globalAlpha = 0.2;
+    ctx.fillStyle = '#000';
+    for (const tri of body.triangles) {
+      const pa = particles[tri[0]], pb = particles[tri[1]], pc = particles[tri[2]];
+      ctx.beginPath();
+      ctx.moveTo(pa.x + 6, pa.y + 8);
+      ctx.lineTo(pb.x + 6, pb.y + 8);
+      ctx.lineTo(pc.x + 6, pc.y + 8);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+
+    // Filled triangles
+    for (const tri of body.triangles) {
+      const pa = particles[tri[0]], pb = particles[tri[1]], pc = particles[tri[2]];
+      const allRind = pa.isRind && pb.isRind && pc.isRind;
+      const anyRind = pa.isRind || pb.isRind || pc.isRind;
+      const anyPith = pa.isPith || pb.isPith || pc.isPith;
+
+      let color;
+      if (allRind) {
+        color = RIND_COLOR;
+      } else if (anyRind && anyPith) {
+        color = PITH_COLOR;
+      } else if (anyPith) {
+        color = PITH_COLOR;
+      } else {
+        color = fleshColor;
+      }
+
+      ctx.beginPath();
+      ctx.moveTo(pa.x, pa.y);
+      ctx.lineTo(pb.x, pb.y);
+      ctx.lineTo(pc.x, pc.y);
+      ctx.closePath();
+      ctx.fillStyle = color;
+      ctx.fill();
+    }
+
+    // Jelly highlight pass
+    ctx.save();
+    ctx.globalAlpha = 0.12;
+    ctx.globalCompositeOperation = 'lighter';
+    for (const tri of body.triangles) {
+      const pa = particles[tri[0]], pb = particles[tri[1]], pc = particles[tri[2]];
+      if (pa.isRind && pb.isRind && pc.isRind) continue;
+      const cx2 = (pa.x + pb.x + pc.x) / 3;
+      const cy2 = (pa.y + pb.y + pc.y) / 3;
+      const grad = ctx.createRadialGradient(cx2, cy2 - 5, 0, cx2, cy2, 30);
+      grad.addColorStop(0, '#fff');
+      grad.addColorStop(1, 'transparent');
+      ctx.beginPath();
+      ctx.moveTo(pa.x, pa.y);
+      ctx.lineTo(pb.x, pb.y);
+      ctx.lineTo(pc.x, pc.y);
+      ctx.closePath();
+      ctx.fillStyle = grad;
+      ctx.fill();
+    }
+    ctx.restore();
+
+    // Translucency effect
+    ctx.save();
+    ctx.globalAlpha = 0.06;
+    for (const tri of body.triangles) {
+      const pa = particles[tri[0]], pb = particles[tri[1]], pc = particles[tri[2]];
+      if (pa.isRind || pb.isRind || pc.isRind) continue;
+      ctx.beginPath();
+      ctx.moveTo(pa.x, pa.y);
+      ctx.lineTo(pb.x, pb.y);
+      ctx.lineTo(pc.x, pc.y);
+      ctx.closePath();
+      ctx.fillStyle = '#fff';
+      ctx.fill();
+    }
+    ctx.restore();
+
+    // Seeds
+    for (const seed of body.seeds) {
+      const p = particles[seed.particleIdx];
+      if (!p) continue;
+      const sx = p.x + seed.cx;
+      const sy = p.y + seed.cy;
+      ctx.save();
+      ctx.translate(sx, sy);
+      ctx.rotate(Math.atan2(p.vy, p.vx + 0.01) * 0.1);
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 4, 7, Math.PI * 0.2, 0, Math.PI * 2);
+      ctx.fillStyle = SEED_COLOR;
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // Glossy top highlight on the whole body
+    ctx.save();
+    ctx.globalAlpha = 0.08;
+    let minBY = Infinity, maxBY = -Infinity, minBX = Infinity, maxBX = -Infinity;
+    for (const pi of body.particles) {
+      const p = particles[pi];
+      if (p.y < minBY) minBY = p.y;
+      if (p.y > maxBY) maxBY = p.y;
+      if (p.x < minBX) minBX = p.x;
+      if (p.x > maxBX) maxBX = p.x;
+    }
+    const hlGrad = ctx.createLinearGradient(minBX, minBY, minBX, maxBY);
+    hlGrad.addColorStop(0, '#fff');
+    hlGrad.addColorStop(0.3, 'transparent');
+    for (const tri of body.triangles) {
+      const pa = particles[tri[0]], pb = particles[tri[1]], pc = particles[tri[2]];
+      ctx.beginPath();
+      ctx.moveTo(pa.x, pa.y);
+      ctx.lineTo(pb.x, pb.y);
+      ctx.lineTo(pc.x, pc.y);
+      ctx.closePath();
+      ctx.fillStyle = hlGrad;
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // Knife trail
+  if (knifeActive && knifePath.length > 1) {
+    ctx.save();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 2;
+    ctx.globalAlpha = 0.8;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    ctx.moveTo(knifePath[0].x, knifePath[0].y);
+    for (let i = 1; i < knifePath.length; i++) {
+      ctx.lineTo(knifePath[i].x, knifePath[i].y);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Knife glow
+    ctx.globalAlpha = 0.3;
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = '#a29bfe';
+    ctx.beginPath();
+    ctx.moveTo(knifePath[0].x, knifePath[0].y);
+    for (let i = 1; i < knifePath.length; i++) {
+      ctx.lineTo(knifePath[i].x, knifePath[i].y);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+// --- FPS ---
+let frameCount = 0;
+let lastFpsTime = performance.now();
+let currentFps = 0;
+
+function updateFps() {
+  frameCount++;
+  const now = performance.now();
+  if (now - lastFpsTime >= 500) {
+    currentFps = Math.round(frameCount / ((now - lastFpsTime) / 1000));
+    frameCount = 0;
+    lastFpsTime = now;
+    if (showFps) fpsEl.textContent = 'FPS: ' + currentFps;
+  }
+}
+
+// --- Main loop ---
+let accumulator = 0;
+let lastTime = 0;
+
+function loop(time) {
+  if (lastTime === 0) lastTime = time;
+  let delta = (time - lastTime) / 1000;
+  lastTime = time;
+  if (delta > 0.1) delta = 0.1;
+  accumulator += delta;
+
+  while (accumulator >= DT) {
+    simulate();
+    accumulator -= DT;
+  }
+
+  render();
+  updateFps();
+  requestAnimationFrame(loop);
+}
+
+function initSimulation() {
+  createMelon();
+  lastTime = 0;
+  accumulator = 0;
+}
+
+initSimulation();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
